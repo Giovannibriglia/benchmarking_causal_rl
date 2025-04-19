@@ -1,5 +1,6 @@
 import random
 from collections import deque
+from typing import Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -7,41 +8,44 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from gymnasium_suite.base import BasePolicy
+from gymnasium_suite.base import BasePolicy, one_hot
 from torch import nn
 
 
-def one_hot(indices: torch.Tensor, num_classes: int) -> torch.Tensor:
-    """Convert integer observation (…,1) → one‑hot (…, num_classes)."""
-    return F.one_hot(indices.long().view(-1), num_classes=num_classes).float()
-
-
 class ReplayBuffer:
-    def __init__(self, capacity=10000):
-        self.buf = deque(maxlen=capacity)
+    """Simple FIFO replay with NumPy arrays → torch tensors on sample."""
+
+    def __init__(self, capacity: int = 20000):
+        self.buf: deque = deque(maxlen=capacity)
 
     def __len__(self):
         return len(self.buf)
 
-    def put(self, *items):
-        self.buf.append(items)
+    def put(self, obs, act: int, rew: float, next_obs, non_terminal: float):
+        self.buf.append((obs, act, rew, next_obs, non_terminal))
 
-    def sample(self, batch):
-        samples = random.sample(self.buf, batch)
-        stacked = list(zip(*samples))  # list of tuples per field
-        tensors = [torch.tensor(x) for x in stacked]  # convert to tensors
-        return tensors  # keeps order
+    def sample(self, batch: int, device) -> Tuple[torch.Tensor, ...]:
+        """Return 5 tensors on given device with correct dtypes."""
+        batch_items = random.sample(self.buf, batch)
+        o, a, r, o2, m = zip(*batch_items)  # tuple of lists
+
+        obs = torch.as_tensor(np.array(o), dtype=torch.float32, device=device)
+        actions = torch.as_tensor(a, dtype=torch.long, device=device)
+        rewards = torch.as_tensor(r, dtype=torch.float32, device=device)
+        next_obs = torch.as_tensor(np.array(o2), dtype=torch.float32, device=device)
+        mask = torch.as_tensor(m, dtype=torch.float32, device=device)
+        return obs, actions, rewards, next_obs, mask
 
 
 class QNet(nn.Module):
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_dim: int, act_dim: int):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 128),
             nn.ReLU(),
-            nn.Linear(128, out_dim),
+            nn.Linear(128, act_dim),
         )
 
     def forward(self, x):
@@ -50,102 +54,109 @@ class QNet(nn.Module):
 
 class DQNPolicy(BasePolicy):
     """
-    ‑ Discrete **action** spaces only (Box actions require other algorithms).
-    ‑ Handles Box or Discrete observation spaces.
+    Vanilla DQN (Double/dueling/prioritized could be added later).
+    • Requires Discrete action space
+    • Handles Box or Discrete observations (flatten / one‑hot)
     """
 
     def __init__(
         self,
         algo_name: str,
-        action_space: gym.spaces.Space,
+        action_space: gym.spaces.Discrete,
         observation_space: gym.spaces.Space,
         n_envs: int,
-        n_episodes: int = 1_000,
-        buffer_limit: int = 50_000,
+        n_episodes: int,
+        *,
+        buffer_size: int = 20000,
         batch_size: int = 32,
         gamma: float = 0.99,
         lr: float = 5e-4,
-        **kwargs,
+        target_sync: int = 100,
     ):
         if not isinstance(action_space, gym.spaces.Discrete):
-            raise ValueError("DQN supports *discrete* actions only.")
-        super().__init__(algo_name, action_space, observation_space, n_envs, **kwargs)
+            raise ValueError("DQNPolicy supports *discrete* action spaces only.")
 
-        # ---------- observation dimension ----------
-        if isinstance(observation_space, gym.spaces.Box):
-            self.obs_dim = int(np.prod(observation_space.shape))
-            self._obs_enc = lambda x: torch.tensor(
-                x, dtype=torch.float32, device=self.device
-            ).view(-1, self.obs_dim)
-        elif isinstance(observation_space, gym.spaces.Discrete):
-            self.obs_dim = observation_space.n
-            self._obs_enc = lambda x: one_hot(
-                torch.tensor(x, device=self.device), self.obs_dim
-            )
-        else:
-            raise NotImplementedError
-
-        self.act_dim = action_space.n
-        self.q_net = QNet(self.obs_dim, self.act_dim).to(self.device)
-        self.q_tgt = QNet(self.obs_dim, self.act_dim).to(self.device)
-        self.q_tgt.load_state_dict(self.q_net.state_dict())
-
-        self.opt = optim.Adam(self.q_net.parameters(), lr=lr)
-        self.memory = ReplayBuffer(buffer_limit)
+        super().__init__(algo_name, action_space, observation_space, n_envs)
         self.batch = batch_size
         self.gamma = gamma
-        # ---------- ε‑greedy schedule ----------
-        self.eps_hi = 0.10
-        self.eps_lo = 0.01
-        self.eps_decay = (self.eps_hi - self.eps_lo) / n_episodes
+        self.tgt_sync = target_sync
+
+        # --- observation encoder -------------------------------------------
+        if isinstance(observation_space, gym.spaces.Box):
+            self.obs_dim = int(np.prod(observation_space.shape))
+            self._enc = lambda x: x.view(-1, self.obs_dim).float()  # already float32
+        elif isinstance(observation_space, gym.spaces.Discrete):
+            self.obs_dim = observation_space.n
+            self._enc = lambda x: one_hot(x.long().view(-1), self.obs_dim)
+        else:
+            raise NotImplementedError("Unsupported observation space.")
+
+        # --- networks & optimiser ------------------------------------------
+        self.q_net = QNet(self.obs_dim, action_space.n).to(self.device)
+        self.q_tgt = QNet(self.obs_dim, action_space.n).to(self.device)
+        self.q_tgt.load_state_dict(self.q_net.state_dict())
+        self.opt = optim.Adam(self.q_net.parameters(), lr=lr)
+
+        # --- replay & ε‑schedule -------------------------------------------
+        self.mem = ReplayBuffer(buffer_size)
+        self.eps_hi, self.eps_lo = 0.10, 0.01
+        self.decay = (self.eps_hi - self.eps_lo) / n_episodes
         self.cur_ep = 0
-        self.update_cnt = 0
-        self.tgt_freq = 100
+        self.update_ct = 0
 
-    # ------------------------------------------------------------------ public API
-    def update_episode(self, ep: int):
+    # ------------------------------------------------------------------ utils
+    def _epsilon(self):  # linear decay
+        return max(self.eps_lo, self.eps_hi - self.decay * self.cur_ep)
+
+    def update_episode(self, ep):  # called from training loop
         self.cur_ep = ep
+        self.metrics.add(epsilon=self._epsilon())
 
-    def _epsilon(self) -> float:
-        return max(self.eps_lo, self.eps_hi - self.eps_decay * self.cur_ep)
-
-    def get_actions(self, observations: torch.Tensor) -> torch.Tensor:
-        obs_flat = self._obs_enc(observations)
-        if random.random() < self._epsilon():
-            return torch.randint(0, self.act_dim, (self.n_envs,), device=self.device)
+    # ---------------------------------------------------------------- actions
+    def get_actions(self, obs_tensor: torch.Tensor) -> torch.Tensor:
+        """obs_tensor still raw; we encode internally."""
         with torch.no_grad():
-            q = self.q_net(obs_flat)
-            return q.argmax(dim=1)
-
-    def update(self, obs, acts, rews, next_obs, dones):
-        # ‑‑ store N envs step‑wise
-        for i in range(self.n_envs):
-            self.memory.put(
-                obs[i],
-                acts[i],
-                rews[i],
-                next_obs[i],
-                0.0 if dones[i] else 1.0,
+            q_vals = self.q_net(self._enc(obs_tensor.to(self.device)))
+        if random.random() < self._epsilon():
+            acts = torch.randint(
+                0, self.action_space.n, (self.n_envs,), device=self.device
             )
-        if len(self.memory) < self.batch:
+        else:
+            acts = q_vals.argmax(dim=1)
+        return acts
+
+    # ---------------------------------------------------------------- update
+    def update(self, obs_t, act_t, rew_t, next_obs_t, done_t):
+        # store transitions (CPU numpy for replay efficiency)
+        for i in range(self.n_envs):
+            self.mem.put(
+                obs_t[i].cpu().numpy(),  # store as np
+                int(act_t[i].item()),
+                float(rew_t[i].item()),
+                next_obs_t[i].cpu().numpy(),
+                0.0 if done_t[i] else 1.0,
+            )
+
+        if len(self.mem) < self.batch:  # not enough yet
             return
 
-        # ‑‑ sample & train
-        s, a, r, s2, m = self.memory.sample(self.batch)
-        s, s2 = self._obs_enc(s), self._obs_enc(s2)
-        a, r, m = (
-            a.long().to(self.device),
-            r.float().to(self.device),
-            m.float().to(self.device),
-        )
+        s, a, r, s2, m = self.mem.sample(self.batch, self.device)
+        q_sa = self.q_net(self._enc(s)).gather(1, a.unsqueeze(1)).squeeze(1)
+        with torch.no_grad():
+            max_q_sp = self.q_tgt(self._enc(s2)).max(1)[0]
+            target = r + self.gamma * max_q_sp * m
 
-        q = self.q_net(s).gather(1, a.unsqueeze(1)).squeeze(1)
-        tgt = r + self.gamma * self.q_tgt(s2).max(1)[0] * m
-        loss = F.smooth_l1_loss(q, tgt.detach())
-
+        loss = F.smooth_l1_loss(q_sa, target)
         self.opt.zero_grad()
         loss.backward()
         self.opt.step()
-        self.update_cnt += 1
-        if self.update_cnt % self.tgt_freq == 0:
+
+        self.update_ct += 1
+        if self.update_ct % self.tgt_sync == 0:
             self.q_tgt.load_state_dict(self.q_net.state_dict())
+
+        # metrics
+        self.metrics.add(td_loss=loss.item(), avg_q=q_sa.mean().item())
+
+    def pop_metrics(self):
+        return self.metrics.dump(divisor=1)

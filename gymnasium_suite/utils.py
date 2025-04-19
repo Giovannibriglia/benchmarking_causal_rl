@@ -1,9 +1,26 @@
 from datetime import datetime
 
+import torch
+
 from gymnasium_suite.a2c_minimal import A2CPolicy
 from gymnasium_suite.base import BasePolicy, RandomPolicy
 from gymnasium_suite.dqn_minimal import DQNPolicy
 from gymnasium_suite.ppo_minimal import PPOPolicy
+
+
+# map algo‑name → extra scalar keys to log
+EXTRA_KEYS = {
+    "dqn": ["td_loss", "avg_q", "epsilon"],
+    "a2c": ["entropy", "actor_loss", "value_loss", "kl"],
+    "ppo": ["entropy", "actor_loss", "value_loss", "kl"],
+}
+
+
+def safe_tensor(x, dtype, device):
+    """Clone‑detach if tensor, else construct a new tensor."""
+    if isinstance(x, torch.Tensor):
+        return x.clone().detach().to(dtype=dtype, device=device)
+    return torch.tensor(x, dtype=dtype, device=device)
 
 
 def generate_simulation_name(prefix: str = "benchmarking") -> str:

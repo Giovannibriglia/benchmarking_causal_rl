@@ -1,8 +1,34 @@
 from abc import ABC, abstractmethod
+from typing import Callable, Dict, List
 
 import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
+from torch import nn, optim
+from torch.distributions import Categorical, Normal
+
+
+class MetricBuffer(dict):
+    def add(self, **k):
+        for key, val in k.items():
+            self[key] = self.get(key, 0.0) + float(val)
+
+    def dump(self, divisor: int) -> dict:
+        out = {k: v / max(divisor, 1) for k, v in self.items()}
+        self.clear()
+        return out
+
+
+def one_hot(indices: torch.Tensor, num_classes: int) -> torch.Tensor:
+    return F.one_hot(indices.long().view(-1), num_classes=num_classes).float()
+
+
+def safe_clone(x, dtype=None, device: torch.device = "cuda"):
+    """clone‑detach tensors, wrap numpy → tensor"""
+    if isinstance(x, torch.Tensor):
+        return x.clone().detach().to(dtype=dtype, device=device)
+    return torch.tensor(x, dtype=dtype, device=device)
 
 
 class BasePolicy(ABC):
@@ -23,6 +49,8 @@ class BasePolicy(ABC):
         self.device = kwargs.get(
             "device", torch.device("cuda" if torch.cuda.is_available() else "cpu")
         )
+
+        self.metrics = MetricBuffer()
 
     @abstractmethod
     def update(
@@ -108,6 +136,10 @@ class BasePolicy(ABC):
                 f"Unsupported action space type: {type(self.action_space)}"
             )
 
+    @abstractmethod
+    def pop_metrics(self) -> dict:  # <── call at episode end
+        raise NotImplementedError
+
 
 class RandomPolicy(BasePolicy):
     def __init__(
@@ -161,3 +193,112 @@ class RandomPolicy(BasePolicy):
             )
 
         return actions_tensor
+
+
+class BaseACPolicy(BasePolicy, ABC):
+    def __init__(
+        self,
+        algo_name: str,
+        act_space: gym.spaces.Space,
+        obs_space: gym.spaces.Space,
+        n_envs: int,
+        *,
+        rollout_len: int = 128,
+        gamma: float = 0.98,
+        lr: float = 3e-4,
+        **kwargs,
+    ):
+        super().__init__(algo_name, act_space, obs_space, n_envs, **kwargs)
+
+        # ---- obs encoder -----------------------------------------------------
+        if isinstance(obs_space, gym.spaces.Box):
+            self.obs_dim = int(np.prod(obs_space.shape))
+            self._enc: Callable = lambda x: safe_clone(
+                x, torch.float32, self.device
+            ).view(-1, self.obs_dim)
+        elif isinstance(obs_space, gym.spaces.Discrete):
+            self.obs_dim = obs_space.n
+            self._enc = lambda x: one_hot(
+                safe_clone(x, torch.long, self.device), self.obs_dim
+            )
+        else:
+            raise NotImplementedError("Unsupported observation space")
+
+        # ---- net, optimiser, buffer -----------------------------------------
+        self.net = ACNet(self.obs_dim, act_space).to(self.device)
+        self.opt = optim.Adam(self.net.parameters(), lr=lr)
+        self.gamma = gamma
+        self.rollout_len = rollout_len
+
+        self.metrics = MetricBuffer()
+        self._reset_buf()
+
+    # ─── buffer helpers ─────────────────────────────────────────────────────
+    def _reset_buf(self):
+        self.buf: Dict[str, List] = {k: [] for k in ("s", "a", "r", "d", "logp", "v")}
+
+    def _store(self, s, a, r, d, logp, v):
+        self.buf["s"].append(s)
+        self.buf["a"].append(a)
+        self.buf["r"].append(safe_clone(r, torch.float32, self.device))
+        self.buf["d"].append(safe_clone(d, torch.float32, self.device))
+        self.buf["logp"].append(logp)
+        self.buf["v"].append(v)
+
+    # ─── common action selection  (called by env loop) ──────────────────────
+    def get_actions(self, observations: torch.Tensor) -> torch.Tensor:
+        enc = self._enc(observations)  # (n_envs, obs_dim)
+        dist = self.net.dist(enc)
+        actions = dist.sample()
+        log_prob = dist.log_prob(actions)
+        entropy = dist.entropy()
+        if log_prob.ndim > 1:  # continuous: sum over action dims
+            log_prob, entropy = log_prob.sum(-1), entropy.sum(-1)
+
+        value = self.net.value(enc)
+
+        # track entropy per step
+        self.metrics.add(entropy=entropy.mean().item())
+
+        # store with dummy reward/done (will be overwritten in update)
+        self._store(enc, actions.detach(), 0.0, 0.0, log_prob.detach(), value.detach())
+        return actions  # let caller format via setup_actions
+
+    # ─── abstract: subclasses implement algorithm‑specific update ───────────
+    @abstractmethod
+    def update(self, obs, acts, rews, next_obs, dones): ...
+
+    # pop averaged metrics once per episode
+    def pop_metrics(self) -> Dict[str, float]:
+        return self.metrics.dump(divisor=self.rollout_len)
+
+
+class ACNet(nn.Module):
+    """Common actor–critic network for Box *or* Discrete actions."""
+
+    def __init__(self, obs_dim: int, act_space: gym.spaces.Space):
+        super().__init__()
+        self.discrete = isinstance(act_space, gym.spaces.Discrete)
+        act_dim = act_space.n if self.discrete else int(np.prod(act_space.shape))
+
+        self.torso = nn.Sequential(nn.Linear(obs_dim, 128), nn.ReLU())
+        if self.discrete:
+            self.logits = nn.Linear(128, act_dim)
+        else:
+            self.mu = nn.Linear(128, act_dim)
+            self.std = nn.Linear(128, act_dim)
+            self.act_bd = float(act_space.high[0])
+        self.v_head = nn.Linear(128, 1)
+
+    def dist(self, x: torch.Tensor):
+        h = self.torso(x)
+        return (
+            Categorical(logits=self.logits(h))
+            if self.discrete
+            else Normal(
+                self.act_bd * torch.tanh(self.mu(h)), F.softplus(self.std(h)) + 1e-5
+            )
+        )
+
+    def value(self, x: torch.Tensor) -> torch.Tensor:
+        return self.v_head(self.torso(x)).squeeze(-1)

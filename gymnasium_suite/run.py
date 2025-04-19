@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import json
 import os
 import warnings
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
+import gymnasium
 import gymnasium as gym
 import numpy as np
 import pygame
@@ -12,7 +15,7 @@ from gymnasium import envs
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from utils import generate_simulation_name, make_policy
+from utils import EXTRA_KEYS, generate_simulation_name, make_policy, safe_tensor
 
 warnings.filterwarnings(
     "ignore",
@@ -41,131 +44,124 @@ def _get_latest_envs(env_keys):
     return [f"{name}-v{version}" for name, version in env_dict.items()]
 
 
+# ---------- robust mean / std inside inter‑quartile band -------------------
+def _iqr_stats(arr: np.ndarray, q: int = 25) -> tuple[np.ndarray, np.ndarray]:
+    if arr.shape[0] < 2:  # only one seed
+        return arr.mean(0), arr.std(0)
+
+    q1 = np.percentile(arr, q, axis=0)
+    q3 = np.percentile(arr, 100 - q, axis=0)
+    mask = (arr >= q1) & (arr <= q3)
+    filt = np.where(mask, arr, np.nan)
+
+    mean = np.nanmean(filt, axis=0)
+    std = np.nanstd(filt, axis=0)
+
+    # fallback if IQR killed whole column
+    nan_cols = np.isnan(mean)
+    if nan_cols.any():
+        mean[nan_cols] = arr[:, nan_cols].mean(0)
+        std[nan_cols] = arr[:, nan_cols].std(0)
+    return mean, std
+
+
+# ---------- main plotting function -----------------------------------------
 def plot_results(
-    json_path: str,
+    json_path: str | Path,
     percentile_band: int = 25,
-    metrics=("min_reward", "max_reward", "mean_reward"),
+    base_reward_keys: Sequence[str] = ("min_reward", "max_reward", "mean_reward"),
     cmap_name: str = "tab10",
-):
+) -> list[Path]:
     """
-    Render reward/step curves from a results JSON and save separate PNGs.
-
-    Parameters
-    ----------
-    json_path : str
-        Path to the results‑file (like the one in your example).
-    percentile_band : int, default 25
-        Lower percentile that defines the central band; upper is 100‑percentile_band.
-    metrics : Sequence[str], default ("min_reward", "max_reward", "mean_reward")
-        Reward keys to plot.
-    cmap_name : str, default "tab20"
-        Matplotlib colormap used to pick algorithm colours.
-
-    Returns
-    -------
-    list[pathlib.Path]
-        Absolute paths of the images that were written.
+    Auto‑plot every scalar metric in the JSON (upper subplot) together with
+    `n_steps` (lower).  Saves one PNG per metric.  Returns list of paths.
     """
-
-    # ───────────────────────── utility ──────────────────────────
-    def iqr_mean_std(arr: np.ndarray, q: int = 25) -> tuple[np.ndarray, np.ndarray]:
-
-        if arr.shape[0] >= 2:
-            """IQR‑based mean/std along axis‑0, with graceful NaN fallback."""
-            q1 = np.percentile(arr, q, axis=0)
-            q3 = np.percentile(arr, 100 - q, axis=0)
-            mask = (arr >= q1) & (arr <= q3)
-            filtered = np.where(mask, arr, np.nan)
-
-            mean = np.nanmean(filtered, axis=0)
-            std = np.nanstd(filtered, axis=0)
-
-            # if an entire column was filtered out → fall back to raw stats
-            nan_cols = np.isnan(mean)
-            if nan_cols.any():
-                mean[nan_cols] = arr[:, nan_cols].mean(axis=0)
-                std[nan_cols] = arr[:, nan_cols].std(axis=0)
-        else:
-            mean = np.mean(arr, axis=0)
-            std = np.std(arr, axis=0)
-        return mean, std
-
-    # ──────────────────────── load & prep ───────────────────────
-    json_path = Path(json_path).expanduser().resolve()
-    with json_path.open() as f:
+    # ── load file & common info ─────────────────────────────────────────────
+    jpath = Path(json_path).expanduser()
+    with jpath.open() as f:
         data = json.load(f)
 
     env_name = data["info"]["env_name"]
     episodes = np.asarray(data["info"]["recorded_episodes"])
     algorithms = data["info"]["algorithms"]
 
-    out_dir = json_path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-
+    # colours
     cmap = plt.get_cmap(cmap_name)
-    algo_colors = {algo: cmap(i) for i, algo in enumerate(algorithms)}
+    colors = {algo: cmap(i) for i, algo in enumerate(algorithms)}
 
-    saved_files: list[Path] = []
+    out_dir = jpath.parent
+    out_dir.mkdir(exist_ok=True, parents=True)
 
-    # ───────────────────────── plotting ─────────────────────────
-    for metric in metrics:
-        fig, axs = plt.subplots(2, 1, figsize=(10, 8), sharex=True, dpi=500)
+    # ── discover all metric keys (union across algos) ──────────────────────
+    keys: list[str] = list(base_reward_keys)
+    for algo in algorithms:
+        for k in data[algo]:
+            if k not in keys and k not in ("n_steps", *base_reward_keys):
+                keys.append(k)  # e.g. td_loss, entropy, kl, …
+
+    saved: list[Path] = []
+
+    # ── draw one figure per metric key (except n_steps itself) ─────────────
+    for key in keys:
+        fig, (ax_top, ax_steps) = plt.subplots(
+            2, 1, figsize=(10, 8), sharex=True, dpi=350
+        )
+        plotted_any = False  # will skip saving if nobody logs this metric
 
         for algo in algorithms:
-            # ── reward curve ──
-            reward_raw = np.asarray(data[algo][metric])
-            r_mean, r_std = iqr_mean_std(reward_raw, percentile_band)
-
-            axs[0].plot(episodes, r_mean, lw=2, label=algo, color=algo_colors[algo])
-            axs[0].fill_between(
-                episodes,
-                r_mean - r_std,
-                r_mean + r_std,
-                alpha=0.3,
-                color=algo_colors[algo],
-            )
-
-            # ── steps curve ──
             steps_raw = np.asarray(data[algo]["n_steps"])
-            s_mean, s_std = iqr_mean_std(steps_raw, percentile_band)
+            s_mean, s_std = _iqr_stats(steps_raw, percentile_band)
 
-            lower = np.clip(s_mean - s_std, a_min=1e-8, a_max=None)  # avoid log ≤ 0
-            axs[1].plot(episodes, s_mean, lw=2, label=algo, color=algo_colors[algo])
-            axs[1].fill_between(
-                episodes, lower, s_mean + s_std, alpha=0.3, color=algo_colors[algo]
+            # ---------------- upper subplot: only if metric present ----------
+            if key in data[algo]:
+                arr = np.asarray(data[algo][key])
+                m_mean, m_std = _iqr_stats(arr, percentile_band)
+                ax_top.plot(episodes, m_mean, color=colors[algo], lw=2, label=algo)
+                ax_top.fill_between(
+                    episodes,
+                    m_mean - m_std,
+                    m_mean + m_std,
+                    color=colors[algo],
+                    alpha=0.25,
+                )
+                plotted_any = True
+
+            # ---------------- lower subplot: n_steps always -------------------
+            lower = np.clip(s_mean - s_std, 1e-8, None)
+            ax_steps.plot(episodes, s_mean, color=colors[algo], lw=2, label=algo)
+            ax_steps.fill_between(
+                episodes, lower, s_mean + s_std, color=colors[algo], alpha=0.25
             )
 
-        # ── cosmetics ──
-        title_metric = metric.replace("_", " ").title()
-        axs[0].set(
-            title=f"{env_name} – {title_metric} per Episode", ylabel=title_metric
+        if not plotted_any:  # nobody had this metric → skip figure
+            plt.close(fig)
+            continue
+
+        # ── cosmetics … -----------------------------------------------------
+        ax_top.set(
+            ylabel=key.replace("_", " ").title(),
+            title=f"{env_name} – {key.replace('_', ' ').title()} per Episode",
         )
-        axs[1].set(
-            title=f"{env_name} – Steps per Episode",
+        ax_top.grid(True, which="both", lw=0.3)
+        ax_top.legend(fontsize=9)
+
+        ax_steps.set(
             xlabel="Episode",
             ylabel="Steps",
+            title=f"{env_name} – Steps per Episode",
             yscale="log",
         )
-
-        for ax in axs:
-            ax.grid(True, which="both", lw=0.3)
-            ax.tick_params(labelsize=11)
-
-        axs[0].legend(loc="lower right", fontsize=10)
-        axs[1].legend(loc="upper right", fontsize=10)
+        ax_steps.grid(True, which="both", lw=0.3)
+        ax_steps.legend(fontsize=9)
 
         fig.tight_layout()
-
-        out_path = out_dir / f"{env_name}_{metric}.png"
-        fig.savefig(out_path, bbox_inches="tight")
-
+        out = out_dir / f"{env_name}_{key}.png"
+        fig.savefig(out, bbox_inches="tight")
         plt.show()
-
         plt.close(fig)
+        saved.append(out)
 
-        saved_files.append(out_path)
-
-    return saved_files
+    return saved
 
 
 # Define a factory function to apply TimeLimit
@@ -250,9 +246,6 @@ def run_gymnasium(
 
     gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]  #
 
-    ########################################################################
-    # 3.  MAIN TRAIN LOOP (vectorised – works for any env / algo)
-    ########################################################################
     for env_index, env_name in enumerate(gymnasium_envs):
 
         safe_env_name = env_name.replace("/", "_").replace("\\", "_")
@@ -267,7 +260,7 @@ def run_gymnasium(
 
         for algo_index, algo_name in enumerate(algorithms_names):
 
-            # ---------- build SyncVectorEnv with n_seeds parallel instances ----------
+            # ─── build vectorised env with n_seeds instances ───────────────────
             envs = gym.vector.SyncVectorEnv(
                 [
                     _make_env(
@@ -284,147 +277,152 @@ def run_gymnasium(
             )
             pygame.init()
 
-            action_space = envs.single_action_space
-            observation_space = envs.single_observation_space
+            act_space = envs.single_action_space
+            obs_space = envs.single_observation_space
+
+            if isinstance(act_space, gymnasium.spaces.Box) and algo_name == "dqn":
+                envs.close()  # end‑algo
+                continue
 
             metrics_dict["info"]["observation_space"] = (
-                str(observation_space)
-                if isinstance(observation_space, gym.spaces.Discrete)
+                str(obs_space)
+                if isinstance(obs_space, gymnasium.spaces.Discrete)
                 else "continuous"
             )
             metrics_dict["info"]["action_space"] = (
-                str(action_space)
-                if isinstance(action_space, gym.spaces.Discrete)
+                str(act_space)
+                if isinstance(act_space, gymnasium.spaces.Discrete)
                 else "continuous"
             )
-
             metrics_dict["info"]["algorithms"].append(algo_name)
-            metrics_dict[str(algo_name)] = {
-                "min_reward": np.zeros((n_seeds, n_checkpoints)),
-                "max_reward": np.zeros((n_seeds, n_checkpoints)),
-                "mean_reward": np.zeros((n_seeds, n_checkpoints)),
-                "n_steps": np.zeros((n_seeds, n_checkpoints)),
+
+            # ─── allocate metrics arrays ───────────────────────────────────────
+            n_ckpt = len(episodes_to_record)
+            base_keys = ["min_reward", "max_reward", "mean_reward", "n_steps"]
+            algo_metrics = base_keys + EXTRA_KEYS[algo_name.lower()]
+            metrics_dict[algo_name] = {
+                k: np.zeros((n_seeds, n_ckpt)) for k in algo_metrics
             }
 
-            policy = None
+            # ─── create policy (once) ──────────────────────────────────────────
+            policy = make_policy(
+                algo_name, act_space, obs_space, n_seeds, n_episodes=n_episodes
+            )
+
             pbar = tqdm(
                 range(n_episodes),
                 desc=(
-                    f"Env: {env_name}  {env_index + 1}/{len(gymnasium_envs)} | "
-                    f"Algo: {algo_name}  {algo_index + 1}/{len(algorithms_names)}"
+                    f"Env {env_index + 1}/{len(gymnasium_envs)}  "
+                    f"{env_name} | Algo {algo_index + 1}/{len(algorithms_names)}  "
+                    f"{algo_name}"
                 ),
             )
 
             for episode in pbar:
-                obs, _ = envs.reset(seed=[s for s in range(n_seeds)])
+                # reset all envs with deterministic seeds
+                obs, _ = envs.reset(seed=list(range(n_seeds)))
 
-                # build policy once (needs n_episodes for DQN ε‑schedule)
-                if policy is None:
-                    policy = make_policy(
-                        algo_name,
-                        action_space,
-                        observation_space,
-                        n_seeds,
-                        n_episodes=n_episodes,
-                    )
-
-                if hasattr(policy, "update_episode"):  # only DQN needs it
+                if hasattr(policy, "update_episode"):
                     policy.update_episode(episode)
 
                 done_mask = np.zeros(n_seeds, dtype=bool)
-                dones_mask_tensor = torch.zeros(
-                    n_seeds, dtype=torch.bool, device=device
-                )
+                dones_tensor = torch.zeros(n_seeds, dtype=torch.bool, device=device)
                 step_count = np.zeros(n_seeds, dtype=int)
-                episodic_rewards = np.zeros(n_seeds)
+                ep_rewards = np.zeros(n_seeds)
+                track_max = np.full(n_seeds, -np.inf)
+                track_min = np.full(n_seeds, np.inf)
 
-                tracking_max = np.full(n_seeds, -np.inf)
-                tracking_min = np.full(n_seeds, np.inf)
-
-                # --------------- EPISODE ROLL‑OUT ----------------
+                # ─── ROLLOUT ‑‑ one episode across all envs ────────────────────
                 while not done_mask.all():
-                    # dtype: Discrete obs → long, Box obs → float32
+
+                    # observation tensor (dtype depends on space)
                     obs_tensor = (
-                        torch.tensor(obs, dtype=torch.long, device=device)
-                        if isinstance(observation_space, gym.spaces.Discrete)
-                        else torch.tensor(obs, dtype=torch.float32, device=device)
+                        safe_tensor(obs, torch.long, device)
+                        if isinstance(obs_space, gymnasium.spaces.Discrete)
+                        else safe_tensor(obs, torch.float32, device)
                     )
 
-                    # ---- choose & format actions ----
+                    # ─ actions & entropy etc.
                     actions_tensor = policy.get_actions(obs_tensor)
-                    actions = policy.setup_actions(
-                        actions_tensor, dones_mask_tensor, "numpy"
+                    actions_np = policy.setup_actions(
+                        actions_tensor, dones_tensor, out_type="numpy"
                     )
 
-                    # CliffWalking fix (kept from your original):
+                    # special clip for CliffWalking
                     if "CliffWalking-v0" in env_name:
-                        actions = np.clip(np.round(actions).astype(np.int32), 0, 3)
+                        actions_np = np.clip(
+                            np.round(actions_np).astype(np.int32), 0, 3
+                        )
 
-                    next_obs, rewards, terminated, truncated, _ = envs.step(actions)
+                    next_obs, rewards, terminated, truncated, _ = envs.step(actions_np)
                     dones = np.logical_or(terminated, truncated)
-                    active_env = ~done_mask
+                    active = ~done_mask
 
-                    episodic_rewards += rewards * active_env
-                    tracking_max = np.where(
-                        active_env, np.maximum(tracking_max, rewards), tracking_max
+                    # ─ stats
+                    ep_rewards += rewards * active
+                    track_max = np.where(
+                        active, np.maximum(track_max, rewards), track_max
                     )
-                    tracking_min = np.where(
-                        active_env, np.minimum(tracking_min, rewards), tracking_min
+                    track_min = np.where(
+                        active, np.minimum(track_min, rewards), track_min
                     )
 
-                    # tensors for policy.update(...)
-                    rewards_tensor = torch.tensor(
-                        rewards, dtype=torch.float32, device=device
-                    )
+                    # ─ policy update
+                    rewards_tensor = safe_tensor(rewards, torch.float32, device)
                     next_obs_tensor = (
-                        torch.tensor(next_obs, dtype=torch.long, device=device)
-                        if isinstance(observation_space, gym.spaces.Discrete)
-                        else torch.tensor(next_obs, dtype=torch.float32, device=device)
+                        safe_tensor(next_obs, torch.long, device)
+                        if isinstance(obs_space, gymnasium.spaces.Discrete)
+                        else safe_tensor(next_obs, torch.float32, device)
                     )
-                    dones_mask_tensor = torch.tensor(
-                        dones, dtype=torch.bool, device=device
-                    )
+                    dones_tensor = safe_tensor(dones, torch.bool, device)
 
                     policy.update(
                         obs_tensor,
                         actions_tensor,
                         rewards_tensor,
                         next_obs_tensor,
-                        dones_mask_tensor,
+                        dones_tensor,
                     )
 
-                    step_count += active_env
+                    step_count += active
                     done_mask = np.logical_or(done_mask, dones)
                     obs = next_obs
 
-                # ----------- end‑of‑episode bookkeeping -----------
-                episodic_rewards /= np.maximum(step_count, 1)
-                pbar.set_postfix(ep_rew=f"{episodic_rewards.mean():.3f}")
+                # ─── episode‑level aggregates ─────────────────────────────────
+                ep_rewards /= np.maximum(step_count, 1)
+                pbar.set_postfix(rew=f"{ep_rewards.mean():.3f}")
 
-                # save checkpoints
+                # ─── checkpoint logging ───────────────────────────────────────
                 if episode in episodes_to_record:
-                    e_idx = np.where(episodes_to_record == episode)[0].item()
+                    idx = np.where(episodes_to_record == episode)[0][0]
                     m = metrics_dict[algo_name]
-                    m["min_reward"][:, e_idx] = tracking_min
-                    m["max_reward"][:, e_idx] = tracking_max
-                    m["mean_reward"][:, e_idx] = episodic_rewards
-                    m["n_steps"][:, e_idx] = step_count
 
+                    m["min_reward"][:, idx] = track_min
+                    m["max_reward"][:, idx] = track_max
+                    m["mean_reward"][:, idx] = ep_rewards
+                    m["n_steps"][:, idx] = step_count
+
+                    # pull scalar diagnostics from policy
+                    scalars = policy.pop_metrics()
+                    for key, val in scalars.items():
+                        m[key][:, idx] = val  # broadcast same value to all seeds
+
+                    # save JSON
                     with open(json_path, "w") as fp:
                         json.dump(convert_ndarray(metrics_dict), fp, indent=2)
 
-            envs.close()
+            envs.close()  # end‑algo
 
-        plot_results(json_path)
+        plot_results(json_path)  # end‑env
 
 
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
     n_seeds = 2
-    n_episodes = int(1e2)
-    algorithms = ["a2c", "ppo"]
-    max_episode_steps = int(1e2)
+    n_episodes = int(1e1)
+    algorithms = ["dqn", "a2c", "ppo"]
+    max_episode_steps = int(1e1)
     causal_knowledge_update_per_episode = 1
     n_checkpoints = int(1e1)
 
