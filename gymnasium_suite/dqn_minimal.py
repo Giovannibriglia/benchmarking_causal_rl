@@ -6,9 +6,8 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.optim as optim
 
-from gymnasium_suite.base import BasePolicy, one_hot
+from gymnasium_suite.base import BasePolicy, one_hot, safe_clone
 from torch import nn
 
 
@@ -53,56 +52,71 @@ class QNet(nn.Module):
 
 
 class DQNPolicy(BasePolicy):
-    """
-    Vanilla DQN (Double/dueling/prioritized could be added later).
-    • Requires Discrete action space
-    • Handles Box or Discrete observations (flatten / one‑hot)
-    """
-
     def __init__(
         self,
         algo_name: str,
-        action_space: gym.spaces.Discrete,
-        observation_space: gym.spaces.Space,
+        act_space: gym.spaces.Discrete,
+        obs_space: gym.spaces.Space,
         n_envs: int,
         n_episodes: int,
         *,
-        buffer_size: int = 20000,
-        batch_size: int = 32,
-        gamma: float = 0.99,
-        lr: float = 5e-4,
-        target_sync: int = 100,
+        extra_input_dim: int = 0,
+        buffer_size=50_000,
+        batch=32,
+        gamma=0.99,
+        lr=5e-4,
+        tgt_sync=100,
+        device=None,
     ):
-        if not isinstance(action_space, gym.spaces.Discrete):
-            raise ValueError("DQNPolicy supports *discrete* action spaces only.")
+        if not isinstance(act_space, gym.spaces.Discrete):
+            raise ValueError("DQN → discrete actions only.")
+        super().__init__(
+            algo_name,
+            act_space,
+            obs_space,
+            n_envs,
+            device=device
+            or torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
 
-        super().__init__(algo_name, action_space, observation_space, n_envs)
-        self.batch = batch_size
-        self.gamma = gamma
-        self.tgt_sync = target_sync
-
-        # --- observation encoder -------------------------------------------
-        if isinstance(observation_space, gym.spaces.Box):
-            self.obs_dim = int(np.prod(observation_space.shape))
-            self._enc = lambda x: x.view(-1, self.obs_dim).float()  # already float32
-        elif isinstance(observation_space, gym.spaces.Discrete):
-            self.obs_dim = observation_space.n
-            self._enc = lambda x: one_hot(x.long().view(-1), self.obs_dim)
+        # encoder
+        if isinstance(obs_space, gym.spaces.Box):
+            self.obs_dim = int(np.prod(obs_space.shape))
+            self._base_enc = lambda x: safe_clone(x, torch.float32, self.device).view(
+                -1, self.obs_dim
+            )
         else:
-            raise NotImplementedError("Unsupported observation space.")
+            self.obs_dim = obs_space.n
+            self._base_enc = lambda x: one_hot(
+                safe_clone(x, torch.long, self.device), self.obs_dim
+            )
 
-        # --- networks & optimiser ------------------------------------------
-        self.q_net = QNet(self.obs_dim, action_space.n).to(self.device)
-        self.q_tgt = QNet(self.obs_dim, action_space.n).to(self.device)
-        self.q_tgt.load_state_dict(self.q_net.state_dict())
-        self.opt = optim.Adam(self.q_net.parameters(), lr=lr)
+        in_dim = self.obs_dim + extra_input_dim
+        self.q_net = QNet(in_dim, act_space.n).to(self.device)
+        self.tgt = QNet(in_dim, act_space.n).to(self.device)
+        self.tgt.load_state_dict(self.q_net.state_dict())
+        self.opt = torch.optim.Adam(self.q_net.parameters(), lr=lr)
 
-        # --- replay & ε‑schedule -------------------------------------------
         self.mem = ReplayBuffer(buffer_size)
+        self.batch, self.gamma, self.tgt_sync = batch, gamma, tgt_sync
         self.eps_hi, self.eps_lo = 0.10, 0.01
         self.decay = (self.eps_hi - self.eps_lo) / n_episodes
-        self.cur_ep = 0
-        self.update_ct = 0
+        self.cur_ep = self.update_ct = 0
+
+        # augmentation holder
+        self._extra_state: torch.Tensor | None = None
+
+        def _enc(x):
+            out = self._base_enc(x)
+            if self._extra_state is not None:
+                aug = self._extra_state.reshape(self._extra_state.size(0), -1).float()
+                out = torch.cat((out, aug.to(self.device)), dim=1)
+            return out
+
+        self._enc = _enc
+
+    def set_extra_state(self, x):  # same signature
+        self._extra_state = x.to(self.device) if x is not None else None
 
     # ------------------------------------------------------------------ utils
     def _epsilon(self):  # linear decay
@@ -113,79 +127,70 @@ class DQNPolicy(BasePolicy):
         self.metrics.add(epsilon=self._epsilon())
 
     # ---------------------------------------------------------------- actions
-    def get_actions(self, obs_tensor: torch.Tensor) -> torch.Tensor:
-        """obs_tensor still raw; we encode internally."""
-        with torch.no_grad():
-            q_vals = self.q_net(self._enc(obs_tensor.to(self.device)))
+    def get_actions(self, obs):
+        q_vals = self.q_net(self._enc(obs.to(self.device))).detach()
         if random.random() < self._epsilon():
             acts = torch.randint(
                 0, self.action_space.n, (self.n_envs,), device=self.device
             )
         else:
-            acts = q_vals.argmax(dim=1)
+            acts = q_vals.argmax(1)
         return acts
 
-    # ---------------------------------------------------------------- update
-    def update(self, obs_t, act_t, rew_t, next_obs_t, done_t):
-        # store transitions (CPU numpy for replay efficiency)
+    def update(self, obs, acts, rews, next_obs, dones):
+        # store
         for i in range(self.n_envs):
             self.mem.put(
-                obs_t[i].cpu().numpy(),  # store as np
-                int(act_t[i].item()),
-                float(rew_t[i].item()),
-                next_obs_t[i].cpu().numpy(),
-                0.0 if done_t[i] else 1.0,
+                obs[i].cpu().numpy(),
+                int(acts[i]),
+                float(rews[i]),
+                next_obs[i].cpu().numpy(),
+                0.0 if dones[i] else 1.0,
             )
-
-        if len(self.mem) < self.batch:  # not enough yet
+        if len(self.mem) < self.batch:
             return
 
         s, a, r, s2, m = self.mem.sample(self.batch, self.device)
         q_sa = self.q_net(self._enc(s)).gather(1, a.unsqueeze(1)).squeeze(1)
         with torch.no_grad():
-            max_q_sp = self.q_tgt(self._enc(s2)).max(1)[0]
-            target = r + self.gamma * max_q_sp * m
+            max_q = self.tgt(self._enc(s2)).max(1)[0]
+            tgt = r + self.gamma * max_q * m
 
-        loss = F.smooth_l1_loss(q_sa, target)
+        loss = F.smooth_l1_loss(q_sa, tgt)
         self.opt.zero_grad()
         loss.backward()
         self.opt.step()
-
         self.update_ct += 1
         if self.update_ct % self.tgt_sync == 0:
-            self.q_tgt.load_state_dict(self.q_net.state_dict())
-
-        # metrics
+            self.tgt.load_state_dict(self.q_net.state_dict())
         self.metrics.add(td_loss=loss.item(), avg_q=q_sa.mean().item())
 
     def pop_metrics(self):
-        return self.metrics.dump(divisor=1)
+        return self.metrics.dump()
 
-    def save_policy(self, path: str):
-        path = self._ensure_pt_path(path)
-        payload = {
-            "q_net": self.q_net.state_dict(),
-            "q_target": self.q_tgt.state_dict(),
-            "optim": self.opt.state_dict(),
-            # resume‑support small scalars
-            "cur_episode": self.cur_ep,
-            "update_count": self.update_ct,
-            "epsilon_hi": self.eps_hi,
-            "epsilon_lo": self.eps_lo,
-            "eps_decay": self.decay,
-        }
-        torch.save(payload, path)
-        print(f"[DQN] policy saved → {path}")
+    def save_policy(self, path):
+        p = self._ensure_pt_path(path)
+        torch.save(
+            {
+                "q": self.q_net.state_dict(),
+                "tgt": self.tgt.state_dict(),
+                "opt": self.opt.state_dict(),
+                "cur_ep": self.cur_ep,
+                "upd": self.update_ct,
+                "eps_hi": self.eps_hi,
+                "eps_lo": self.eps_lo,
+                "decay": self.decay,
+            },
+            p,
+        )
+        print(f"[DQN] saved → {p}")
 
-    def load_policy(self, path: str):
-        path = self._ensure_pt_path(path)
-        payload = torch.load(path, map_location=self.device)
-        self.q_net.load_state_dict(payload["q_net"])
-        self.q_tgt.load_state_dict(payload["q_target"])
-        self.opt.load_state_dict(payload["optim"])
-        self.cur_ep = payload.get("cur_episode", 0)
-        self.update_ct = payload.get("update_count", 0)
-        self.eps_hi = payload.get("epsilon_hi", self.eps_hi)
-        self.eps_lo = payload.get("epsilon_lo", self.eps_lo)
-        self.decay = payload.get("eps_decay", self.decay)
-        print(f"[DQN] policy loaded ← {path}")
+    def load_policy(self, path):
+        p = self._ensure_pt_path(path)
+        d = torch.load(p, map_location=self.device)
+        self.q_net.load_state_dict(d["q"])
+        self.tgt.load_state_dict(d["tgt"])
+        self.opt.load_state_dict(d["opt"])
+        self.cur_ep, self.update_ct = d["cur_ep"], d["upd"]
+        self.eps_hi, self.eps_lo, self.decay = d["eps_hi"], d["eps_lo"], d["decay"]
+        print(f"[DQN] loaded ← {p}")

@@ -7,17 +7,17 @@ import gymnasium as gym
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn, optim
+from torch import nn
 from torch.distributions import Categorical, Normal
 
 
 class MetricBuffer(dict):
-    def add(self, **k):
-        for key, val in k.items():
-            self[key] = self.get(key, 0.0) + float(val)
+    def add(self, **kv):
+        for k, v in kv.items():
+            self[k] = self.get(k, 0.0) + float(v)
 
-    def dump(self, divisor: int) -> dict:
-        out = {k: v / max(divisor, 1) for k, v in self.items()}
+    def dump(self, div: int = 1):  # average & reset
+        out = {k: v / max(div, 1) for k, v in self.items()}
         self.clear()
         return out
 
@@ -53,6 +53,9 @@ class BasePolicy(ABC):
         )
 
         self.metrics = MetricBuffer()
+
+        # holder for the current extra state (set each env step)
+        self._extra_state: torch.Tensor | None = None
 
     @abstractmethod
     def update(
@@ -158,6 +161,14 @@ class BasePolicy(ABC):
     def load_policy(self, path: str):
         raise NotImplementedError
 
+    def set_extra_state(self, x: torch.Tensor | None):
+        """
+        Store a tensor of shape (n_envs, *extra_dims).
+        Pass None to disable augmentation for the next step.
+        The tensor is **not copied**; keep it alive until after `update`.
+        """
+        self._extra_state = x.to(self.device) if x is not None else None
+
 
 class RandomPolicy(BasePolicy):
     def __init__(
@@ -224,63 +235,77 @@ class BaseACPolicy(BasePolicy, ABC):
         rollout_len: int = 128,
         gamma: float = 0.98,
         lr: float = 3e-4,
+        extra_input_dim: int = 0,  # N*M if you have extra tensor (flattened)
         **kwargs,
     ):
         super().__init__(algo_name, act_space, obs_space, n_envs, **kwargs)
 
-        # ---- obs encoder -----------------------------------------------------
+        # ---------- obs encoder ------------------------------------------
         if isinstance(obs_space, gym.spaces.Box):
             self.obs_dim = int(np.prod(obs_space.shape))
-            self._enc: Callable = lambda x: safe_clone(
+            self._base_enc: Callable = lambda x: safe_clone(
                 x, torch.float32, self.device
             ).view(-1, self.obs_dim)
         elif isinstance(obs_space, gym.spaces.Discrete):
             self.obs_dim = obs_space.n
-            self._enc = lambda x: one_hot(
+            self._base_enc = lambda x: one_hot(
                 safe_clone(x, torch.long, self.device), self.obs_dim
             )
         else:
-            raise NotImplementedError("Unsupported observation space")
+            raise NotImplementedError
 
-        # ---- net, optimiser, buffer -----------------------------------------
-        self.net = ACNet(self.obs_dim, act_space).to(self.device)
-        self.opt = optim.Adam(self.net.parameters(), lr=lr)
-        self.gamma = gamma
-        self.rollout_len = rollout_len
+        in_dim = self.obs_dim + extra_input_dim
+        self.net = ACNet(in_dim, act_space).to(self.device)
+        self.opt = torch.optim.Adam(self.net.parameters(), lr=lr)
+        self.gamma, self.rollout_len = gamma, rollout_len
 
-        self.metrics = MetricBuffer()
+        # buffer & metrics
         self._reset_buf()
+        self.metrics = MetricBuffer()
 
-    # ─── buffer helpers ─────────────────────────────────────────────────────
+        # placeholder for extra tensor (set each step)
+        self._extra_state: torch.Tensor | None = None
+
+        # wrap encoder with augmentation
+        def _enc(x):
+            out = self._base_enc(x)
+            if self._extra_state is not None:
+                aug = self._extra_state.reshape(self._extra_state.size(0), -1).float()
+                out = torch.cat((out, aug.to(self.device)), dim=1)
+            return out
+
+        self._enc = _enc
+
+    # ---------------------------------------------------------------- buffer
     def _reset_buf(self):
         self.buf: Dict[str, List] = {k: [] for k in ("s", "a", "r", "d", "logp", "v")}
 
-    def _store(self, s, a, r, d, logp, v):
+    # ---------------------------------------------------------------- setter
+    def set_extra_state(self, x: torch.Tensor | None):
+        self._extra_state = x.to(self.device) if x is not None else None
+
+    # ---------------------------------------------------------------- common act
+    def get_actions(self, obs: torch.Tensor) -> torch.Tensor:
+        enc = self._enc(obs)
+        dist = self.net.dist(enc)
+        acts = dist.sample()
+        logp = dist.log_prob(acts)
+        ent = dist.entropy()
+        if logp.ndim > 1:
+            logp, ent = logp.sum(-1), ent.sum(-1)
+
+        val = self.net.value(enc)
+        self.metrics.add(entropy=ent.mean().item())
+        self._store(enc, acts.detach(), 0.0, 0.0, logp.detach(), val.detach())
+        return acts
+
+    def _store(self, s, a, r, d, lp, v):
         self.buf["s"].append(s)
         self.buf["a"].append(a)
         self.buf["r"].append(safe_clone(r, torch.float32, self.device))
         self.buf["d"].append(safe_clone(d, torch.float32, self.device))
-        self.buf["logp"].append(logp)
+        self.buf["logp"].append(lp)
         self.buf["v"].append(v)
-
-    # ─── common action selection  (called by env loop) ──────────────────────
-    def get_actions(self, observations: torch.Tensor) -> torch.Tensor:
-        enc = self._enc(observations)  # (n_envs, obs_dim)
-        dist = self.net.dist(enc)
-        actions = dist.sample()
-        log_prob = dist.log_prob(actions)
-        entropy = dist.entropy()
-        if log_prob.ndim > 1:  # continuous: sum over action dims
-            log_prob, entropy = log_prob.sum(-1), entropy.sum(-1)
-
-        value = self.net.value(enc)
-
-        # track entropy per step
-        self.metrics.add(entropy=entropy.mean().item())
-
-        # store with dummy reward/done (will be overwritten in update)
-        self._store(enc, actions.detach(), 0.0, 0.0, log_prob.detach(), value.detach())
-        return actions  # let caller format via setup_actions
 
     # ─── abstract: subclasses implement algorithm‑specific update ───────────
     @abstractmethod
@@ -288,7 +313,7 @@ class BaseACPolicy(BasePolicy, ABC):
 
     # pop averaged metrics once per episode
     def pop_metrics(self) -> Dict[str, float]:
-        return self.metrics.dump(divisor=self.rollout_len)
+        return self.metrics.dump(div=self.rollout_len)
 
     def _extra_to_save(self) -> dict:
         """Sub‑classes may override to add algorithm‑specific scalars."""
@@ -299,54 +324,52 @@ class BaseACPolicy(BasePolicy, ABC):
         pass
 
     def save_policy(self, path: str):
-        path = self._ensure_pt_path(path)
-        payload = {
-            "net": self.net.state_dict(),
-            "optim": self.opt.state_dict(),
-            "buffer": self.buf,  # you may skip if memory heavy
-            **self._extra_to_save(),
-        }
-        torch.save(payload, path)
-        print(f"[{self.algo_name.upper()}] policy saved → {path}")
+        p = self._ensure_pt_path(path)
+        torch.save(
+            {
+                "net": self.net.state_dict(),
+                "opt": self.opt.state_dict(),
+                "extra": self._extra_to_save(),
+            },
+            p,
+        )
+        print(f"[{self.algo_name}] saved → {p}")
 
     def load_policy(self, path: str):
-        path = self._ensure_pt_path(path)
-        payload = torch.load(path, map_location=self.device)
-        self.net.load_state_dict(payload["net"])
-        self.opt.load_state_dict(payload["optim"])
-        self.buf = payload.get(
-            "buffer", {k: [] for k in ("s", "a", "r", "d", "logp", "v")}
-        )
-        self._load_extra(payload)
-        print(f"[{self.algo_name.upper()}] policy loaded ← {path}")
+        p = self._ensure_pt_path(path)
+        d = torch.load(p, map_location=self.device)
+        self.net.load_state_dict(d["net"])
+        self.opt.load_state_dict(d["opt"])
+        self._load_extra(d.get("extra", {}))
+        print(f"[{self.algo_name}] loaded ← {p}")
 
 
 class ACNet(nn.Module):
-    """Common actor–critic network for Box *or* Discrete actions."""
+    """Actor–critic head for Box *or* Discrete action spaces."""
 
-    def __init__(self, obs_dim: int, act_space: gym.spaces.Space):
+    def __init__(self, in_dim: int, act_space: gym.spaces.Space):
         super().__init__()
         self.discrete = isinstance(act_space, gym.spaces.Discrete)
         act_dim = act_space.n if self.discrete else int(np.prod(act_space.shape))
 
-        self.torso = nn.Sequential(nn.Linear(obs_dim, 128), nn.ReLU())
+        self.torso = nn.Sequential(nn.Linear(in_dim, 128), nn.ReLU())
         if self.discrete:
             self.logits = nn.Linear(128, act_dim)
         else:
             self.mu = nn.Linear(128, act_dim)
             self.std = nn.Linear(128, act_dim)
-            self.act_bd = float(act_space.high[0])
+            self.bd = float(act_space.high[0])
+
         self.v_head = nn.Linear(128, 1)
 
-    def dist(self, x: torch.Tensor):
+    def dist(self, x):
         h = self.torso(x)
-        return (
-            Categorical(logits=self.logits(h))
-            if self.discrete
-            else Normal(
-                self.act_bd * torch.tanh(self.mu(h)), F.softplus(self.std(h)) + 1e-5
-            )
-        )
+        if self.discrete:
+            return Categorical(logits=self.logits(h))
+        else:
+            mu = self.bd * torch.tanh(self.mu(h))
+            std = F.softplus(self.std(h)) + 1e-5
+            return Normal(mu, std)
 
     def value(self, x: torch.Tensor) -> torch.Tensor:
         return self.v_head(self.torso(x)).squeeze(-1)

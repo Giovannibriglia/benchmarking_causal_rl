@@ -4,7 +4,7 @@ import json
 import os
 import warnings
 from pathlib import Path
-from typing import List, Sequence
+from typing import List
 
 import gymnasium
 import gymnasium as gym
@@ -45,23 +45,6 @@ def _get_latest_envs(env_keys):
     return [f"{name}-v{version}" for name, version in env_dict.items()]
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# helpers
-# ──────────────────────────────────────────────────────────────────────────────
-def _iqr_stats(arr: np.ndarray, band: int = 25) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Inter‑quartile‑range‑trimmed mean & std along axis‑0.
-
-    Returns (mean, std) with the same shape as the input except for axis‑0.
-    """
-    q_lo, q_hi = np.percentile(arr, [band, 100 - band], axis=0)
-    mask = (arr >= q_lo) & (arr <= q_hi)
-    trimmed = np.where(mask, arr, np.nan)
-    mean = np.nanmean(trimmed, axis=0)
-    std = np.nanstd(trimmed, axis=0)
-    return mean, std
-
-
 def _update_benchmark_table(
     rows: list[dict], dest: Path, metric_cols: list[str]
 ) -> Path:
@@ -91,139 +74,146 @@ def _update_benchmark_table(
     return table_path
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# main entry point
-# ──────────────────────────────────────────────────────────────────────────────
+def _iqr_stats(arr: np.ndarray, q: int = 25) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Robust mean/std along axis‑0 using the inter‑quartile range.
+    Guaranteed to return finite numbers without numpy RuntimeWarnings.
+    Falls back to plain mean/std for columns where the IQR mask removes
+    every sample (or when there is only one sample row).
+    """
+    if arr.size == 0:  # completely empty array
+        shape = arr.shape[1:] or (1,)
+        return np.zeros(shape), np.zeros(shape)
+
+    # single seed → raw stats
+    if arr.shape[0] < 2:
+        return arr.astype(float), np.zeros_like(arr, dtype=float)
+
+    q1 = np.percentile(arr, q, axis=0)
+    q3 = np.percentile(arr, 100 - q, axis=0)
+    mask = (arr >= q1) & (arr <= q3)
+    trimmed = np.where(mask, arr, np.nan)
+
+    with np.errstate(all="ignore"):  # silence empty‑slice warnings
+        mean_iqr = np.nanmean(trimmed, axis=0)
+        std_iqr = np.nanstd(trimmed, axis=0)
+
+    # columns where IQR wiped everything (all NaN) → fall back to full range
+    fallback = np.isnan(mean_iqr)
+    if fallback.any():
+        mean_full = arr[:, fallback].mean(axis=0)
+        std_full = arr[:, fallback].std(axis=0)
+        mean_iqr[fallback] = mean_full
+        std_iqr[fallback] = std_full
+
+    return mean_iqr, std_iqr
+
+
+# ------------------------------------------------------------------
+#  plot_results
+# ------------------------------------------------------------------
 def plot_results(
     json_path: str | Path,
     percentile_band: int = 25,
-    base_reward_keys: Sequence[str] = ("min_reward", "max_reward", "mean_reward"),
+    base_reward_keys=("min_reward", "max_reward", "mean_reward"),
     cmap_name: str = "tab10",
 ) -> list[Path]:
-    """
-    • Plots every scalar metric in *json_path* (upper subplot) together with
-      ``n_steps`` (lower), one PNG per metric.
-
-    • Updates/creates *benchmark_table.csv* (in the same folder as *json_path*)
-      containing one row per “env + algo” pair and one column per metric, with
-      values formatted « *IQR‑mean ± IQR‑std* ».  Missing metrics are ``None``.
-
-    Returns the list of paths to the saved PNGs.
-    """
-    # ── load run data ───────────────────────────────────────────────────────
     jpath = Path(json_path).expanduser()
     with jpath.open() as f:
         data = json.load(f)
 
     env_name = data["info"]["env_name"]
     episodes = np.asarray(data["info"]["recorded_episodes"])
-    algorithms = data["info"]["algorithms"]
+    algos = data["info"]["algorithms"]
 
     cmap = plt.get_cmap(cmap_name)
-    colors = {algo: cmap(i) for i, algo in enumerate(algorithms)}
+    colors = {a: cmap(i) for i, a in enumerate(algos)}
+    outdir = jpath.parent
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    out_dir = jpath.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # ── collect *all* metric keys (union across algos) ─────────────────────
-    keys: list[str] = list(base_reward_keys)
-    for algo in algorithms:
+    # ------------ discover *all* metric keys ------------------------
+    metric_keys: list[str] = list(base_reward_keys)
+    for algo in algos:
         for k in data[algo]:
-            if k not in keys and k not in ("n_steps", *base_reward_keys):
-                keys.append(k)
-    keys.append("n_steps")  # treat steps like any other metric for the table
+            if k not in metric_keys and k not in ("n_steps", *base_reward_keys):
+                metric_keys.append(k)
 
-    saved_plots: list[Path] = []
-    summary_rows: list[dict] = []  # ── benchmark table rows
+    saved: list[Path] = []
 
-    # ── one pass per algorithm to get numbers for the table ────────────────
-    for algo in algorithms:
-        row: dict[str, str | None] = {"env": env_name, "algo": algo}
+    # ------------ helper to update benchmark table ------------------
+    rows = []
+    for algo in algos:
+        row = {"env": env_name, "algo": algo}
+        for k in metric_keys + ["n_steps"]:
+            if k in data[algo]:
+                arr = np.asarray(data[algo][k])
+                mean, std = _iqr_stats(arr, percentile_band)
+                v_mean = float(mean[-1] if mean.ndim else mean)
+                v_std = float(std[-1] if std.ndim else std)
+                row[k] = f"{v_mean:.3g} ± {v_std:.3g}"
+            else:
+                row[k] = None
+        rows.append(row)
+    _update_benchmark_table(rows, outdir, metric_keys + ["n_steps"])
 
-        for key in keys:
-            if key not in data[algo]:  # metric missing → None
-                row[key] = None
-                continue
-
-            arr = np.asarray(data[algo][key])
-            m_mean, m_std = _iqr_stats(arr, percentile_band)
-
-            # 1‑D sequences → use the *final* value, 0‑D scalars stay as‑is
-            mean_val = float(m_mean[-1] if np.ndim(m_mean) else m_mean)
-            std_val = float(m_std[-1] if np.ndim(m_std) else m_std)
-            row[key] = f"{mean_val:.3g} ± {std_val:.3g}"
-
-        summary_rows.append(row)
-
-    # ── benchmark table … ──────────────────────────────────────────────────
-    bench_path = _update_benchmark_table(summary_rows, out_dir, keys)
-
-    # ── plot one figure per metric (skip n_steps because it is always below)
-    for key in keys:
-        if key == "n_steps":
-            continue
-
-        fig, (ax_top, ax_steps) = plt.subplots(
+    # ------------ plotting loop -------------------------------------
+    for key in metric_keys:  # skip n_steps (always lower plot)
+        fig, (ax_top, ax_low) = plt.subplots(
             2, 1, figsize=(10, 8), dpi=350, sharex=True
         )
-        drew_any = False
+        plotted = []
 
-        for algo in algorithms:
-            # steps (always present)
-            steps_raw = np.asarray(data[algo]["n_steps"])
-            s_mean, s_std = _iqr_stats(steps_raw, percentile_band)
-            ax_steps.plot(episodes, s_mean, color=colors[algo], lw=2, label=algo)
-            ax_steps.fill_between(
+        for algo in algos:
+            if key not in data[algo]:
+                continue  # algo didn't log this metric
+
+            # ---- upper: chosen metric
+            metric_arr = np.asarray(data[algo][key])
+            m_mean, m_std = _iqr_stats(metric_arr, percentile_band)
+            ax_top.plot(episodes, m_mean, color=colors[algo], lw=2, label=algo)
+            ax_top.fill_between(
+                episodes, m_mean - m_std, m_mean + m_std, color=colors[algo], alpha=0.25
+            )
+
+            # ---- lower: n_steps   (only for same algos)
+            steps_arr = np.asarray(data[algo]["n_steps"])
+            s_mean, s_std = _iqr_stats(steps_arr, percentile_band)
+            ax_low.plot(episodes, s_mean, color=colors[algo], lw=2, label=algo)
+            ax_low.fill_between(
                 episodes,
                 np.clip(s_mean - s_std, 1e-8, None),
                 s_mean + s_std,
                 color=colors[algo],
                 alpha=0.25,
             )
+            plotted.append(algo)
 
-            # chosen metric
-            if key in data[algo]:
-                arr = np.asarray(data[algo][key])
-                m_mean, m_std = _iqr_stats(arr, percentile_band)
-                ax_top.plot(episodes, m_mean, color=colors[algo], lw=2, label=algo)
-                ax_top.fill_between(
-                    episodes,
-                    m_mean - m_std,
-                    m_mean + m_std,
-                    color=colors[algo],
-                    alpha=0.25,
-                )
-                drew_any = True
-
-        if not drew_any:  # nobody logged this metric → skip figure
+        if not plotted:  # nobody logged -> skip file
             plt.close(fig)
             continue
 
-        # cosmetic touches
-        ax_top.set(
-            ylabel=key.replace("_", " ").title(),
-            title=f"{env_name} – {key.replace('_', ' ').title()} per Episode",
-        )
+        # ---- cosmetics
+        nice = key.replace("_", " ").title()
+        ax_top.set(title=f"{env_name} – {nice} per Episode", ylabel=nice)
         ax_top.grid(True, which="both", lw=0.3)
         ax_top.legend(fontsize=9)
 
-        ax_steps.set(
+        ax_low.set(
+            title=f"{env_name} – Steps per Episode",
             xlabel="Episode",
             ylabel="Steps",
-            title=f"{env_name} – Steps per Episode",
             yscale="log",
         )
-        ax_steps.grid(True, which="both", lw=0.3)
-        ax_steps.legend(fontsize=9)
+        ax_low.grid(True, which="both", lw=0.3)
+        ax_low.legend(fontsize=9)
 
         fig.tight_layout()
-        outfile = out_dir / f"{env_name}_{key}.png"
-        fig.savefig(outfile, bbox_inches="tight")
+        out = outdir / f"{env_name}_{key}.png"
+        fig.savefig(out, bbox_inches="tight")
+        saved.append(out)
         plt.close(fig)
-        saved_plots.append(outfile)
 
-    print(f"✔ Benchmark table updated → {bench_path}")
-    return saved_plots
+    return saved
 
 
 # Define a factory function to apply TimeLimit
