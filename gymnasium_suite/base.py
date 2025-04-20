@@ -1,4 +1,6 @@
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Callable, Dict, List
 
 import gymnasium as gym
@@ -140,6 +142,22 @@ class BasePolicy(ABC):
     def pop_metrics(self) -> dict:  # <── call at episode end
         raise NotImplementedError
 
+    @staticmethod
+    def _ensure_pt_path(path: str | os.PathLike) -> Path:
+        path = Path(path)
+        if path.suffix == "":
+            path = path.with_suffix(".pt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @abstractmethod
+    def save_policy(self, path: str):
+        raise NotImplementedError
+
+    @abstractmethod
+    def load_policy(self, path: str):
+        raise NotImplementedError
+
 
 class RandomPolicy(BasePolicy):
     def __init__(
@@ -271,6 +289,36 @@ class BaseACPolicy(BasePolicy, ABC):
     # pop averaged metrics once per episode
     def pop_metrics(self) -> Dict[str, float]:
         return self.metrics.dump(divisor=self.rollout_len)
+
+    def _extra_to_save(self) -> dict:
+        """Sub‑classes may override to add algorithm‑specific scalars."""
+        return {}
+
+    def _load_extra(self, d: dict):
+        """Sub‑classes may override to read what they saved."""
+        pass
+
+    def save_policy(self, path: str):
+        path = self._ensure_pt_path(path)
+        payload = {
+            "net": self.net.state_dict(),
+            "optim": self.opt.state_dict(),
+            "buffer": self.buf,  # you may skip if memory heavy
+            **self._extra_to_save(),
+        }
+        torch.save(payload, path)
+        print(f"[{self.algo_name.upper()}] policy saved → {path}")
+
+    def load_policy(self, path: str):
+        path = self._ensure_pt_path(path)
+        payload = torch.load(path, map_location=self.device)
+        self.net.load_state_dict(payload["net"])
+        self.opt.load_state_dict(payload["optim"])
+        self.buf = payload.get(
+            "buffer", {k: [] for k in ("s", "a", "r", "d", "logp", "v")}
+        )
+        self._load_extra(payload)
+        print(f"[{self.algo_name.upper()}] policy loaded ← {path}")
 
 
 class ACNet(nn.Module):

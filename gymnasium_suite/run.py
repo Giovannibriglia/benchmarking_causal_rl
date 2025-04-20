@@ -297,9 +297,12 @@ def run_gymnasium(
     if n_checkpoints > n_episodes:
         n_checkpoints = n_episodes
 
-    episodes_to_record = np.linspace(
-        start=0, stop=n_episodes - 1, num=n_checkpoints, dtype=int
-    )
+    if n_checkpoints > 0:
+        episodes_to_record = np.linspace(
+            start=0, stop=n_episodes - 1, num=n_checkpoints, dtype=int
+        )
+    else:
+        episodes_to_record = []
 
     path_simulation = "benchmarking/" + generate_simulation_name("gymnasium_suite")
     os.makedirs(path_simulation, exist_ok=True)
@@ -475,13 +478,19 @@ def run_gymnasium(
 
             envs.close()  # end‑algo
 
-        plot_results(json_path)  # end‑env
+            path_saving_policy = (
+                path_simulation + f"/{algo_name}_{safe_env_name}_policy"
+            )
+            policy.save_policy(path_saving_policy)
+
+        if n_checkpoints > 0:
+            plot_results(json_path)  # end‑env
 
 
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
-    n_seeds = 5
+    n_seeds = 2
     n_episodes = int(1e2)
     algorithms = ["dqn", "a2c", "ppo"]
     max_episode_steps = int(1e2)

@@ -160,3 +160,32 @@ class DQNPolicy(BasePolicy):
 
     def pop_metrics(self):
         return self.metrics.dump(divisor=1)
+
+    def save_policy(self, path: str):
+        path = self._ensure_pt_path(path)
+        payload = {
+            "q_net": self.q_net.state_dict(),
+            "q_target": self.q_tgt.state_dict(),
+            "optim": self.opt.state_dict(),
+            # resume‑support small scalars
+            "cur_episode": self.cur_ep,
+            "update_count": self.update_ct,
+            "epsilon_hi": self.eps_hi,
+            "epsilon_lo": self.eps_lo,
+            "eps_decay": self.decay,
+        }
+        torch.save(payload, path)
+        print(f"[DQN] policy saved → {path}")
+
+    def load_policy(self, path: str):
+        path = self._ensure_pt_path(path)
+        payload = torch.load(path, map_location=self.device)
+        self.q_net.load_state_dict(payload["q_net"])
+        self.q_tgt.load_state_dict(payload["q_target"])
+        self.opt.load_state_dict(payload["optim"])
+        self.cur_ep = payload.get("cur_episode", 0)
+        self.update_ct = payload.get("update_count", 0)
+        self.eps_hi = payload.get("epsilon_hi", self.eps_hi)
+        self.eps_lo = payload.get("epsilon_lo", self.eps_lo)
+        self.decay = payload.get("eps_decay", self.decay)
+        print(f"[DQN] policy loaded ← {path}")

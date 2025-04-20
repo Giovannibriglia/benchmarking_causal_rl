@@ -85,3 +85,10 @@ class PPOPolicy(BaseACPolicy):
             )
 
         self._reset_buf()
+
+    def _extra_to_save(self):
+        return dict(lam=self.lam, eps_clip=self.eps_clip)
+
+    def _load_extra(self, d: dict):
+        self.lam = d.get("lam", self.lam)
+        self.eps_clip = d.get("eps_clip", self.eps_clip)
