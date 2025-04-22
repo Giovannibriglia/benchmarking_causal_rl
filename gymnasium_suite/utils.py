@@ -3,7 +3,8 @@ from datetime import datetime
 import torch
 
 from gymnasium_suite.a2c_minimal import A2CPolicy
-from gymnasium_suite.base import BasePolicy, RandomPolicy
+from gymnasium_suite.base import BasePolicy
+from gymnasium_suite.causal_dqn_minimal import CausalDQNPolicy
 from gymnasium_suite.dqn_minimal import DQNPolicy
 from gymnasium_suite.ppo_minimal import PPOPolicy
 
@@ -11,6 +12,7 @@ from gymnasium_suite.ppo_minimal import PPOPolicy
 # map algo‑name → extra scalar keys to log
 EXTRA_KEYS = {
     "dqn": ["td_loss", "avg_q", "epsilon"],
+    "causal_dqn": ["td_loss", "avg_q", "epsilon"],
     "a2c": ["entropy", "actor_loss", "value_loss", "kl"],
     "ppo": ["entropy", "actor_loss", "value_loss", "kl"],
 }
@@ -43,17 +45,29 @@ def generate_simulation_name(prefix: str = "benchmarking") -> str:
 
 
 def make_policy(
-    algo_name: str, action_space, observation_space, n_envs, n_episodes, **kwargs
+    algo_name: str,
+    action_space,
+    observation_space,
+    n_envs,
+    n_episodes,
+    **kwargs,
 ) -> BasePolicy:
-    if algo_name == "random":
-        return RandomPolicy(algo_name, action_space, observation_space, n_envs)
-    elif algo_name == "ppo":
+    if algo_name == "ppo":
         return PPOPolicy(algo_name, action_space, observation_space, n_envs, **kwargs)
     elif algo_name == "a2c":
         return A2CPolicy(algo_name, action_space, observation_space, n_envs, **kwargs)
     elif algo_name == "dqn":
         return DQNPolicy(
             algo_name, action_space, observation_space, n_envs, n_episodes, **kwargs
+        )
+    elif algo_name == "causal_dqn":
+        return CausalDQNPolicy(
+            algo_name,
+            action_space,
+            observation_space,
+            n_envs,
+            n_episodes,
+            **kwargs,
         )
     else:
         raise ValueError(f"Unknown algorithm: {algo_name}")

@@ -24,6 +24,12 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
+warnings.filterwarnings(
+    "ignore",
+    message=".* Degrees of freedom <= 0",
+    category=RuntimeWarning,
+)
+
 
 def get_envs_names() -> List[str]:
     all_envs = envs.registry.keys()
@@ -216,6 +222,67 @@ def plot_results(
     return saved
 
 
+class GoalTerminationWrapper(gym.Wrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        self.env_id = str(env.spec.id)
+
+    def step(self, action):
+        obs, reward, terminated, truncated, info = self.env.step(action)
+
+        # Override terminated logic
+        terminated = self.goal_check_fn(obs)
+
+        return obs, reward, terminated, truncated, info
+
+    def goal_check_fn(self, obs) -> bool:
+
+        if self.env_id in [
+            "FrozenLake-v1",
+            "FrozenLake8x8-v1",
+            "CliffWalking-v0",
+            "Taxi-v3",
+        ]:
+            # Assume last state is the goal (can be adjusted per environment)
+            return obs == self.env.observation_space.n - 1
+        elif self.env_id in ["CartPole-v1", "phys2d/CartPole-v1"]:
+            # Consider goal reached if pole angle is less than some small threshold
+            return abs(obs[2]) < 0.01
+        elif self.env_id in ["MountainCar-v0", "MountainCarContinuous-v0"]:
+            return obs[0] > 0.5
+        elif self.env_id in ["Pendulum-v1", "phys2d/Pendulum-v0"]:
+            return abs(obs[2]) < 0.05
+        elif self.env_id == "Acrobot-v1":
+            return obs[1] > 0.95
+        elif "MountainCar" in self.env_id:
+            # Example: consider goal reached if the car’s position is above a threshold
+            return obs[0] > 0.5
+        elif self.env_id in ["LunarLander-v3", "LunarLanderContinuous-v3"]:
+            return -0.1 < obs[0] < 0.1 and -0.1 < obs[1] < 0.1
+        elif self.env_id in ["BipedalWalker-v3", "BipedalWalkerHardcore-v3"]:
+            return obs[2] > 0.9
+        elif self.env_id == "CarRacing-v3":
+            # Goal condition is trickier and might depend on the reward structure
+            return obs[2] > 0.95  # Placeholder condition
+        if self.env_id == "Reacher-v5":
+            return obs[-1] < 0.05  # Distance to target is small
+        if self.env_id == "Pusher-v5":
+            return obs[-1] < 0.05  # Placeholder condition
+        if self.env_id in ["InvertedPendulum-v5", "InvertedDoublePendulum-v5"]:
+            return abs(obs[2]) < 0.05
+        if self.env_id in [
+            "Hopper-v5",
+            "HalfCheetah-v5",
+            "Swimmer-v5",
+            "Walker2d-v5",
+            "Ant-v5",
+            "Humanoid-v5",
+        ]:
+            return obs[-1] > 0.9  # Placeholder condition
+        else:
+            return False
+
+
 # Define a factory function to apply TimeLimit
 def _make_env(
     rank: int,
@@ -249,6 +316,9 @@ def _make_env(
         )
         os.makedirs(video_dir, exist_ok=True)
 
+        # Add the goal termination logic
+        env = GoalTerminationWrapper(env)
+
         # 3. wrap with RecordVideo – only when
         #    the current episode is in `episodes_to_record`
         env = gym.wrappers.RecordVideo(
@@ -280,7 +350,7 @@ def run_gymnasium(
     n_episodes: int,
     algorithms_names: List,
     max_episode_steps: int = None,
-    causal_knowledge_update_per_episode: int = 1,
+    samples_for_causal_update: int = 1,
     n_checkpoints: int = 10,
 ):
 
@@ -335,7 +405,7 @@ def run_gymnasium(
             act_space = envs.single_action_space
             obs_space = envs.single_observation_space
 
-            if isinstance(act_space, gymnasium.spaces.Box) and algo_name == "dqn":
+            if isinstance(act_space, gymnasium.spaces.Box) and "dqn" in algo_name:
                 envs.close()  # end‑algo
                 continue
 
@@ -359,9 +429,16 @@ def run_gymnasium(
                 k: np.zeros((n_seeds, n_ckpt)) for k in algo_metrics
             }
 
+            """kwargs = {
+                "causal_knowledge_update_per_episode": causal_knowledge_update_per_episode
+            }"""
             # ─── create policy (once) ──────────────────────────────────────────
             policy = make_policy(
-                algo_name, act_space, obs_space, n_seeds, n_episodes=n_episodes
+                algo_name,
+                act_space,
+                obs_space,
+                n_seeds,
+                n_episodes,
             )
 
             pbar = tqdm(
@@ -389,7 +466,6 @@ def run_gymnasium(
 
                 # ─── ROLLOUT ‑‑ one episode across all envs ────────────────────
                 while not done_mask.all():
-
                     # observation tensor (dtype depends on space)
                     obs_tensor = (
                         safe_tensor(obs, torch.long, device)
@@ -480,11 +556,11 @@ def run_gymnasium(
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
-    n_seeds = 2
-    n_episodes = int(1e2)
-    algorithms = ["dqn", "a2c", "ppo"]
+    n_seeds = 10
+    n_episodes = int(2e1)
+    algorithms = ["dqn", "ppo"]
     max_episode_steps = int(1e2)
-    causal_knowledge_update_per_episode = 1
+    samples_for_causal_update = int(2e3)
     n_checkpoints = int(1e1)
 
     run_gymnasium(
@@ -492,6 +568,6 @@ if __name__ == "__main__":
         n_episodes,
         algorithms,
         max_episode_steps,
-        causal_knowledge_update_per_episode,
+        samples_for_causal_update,
         n_checkpoints,
     )

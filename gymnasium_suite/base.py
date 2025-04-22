@@ -69,7 +69,9 @@ class BasePolicy(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_actions(self, observations: torch.Tensor) -> torch.Tensor:
+    def get_actions(
+        self, observations: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     def setup_actions(
@@ -170,60 +172,6 @@ class BasePolicy(ABC):
         self._extra_state = x.to(self.device) if x is not None else None
 
 
-class RandomPolicy(BasePolicy):
-    def __init__(
-        self,
-        algo_name: str,
-        action_space: gym.spaces,
-        observation_space: gym.spaces,
-        n_envs: int,
-    ):
-        super().__init__(algo_name, action_space, observation_space, n_envs)
-
-    def update(
-        self,
-        observations: torch.Tensor,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-        next_observations: torch.Tensor,
-        dones: torch.Tensor,
-    ):
-        pass
-
-    def get_actions(self, observations: torch.Tensor) -> torch.Tensor:
-
-        if isinstance(self.action_space, gym.spaces.Discrete):
-            action_shape = (self.n_envs,)
-
-            actions_tensor = torch.randint(
-                0, self.action_space.n, size=action_shape, device=self.device
-            )
-        elif isinstance(self.action_space, gym.spaces.Box):
-            action_shape = (self.n_envs, self.action_space.shape[0])
-
-            # Original low/high from the action space
-            low = torch.tensor(self.action_space.low, device=self.device)
-            high = torch.tensor(self.action_space.high, device=self.device)
-
-            # Replace infs with large finite values
-            finite_low = torch.where(
-                torch.isinf(low), torch.full_like(low, -1e6, device=self.device), low
-            )
-            finite_high = torch.where(
-                torch.isinf(high), torch.full_like(high, 1e6, device=self.device), high
-            )
-
-            actions_tensor = finite_low + (finite_high - finite_low) * torch.rand(
-                size=action_shape, device=self.device
-            )
-        else:
-            raise ValueError(
-                f"Unsupported action space type: {type(self.action_space)}"
-            )
-
-        return actions_tensor
-
-
 class BaseACPolicy(BasePolicy, ABC):
     def __init__(
         self,
@@ -285,7 +233,7 @@ class BaseACPolicy(BasePolicy, ABC):
         self._extra_state = x.to(self.device) if x is not None else None
 
     # ---------------------------------------------------------------- common act
-    def get_actions(self, obs: torch.Tensor) -> torch.Tensor:
+    def get_actions(self, obs: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         enc = self._enc(obs)
         dist = self.net.dist(enc)
         acts = dist.sample()
