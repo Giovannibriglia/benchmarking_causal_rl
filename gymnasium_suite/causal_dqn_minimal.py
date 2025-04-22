@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from gymnasium_suite.base import BasePolicy, one_hot, safe_clone
 from gymnasium_suite.causal_knowledge import CausalKnowledge
 
-from gymnasium_suite.dqn_minimal import QNet, ReplayBuffer
+from gymnasium_suite.dqn import QNet, ReplayBuffer
 
 
 class CausalDQNPolicy(BasePolicy):

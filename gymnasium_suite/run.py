@@ -556,9 +556,9 @@ def run_gymnasium(
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
-    n_seeds = 10
+    n_seeds = 2
     n_episodes = int(2e1)
-    algorithms = ["dqn", "ppo"]
+    algorithms = ["sac", "ppo", "dqn", "a2c"]
     max_episode_steps = int(1e2)
     samples_for_causal_update = int(2e3)
     n_checkpoints = int(1e1)
