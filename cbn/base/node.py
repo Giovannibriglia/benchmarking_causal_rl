@@ -114,7 +114,7 @@ class Node:
 
     def get_prob(
         self, query: Dict[str, torch.Tensor], N: int = 1024
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         :param query: dict of torch.Tensors, each with shape [n_queries, 1]
         :param N: number of samples if evidence is not provided
