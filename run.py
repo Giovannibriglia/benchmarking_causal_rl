@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import warnings
 from pathlib import Path
 from typing import List
@@ -33,6 +34,12 @@ warnings.filterwarnings(
     "ignore",
     message=".* Degrees of freedom <= 0",
     category=RuntimeWarning,
+)
+
+warnings.filterwarnings(
+    "ignore",
+    message=".* WARN: You are calling 'step()' even",
+    category=UserWarning,
 )
 
 
@@ -435,10 +442,6 @@ def run_gymnasium(
             metrics_dict[algo_name] = {
                 k: np.zeros((n_seeds, n_ckpt)) for k in algo_metrics
             }
-
-            """kwargs = {
-                "causal_knowledge_update_per_episode": causal_knowledge_update_per_episode
-            }"""
             # ─── create policy (once) ──────────────────────────────────────────
             policy = make_policy(
                 algo_name,
@@ -457,6 +460,8 @@ def run_gymnasium(
                 ),
             )
 
+            mean_action_time = []
+            mean_update_time = []
             for episode in pbar:
                 # reset all envs with deterministic seeds
                 obs, _ = envs.reset(seed=list(range(n_seeds)))
@@ -471,6 +476,8 @@ def run_gymnasium(
                 track_max = np.full(n_seeds, -np.inf)
                 track_min = np.full(n_seeds, np.inf)
 
+                count_mean_action_time = 0
+                count_update_time = 0
                 # ─── ROLLOUT ‑‑ one episode across all envs ────────────────────
                 while not done_mask.all():
                     # observation tensor (dtype depends on space)
@@ -479,12 +486,13 @@ def run_gymnasium(
                         if isinstance(obs_space, gymnasium.spaces.Discrete)
                         else safe_tensor(obs, torch.float32, device)
                     )
-
+                    time_action = time.time()
                     # ─ actions & entropy etc.
                     actions_tensor = policy.get_actions(obs_tensor)
                     actions_np = policy.setup_actions(
                         actions_tensor, dones_tensor, out_type="numpy"
                     )
+                    count_mean_action_time += time.time() - time_action
 
                     # special clip for CliffWalking
                     if "CliffWalking-v0" in env_name:
@@ -514,6 +522,7 @@ def run_gymnasium(
                     )
                     dones_tensor = safe_tensor(dones, torch.bool, device)
 
+                    time_update = time.time()
                     policy.update(
                         obs_tensor,
                         actions_tensor,
@@ -521,6 +530,7 @@ def run_gymnasium(
                         next_obs_tensor,
                         dones_tensor,
                     )
+                    count_update_time += time.time() - time_update
 
                     step_count += active
                     done_mask = np.logical_or(done_mask, dones)
@@ -528,7 +538,13 @@ def run_gymnasium(
 
                 # ─── episode‑level aggregates ─────────────────────────────────
                 ep_rewards /= np.maximum(step_count, 1)
-                pbar.set_postfix(rew=f"{ep_rewards.mean():.3f}")
+                mean_action_time.append(count_mean_action_time / step_count.mean())
+                mean_update_time.append(count_update_time / step_count.mean())
+                pbar.set_postfix(
+                    rew=f"{ep_rewards.mean():.3f}",
+                    get_action_time=f"{np.array(mean_action_time).mean():.5f}",
+                    update_time=f"{np.array(mean_update_time).mean():.5f}",
+                )
 
                 # ─── checkpoint logging ───────────────────────────────────────
                 if episode in episodes_to_record:
@@ -563,20 +579,14 @@ def run_gymnasium(
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
-    n_seeds = 10
-    n_episodes = int(1e4)
+    n_seeds = 5
+    n_episodes = int(5e1)
     algorithms = [
-        "ppo",
         "causal_ppo",
-        "dqn",
-        "causal_dqn",
-        "a2c",
-        "causal_a2c",
-        "sac",
-        "causal_sac",
+        "ppo",
     ]
-    max_episode_steps = int(5e2)
-    n_checkpoints = int(1e2)
+    max_episode_steps = int(2e2)
+    n_checkpoints = int(2e1)
 
     run_gymnasium(
         n_seeds,

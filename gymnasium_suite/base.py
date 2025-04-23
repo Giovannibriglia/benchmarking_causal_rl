@@ -219,14 +219,16 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
         causality_init = kwargs.pop("causality_init", {})
 
-        self.N_max = causality_init.get("N_max", 16)
+        self.N_max = causality_init.get("N_max", 8)
         self.dag = causality_init.get("dag", None)
         data = causality_init.get("data", None)
         parameter_learning_algo = causality_init.get(
             "parameter_learning_algo", "logistic_regression"
         )
         inference_mechanism = causality_init.get("inference_mechanism", "exact")
-        self.samples_causal_update = causality_init.get("samples_causal_update", 10000)
+        self.samples_causal_update = int(
+            causality_init.get("samples_causal_update", 2e4)
+        )
 
         with open(
             f"../cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
@@ -306,6 +308,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
         if obs.dim() == 1:
             obs = obs.unsqueeze(-1)
         n_envs, self.n_obs = obs.shape
+        self.n_obs -= self.N_max**2
         self.n_actions = actions.shape[0]
         self.n_rewards = rewards.shape[0]
 
@@ -319,18 +322,18 @@ class BaseCausalPolicy(BasePolicy, ABC):
         for env_idx in range(n_envs):
             row = {}
 
-            row["action"] = actions[env_idx].cpu().numpy()
-
-            row["reward"] = rewards[env_idx].cpu().numpy()
+            row["action"] = actions[env_idx].cpu().numpy().item()
+            row["reward"] = rewards[env_idx].cpu().numpy().item()
 
             for o in range(self.n_obs):
-                row[f"obs_{o}"] = obs[env_idx][o].cpu().numpy()
+                row[f"obs_{o}"] = obs[env_idx][o].cpu().numpy().item()
 
             self.storing.append(row)
 
         if len(self.storing) >= self.samples_causal_update:
             self._update_knowledge()
             self.storing = []
+            print("update_done")
 
     def _update_knowledge(self):
         if not self.storing:

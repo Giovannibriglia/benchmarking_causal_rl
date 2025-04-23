@@ -55,7 +55,7 @@ def _augment_observation_space(
 ) -> gymnasium.spaces.Space:
     causality_init = kwargs.pop("causality_init", {})
 
-    N_max = causality_init.get("N_max", 16)
+    N_max = causality_init.get("N_max", 8)
 
     orig_dim = int(np.prod(observation_space.shape))
 
