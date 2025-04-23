@@ -4,8 +4,8 @@ import gymnasium
 import numpy as np
 import torch
 from gymnasium.spaces import Box
-
 from gymnasium_suite.base import BasePolicy
+
 from gymnasium_suite.dqn import make_dqn_policy
 from gymnasium_suite.ppo import make_ppo_policy
 from gymnasium_suite.sac import make_sac_policy
