@@ -13,10 +13,15 @@ import pandas as pd
 import pygame
 import torch
 from gymnasium import envs
+
+from gymnasium_suite.utils import (
+    EXTRA_KEYS,
+    generate_simulation_name,
+    make_policy,
+    safe_tensor,
+)
 from matplotlib import pyplot as plt
 from tqdm import tqdm
-
-from utils import EXTRA_KEYS, generate_simulation_name, make_policy, safe_tensor
 
 warnings.filterwarnings(
     "ignore",
