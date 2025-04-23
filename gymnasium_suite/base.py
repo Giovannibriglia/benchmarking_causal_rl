@@ -3,7 +3,7 @@ import random
 from abc import ABC, abstractmethod
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 import gymnasium as gym
 
@@ -182,7 +182,7 @@ class BasePolicy(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def _ensure_pt_path(path: str | os.PathLike) -> Path:
+    def _ensure_pt_path(path: Union[str, os.PathLike]) -> Path:
         path = Path(path)
         if path.suffix == "":
             path = path.with_suffix(".pt")
