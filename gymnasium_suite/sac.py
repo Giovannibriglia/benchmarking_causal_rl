@@ -1,9 +1,9 @@
 import torch
 import torch.nn.functional as F
-
-from gymnasium_suite.base import build_base_q_policy
 from torch import nn
 from torch.distributions import Categorical, Normal
+
+from gymnasium_suite.base import build_base_q_policy
 
 
 def make_sac_policy(is_causal: bool = False):
