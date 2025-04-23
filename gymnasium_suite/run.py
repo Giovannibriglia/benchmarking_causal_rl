@@ -154,8 +154,10 @@ def plot_results(
             if k in data[algo]:
                 arr = np.asarray(data[algo][k])
                 mean, std = _iqr_stats(arr, percentile_band)
-                v_mean = float(mean[-1] if mean.ndim else mean)
-                v_std = float(std[-1] if std.ndim else std)
+                mean = np.asarray(mean)
+                std = np.asarray(std)
+                v_mean = float(mean.mean())  # works whether mean.ndim == 0 or >0
+                v_std = float(std.mean())
                 row[k] = f"{v_mean:.3g} ± {v_std:.3g}"
             else:
                 row[k] = None
@@ -178,7 +180,7 @@ def plot_results(
             m_mean, m_std = _iqr_stats(metric_arr, percentile_band)
             ax_top.plot(episodes, m_mean, color=colors[algo], lw=2, label=algo)
             ax_top.fill_between(
-                episodes, m_mean - m_std, m_mean + m_std, color=colors[algo], alpha=0.25
+                episodes, m_mean - m_std, m_mean + m_std, color=colors[algo], alpha=0.15
             )
 
             # ---- lower: n_steps   (only for same algos)
@@ -217,6 +219,7 @@ def plot_results(
         out = outdir / f"{env_name}_{key}.png"
         fig.savefig(out, bbox_inches="tight")
         saved.append(out)
+        # plt.show()
         plt.close(fig)
 
     return saved
@@ -350,7 +353,6 @@ def run_gymnasium(
     n_episodes: int,
     algorithms_names: List,
     max_episode_steps: int = None,
-    samples_for_causal_update: int = 1,
     n_checkpoints: int = 10,
 ):
 
@@ -556,18 +558,25 @@ def run_gymnasium(
 if __name__ == "__main__":
     # pip install gymnasium[all]
 
-    n_seeds = 2
-    n_episodes = int(2e1)
-    algorithms = ["sac", "ppo", "dqn", "a2c"]
-    max_episode_steps = int(1e2)
-    samples_for_causal_update = int(2e3)
-    n_checkpoints = int(1e1)
+    n_seeds = 10
+    n_episodes = int(1e4)
+    algorithms = [
+        "ppo",
+        "causal_ppo",
+        "dqn",
+        "causal_dqn",
+        "a2c",
+        "causal_a2c",
+        "sac",
+        "causal_sac",
+    ]
+    max_episode_steps = int(5e2)
+    n_checkpoints = int(1e2)
 
     run_gymnasium(
         n_seeds,
         n_episodes,
         algorithms,
         max_episode_steps,
-        samples_for_causal_update,
         n_checkpoints,
     )
