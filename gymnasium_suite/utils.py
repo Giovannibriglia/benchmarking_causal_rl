@@ -51,16 +51,16 @@ def generate_simulation_name(prefix: str = "benchmarking") -> str:
 
 
 def _augment_observation_space(
-    observation_space: gymnasium.spaces.Space, **kwargs
+    observation_space: gymnasium.spaces.Space, action_space_shape: int, **kwargs
 ) -> gymnasium.spaces.Space:
     causality_init = kwargs.pop("causality_init", {})
 
-    N_max = causality_init.get("N_max", 8)
+    N_max = causality_init.get("N_max", 16)
 
     orig_dim = int(np.prod(observation_space.shape))
 
     # augmented
-    aug_dim = N_max**2
+    aug_dim = N_max ** (action_space_shape + 1)
     aug_space = Box(
         low=-np.inf, high=np.inf, shape=(orig_dim + aug_dim,), dtype=np.float32
     )
@@ -79,7 +79,12 @@ def make_policy(
     is_causal = True if "causal" in algo_name else False
 
     if is_causal:
-        observation_space = _augment_observation_space(observation_space)
+        action_space_shape = (
+            action_space.shape[0] if isinstance(action_space, Box) else 1
+        )
+        observation_space = _augment_observation_space(
+            observation_space, action_space_shape
+        )
 
     if "ppo" in algo_name:
         PPO_cls = make_ppo_policy(is_causal)

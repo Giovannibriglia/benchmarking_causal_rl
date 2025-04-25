@@ -217,9 +217,21 @@ class BaseCausalPolicy(BasePolicy, ABC):
     ):
         super().__init__(algo_name, action_space, observation_space, n_envs, **kwargs)
 
+        self.action_space_dim = (
+            self.action_space.shape[0]
+            if isinstance(self.action_space, gym.spaces.Box)
+            else 1
+        )
+
         causality_init = kwargs.pop("causality_init", {})
 
-        self.N_max = causality_init.get("N_max", 8)
+        self.N_max = causality_init.get("N_max", 16)
+
+        # Define the expected shape
+        self.ok_shape = (
+            (n_envs,) + (self.N_max,) * self.action_space_dim + (self.N_max,)
+        )
+
         self.dag = causality_init.get("dag", None)
         data = causality_init.get("data", None)
         parameter_learning_algo = causality_init.get(
@@ -254,7 +266,6 @@ class BaseCausalPolicy(BasePolicy, ABC):
         self.storing = []
         self.n_obs = None
         self.n_actions = None
-        self.n_rewards = None
 
     def update(
         self,
@@ -295,10 +306,15 @@ class BaseCausalPolicy(BasePolicy, ABC):
         # concatenate along the feature axis
         res = torch.cat([observations, rav_flat], dim=1)  # -> [n_envs, n_obs + N*N]
 
+        mean_res = torch.nanmean(res)
+        res = torch.where(torch.isnan(res), mean_res, res)
+
         assert res.shape == (
             observations.shape[0],
-            observations.shape[1] + self.N_max**2,
-        ), f"wrong augmented dimensions: res.shape is [{observations.shape[0], observations.shape[1]+self.N_max**2}], instead is [{res.shape}]"
+            observations.shape[1] + int(np.prod(self.ok_shape[1:])),
+        ), f"wrong augmented dimensions: res.shape is [{self.ok_shape}], instead is [{
+            observations.shape[0],
+            observations.shape[1] + int(np.prod(self.ok_shape[1:])),}]"
 
         return res
 
@@ -308,9 +324,8 @@ class BaseCausalPolicy(BasePolicy, ABC):
         if obs.dim() == 1:
             obs = obs.unsqueeze(-1)
         n_envs, self.n_obs = obs.shape
-        self.n_obs -= self.N_max**2
-        self.n_actions = actions.shape[0]
-        self.n_rewards = rewards.shape[0]
+        self.n_obs -= self.N_max ** (self.action_space_dim + 1)
+        self.n_actions = actions.dim()
 
         # Validate input dimensions
         if actions.shape[0] != n_envs or rewards.shape[0] != n_envs:
@@ -322,7 +337,12 @@ class BaseCausalPolicy(BasePolicy, ABC):
         for env_idx in range(n_envs):
             row = {}
 
-            row["action"] = actions[env_idx].cpu().numpy().item()
+            if self.n_actions == 1:
+                row["action_0"] = actions[env_idx].cpu().numpy().item()
+            else:
+                for a in range(actions[env_idx].shape[0]):
+                    row[f"action_{a}"] = actions[env_idx][a].cpu().numpy().item()
+
             row["reward"] = rewards[env_idx].cpu().numpy().item()
 
             for o in range(self.n_obs):
@@ -357,7 +377,6 @@ class BaseCausalPolicy(BasePolicy, ABC):
             )
 
     def get_reward_action_values(self, obs: torch.Tensor):
-        n_envs = obs.shape[0]
         if self.bn is not None:
             target_node = "reward"
 
@@ -369,16 +388,16 @@ class BaseCausalPolicy(BasePolicy, ABC):
             pdfs, target_node_domains, parents_domains = self.bn.get_pdf(
                 target_node, evidence, N_max=self.N_max
             )
-            if pdfs.shape[-1] == 1:
-                print("mario")
-            rav = self._setup_rav(pdfs)
-            assert rav.shape == (n_envs, self.N_max, self.N_max), ValueError(
-                f"rav.shape: {rav.shape} instead ({n_envs, self.N_max, self.N_max})"
-            )
+
+            mean_pdfs = torch.nanmean(pdfs)
+            pdfs = torch.where(torch.isnan(pdfs), mean_pdfs, pdfs)
+
+            rav = self._setup_rav(pdfs, target_node_domains, parents_domains)
+
             return rav
         else:
-            obs = torch.ones(
-                (n_envs, self.N_max, self.N_max),
+            obs = torch.rand(
+                self.ok_shape,
                 dtype=torch.float32,
                 device=self.device,
             )
@@ -388,24 +407,69 @@ class BaseCausalPolicy(BasePolicy, ABC):
     def _setup_rav(
         self,
         pdfs: torch.Tensor,
+        reward_domain: torch.Tensor,
+        parents_domain: torch.Tensor,
     ):
+        """
+        Set up the reward-action-value (RAV) distribution by averaging over
+        parent axes and normalizing.
+
+        Args:
+            pdfs (torch.Tensor): The input tensor of probability density functions.
+
+        Returns:
+            torch.Tensor: The final normalized PDF.
+        """
+        """# Get parents of the reward node from the Bayesian network
         parents_reward = self.bn.get_parents(self.bn.initial_dag, "reward")
-        action_idx = parents_reward.index("action")
 
-        # We compute which axes to average over (parent axes except action_idx)
-        parent_dims = pdfs.shape[1:-1]  # exclude query and target_dim
-        parent_axes = list(range(1, 1 + len(parent_dims)))
-        axes_to_avg = tuple(i for i in parent_axes if i != action_idx + 1)
+        # Number of environments
+        n_envs = pdfs.shape[0]
 
-        # Sum across axes_to_avg
+        # Prepare an empty tensor for the final normalized PDF
+        final_pdf = torch.empty(self.ok_shape, device=self.device)
+
+        # For each action dimension, compute the averaged and normalized PDF
+        for action_i in range(self.action_space_dim):
+            # Find the index of the current action among the parents
+            action_idx = parents_reward.index(f"action_{action_i}")
+
+            # Determine which axes to average over (all parent axes except the action index)
+            parent_dims = pdfs.shape[1:-1]  # exclude query and target_dim
+            parent_axes = list(range(1, 1 + len(parent_dims)))
+            axes_to_avg = tuple(i for i in parent_axes if i != action_idx + 1)
+
+            # Sum across the axes to average
+            pdf_plot = torch.sum(pdfs, dim=axes_to_avg, keepdim=False)
+
+            normalized_pdf = pdf_plot / (pdf_plot.sum(dim=-1, keepdim=True) + 1e-8)
+
+            # Prepare indexing: final_pdf[env_i, :, :, ..., action_i, action_i]
+            idx = [slice(None)] * (2 + action_i) + [action_i]
+            idx = tuple(idx + [action_i])  # repeat for both dims
+
+            final_pdf[idx] = normalized_pdf"""
+
+        parents_reward = self.bn.get_parents(self.bn.initial_dag, "reward")
+        axes_to_avg = tuple(
+            i + 1 for i, p in enumerate(parents_reward) if "action" not in p
+        )
+
         pdf_plot = torch.sum(pdfs, dim=axes_to_avg, keepdim=False)
+        normalized_pdf = pdf_plot / (pdf_plot.sum(dim=-1, keepdim=True) + 1e-8)
 
-        # Normalize
-        pdf_plot = pdf_plot / pdf_plot.sum(
-            dim=-1, keepdim=True
-        )  # normalize across target dim
+        idx = normalized_pdf.argmax(dim=-1)  # -> (n_samples,)*n_actions
 
-        return pdf_plot  # shape: [n_queries, action_domain_size, target_domain_size]
+        # 2. If you want the reward *value* instead of the index…
+        most_probable_reward = reward_domain[idx]  # same shape as idx
+
+        # Verify the final shape matches the expectation
+        assert most_probable_reward.shape == self.ok_shape, ValueError(
+            f"final_pdf.shape: {most_probable_reward.shape} instead should be ({self.ok_shape})"
+        )
+
+        # Return the final normalized PDF
+        return most_probable_reward
 
     def _get_dag(
         self, data: pd.DataFrame, target_feature: str = "reward", do_key: str = "action"

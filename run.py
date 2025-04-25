@@ -383,8 +383,9 @@ def run_gymnasium(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]  #
-
+    gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]
+    """x_index = gymnasium_envs.index("MountainCarContinuous-v0")
+    gymnasium_envs = gymnasium_envs[x_index:]"""
     for env_index, env_name in enumerate(gymnasium_envs):
 
         safe_env_name = env_name.replace("/", "_").replace("\\", "_")
@@ -423,16 +424,28 @@ def run_gymnasium(
                 envs.close()  # end‑algo
                 continue
 
-            metrics_dict["info"]["observation_space"] = (
-                str(obs_space)
+            metrics_dict["info"]["observation_space_kind"] = (
+                "discrete"
                 if isinstance(obs_space, gymnasium.spaces.Discrete)
                 else "continuous"
             )
-            metrics_dict["info"]["action_space"] = (
-                str(act_space)
+            metrics_dict["info"]["observation_space_dim"] = (
+                obs_space.n
+                if isinstance(obs_space, gymnasium.spaces.Discrete)
+                else int(np.prod(obs_space.shape).item())
+            )
+
+            metrics_dict["info"]["action_space_kind"] = (
+                "discrete"
                 if isinstance(act_space, gymnasium.spaces.Discrete)
                 else "continuous"
             )
+            metrics_dict["info"]["action_space_dim"] = (
+                act_space.n.item()
+                if isinstance(act_space, gymnasium.spaces.Discrete)
+                else int(np.prod(act_space.shape).item())
+            )
+
             metrics_dict["info"]["algorithms"].append(algo_name)
 
             # ─── allocate metrics arrays ───────────────────────────────────────
