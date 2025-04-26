@@ -60,7 +60,7 @@ def _augment_observation_space(
     orig_dim = int(np.prod(observation_space.shape))
 
     # augmented
-    aug_dim = N_max ** (action_space_shape + 1)
+    aug_dim = N_max ** (action_space_shape)
     aug_space = Box(
         low=-np.inf, high=np.inf, shape=(orig_dim + aug_dim,), dtype=np.float32
     )

@@ -228,9 +228,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
         self.N_max = causality_init.get("N_max", 16)
 
         # Define the expected shape
-        self.ok_shape = (
-            (n_envs,) + (self.N_max,) * self.action_space_dim + (self.N_max,)
-        )
+        self.ok_shape = (n_envs,) + (self.N_max,) * self.action_space_dim
 
         self.dag = causality_init.get("dag", None)
         data = causality_init.get("data", None)
@@ -264,8 +262,6 @@ class BaseCausalPolicy(BasePolicy, ABC):
             self.bn = None
 
         self.storing = []
-        self.n_obs = None
-        self.n_actions = None
 
     def update(
         self,
@@ -323,9 +319,9 @@ class BaseCausalPolicy(BasePolicy, ABC):
     ):
         if obs.dim() == 1:
             obs = obs.unsqueeze(-1)
-        n_envs, self.n_obs = obs.shape
-        self.n_obs -= self.N_max ** (self.action_space_dim + 1)
-        self.n_actions = actions.dim()
+        n_envs, n_obs = obs.shape
+        n_obs -= self.N_max ** (self.action_space_dim)
+        n_actions = actions.dim()
 
         # Validate input dimensions
         if actions.shape[0] != n_envs or rewards.shape[0] != n_envs:
@@ -337,7 +333,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
         for env_idx in range(n_envs):
             row = {}
 
-            if self.n_actions == 1:
+            if n_actions == 1:
                 row["action_0"] = actions[env_idx].cpu().numpy().item()
             else:
                 for a in range(actions[env_idx].shape[0]):
@@ -345,7 +341,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
             row["reward"] = rewards[env_idx].cpu().numpy().item()
 
-            for o in range(self.n_obs):
+            for o in range(n_obs):
                 row[f"obs_{o}"] = obs[env_idx][o].cpu().numpy().item()
 
             self.storing.append(row)
@@ -380,10 +376,12 @@ class BaseCausalPolicy(BasePolicy, ABC):
         if self.bn is not None:
             target_node = "reward"
 
+            n_envs, n_obs = obs.shape
+
             if obs.dim() == 1:
                 obs = obs.unsqueeze(-1)
 
-            evidence = {f"obs_{o}": obs[:, o].unsqueeze(-1) for o in range(self.n_obs)}
+            evidence = {f"obs_{o}": obs[:, o].unsqueeze(-1) for o in range(n_obs)}
 
             pdfs, target_node_domains, parents_domains = self.bn.get_pdf(
                 target_node, evidence, N_max=self.N_max
@@ -450,6 +448,8 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
             final_pdf[idx] = normalized_pdf"""
 
+        n_envs = pdfs.shape[0]
+
         parents_reward = self.bn.get_parents(self.bn.initial_dag, "reward")
         axes_to_avg = tuple(
             i + 1 for i, p in enumerate(parents_reward) if "action" not in p
@@ -460,8 +460,11 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
         idx = normalized_pdf.argmax(dim=-1)  # -> (n_samples,)*n_actions
 
-        # 2. If you want the reward *value* instead of the index…
-        most_probable_reward = reward_domain[idx]  # same shape as idx
+        row_idx = (
+            torch.arange(n_envs).unsqueeze(1).expand(-1, self.N_max)
+        )  # shape [5,16]
+
+        most_probable_reward = reward_domain[row_idx, idx]
 
         # Verify the final shape matches the expectation
         assert most_probable_reward.shape == self.ok_shape, ValueError(
