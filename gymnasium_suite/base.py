@@ -241,11 +241,11 @@ class BaseCausalPolicy(BasePolicy, ABC):
         )
 
         with open(
-            f"cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
+            f"./cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
         ) as file:
             self.parameters_learning_config = yaml.safe_load(file)
 
-        with open(f"../cbn/conf/inference/{inference_mechanism}.yaml", "r") as file:
+        with open(f"./cbn/conf/inference/{inference_mechanism}.yaml", "r") as file:
             self.inference_config = yaml.safe_load(file)
 
         self.kwargs = {"log": False, "plot_prob": False}
