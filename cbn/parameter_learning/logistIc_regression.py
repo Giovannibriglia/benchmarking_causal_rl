@@ -90,11 +90,12 @@ class LogisticRegression(BaseParameterLearningEstimator):
         x = point_to_evaluate.to(device)
         # Evaluate the logistic probability density function:
         # f(x; mu, scale) = exp(-(x-mu)/scale) / (scale * (1 + exp(-(x-mu)/scale))^2)
-        diff = (
-            x - mu
-        ) / scale  # Broadcasting: mu shape [n_queries,1] -> diff shape [n_queries, n_points_to_evaluate].
-        exp_term = torch.exp(-diff)
-        pdf = exp_term / (scale * (1 + exp_term) ** 2)
+        with torch.no_grad():
+            diff = (
+                x - mu
+            ) / scale  # Broadcasting: mu shape [n_queries,1] -> diff shape [n_queries, n_points_to_evaluate].
+            pdf = torch.sigmoid(diff)
+            pdf = pdf * (1 - pdf) / scale
         return pdf.detach()
 
     def _sample(self, N: int, **kwargs) -> torch.Tensor:

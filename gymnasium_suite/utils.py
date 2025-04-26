@@ -3,6 +3,7 @@ from datetime import datetime
 import gymnasium
 import numpy as np
 import torch
+import yaml
 from gymnasium.spaces import Box
 
 from gymnasium_suite.base import BasePolicy
@@ -31,6 +32,30 @@ def safe_tensor(x, dtype, device):
     return torch.tensor(x, dtype=dtype, device=device)
 
 
+def find_max_N(n_envs, n_features, leave_free_gb=1.0):
+    device = torch.device("cuda:0")
+    total_memory = torch.cuda.get_device_properties(device).total_memory  # in bytes
+    available_memory = total_memory - int(leave_free_gb * 1024**3)  # leave N GB free
+
+    memory_per_element = 4  # float32 is 4 bytes
+    n_max_elements = available_memory / 4
+    max_N = (available_memory / (memory_per_element * n_envs)) ** (1 / n_features)
+    max_N = int(max_N)  # floor it to an integer
+
+    if max_N >= 16:
+        max_N = 16
+    elif max_N >= 8:
+        max_N = max_N - (max_N % 8)
+    elif max_N >= 4:
+        max_N = max_N - (max_N % 4)
+    else:
+        max_N = 2
+    print(
+        f"Max_N: {max_N} - max #elements: {n_max_elements} - #features: {n_features} - available memory: {round(available_memory/(1024**3),2)}/{round(total_memory/(1024**3),2)}"
+    )
+    return max_N
+
+
 def generate_simulation_name(prefix: str = "benchmarking") -> str:
     """
     Generates a simulation name based on the current date and time.
@@ -51,21 +76,29 @@ def generate_simulation_name(prefix: str = "benchmarking") -> str:
 
 
 def _augment_observation_space(
-    observation_space: gymnasium.spaces.Space, action_space_shape: int, **kwargs
+    orig_dim: int, action_space_shape: int, **kwargs
 ) -> gymnasium.spaces.Space:
-    causality_init = kwargs.pop("causality_init", {})
-
-    N_max = causality_init.get("N_max", 16)
-
-    orig_dim = int(np.prod(observation_space.shape))
-
-    # augmented
-    aug_dim = N_max ** (action_space_shape)
+    if action_space_shape > 0:
+        N_max = kwargs["causality_init"]["N_max"]
+        aug_dim = N_max**action_space_shape
+    else:
+        aug_dim = 0
     aug_space = Box(
         low=-np.inf, high=np.inf, shape=(orig_dim + aug_dim,), dtype=np.float32
     )
 
     return aug_space
+
+
+def get_space_n_features(space):
+    if isinstance(space, gymnasium.spaces.Discrete):
+        return 1
+    elif isinstance(space, gymnasium.spaces.Box):
+        return space.shape[0]
+    elif isinstance(space, gymnasium.spaces.Tuple):
+        return len(space)
+    else:
+        raise NotImplementedError(f"Unsupported space type: {type(space)}")
 
 
 def make_policy(
@@ -79,11 +112,25 @@ def make_policy(
     is_causal = True if "causal" in algo_name else False
 
     if is_causal:
-        action_space_shape = (
-            action_space.shape[0] if isinstance(action_space, Box) else 1
-        )
+
+        with open("causality_hyperparams.yaml", "r") as file:
+            causality_init = yaml.safe_load(file)
+
+        action_space_shape = get_space_n_features(action_space)
+        observation_space_shape = get_space_n_features(observation_space)
+
+        n_features = action_space_shape + observation_space_shape
+
+        causality_init["N_max"] = find_max_N(n_envs, n_features, 4)
+        kwargs["causality_init"] = causality_init
+
         observation_space = _augment_observation_space(
-            observation_space, action_space_shape
+            observation_space_shape, action_space_shape, **kwargs
+        )
+    elif isinstance(observation_space, gymnasium.spaces.Tuple):
+        observation_space_shape = get_space_n_features(observation_space)
+        observation_space = _augment_observation_space(
+            observation_space_shape, 0, **kwargs
         )
 
     if "ppo" in algo_name:

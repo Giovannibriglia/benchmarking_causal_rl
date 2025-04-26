@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import List
 
 import gymnasium
-import gymnasium as gym
 import numpy as np
 import pandas as pd
 import pygame
 import torch
-from gymnasium import envs
+from matplotlib import pyplot as plt
+from tqdm import tqdm
 
 from gymnasium_suite.utils import (
     EXTRA_KEYS,
@@ -21,8 +21,6 @@ from gymnasium_suite.utils import (
     make_policy,
     safe_tensor,
 )
-from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 warnings.filterwarnings(
     "ignore",
@@ -44,7 +42,7 @@ warnings.filterwarnings(
 
 
 def get_envs_names() -> List[str]:
-    all_envs = envs.registry.keys()
+    all_envs = gymnasium.envs.registry.keys()
     env_ids = _get_latest_envs(all_envs)
 
     env_ids.remove("GymV21Environment-v0")
@@ -237,7 +235,7 @@ def plot_results(
     return saved
 
 
-class GoalTerminationWrapper(gym.Wrapper):
+class GoalTerminationWrapper(gymnasium.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.env_id = str(env.spec.id)
@@ -311,14 +309,14 @@ def _make_env(
     def _thunk():
         # 1. build the base env
         if "FrozenLake" in env_name:
-            env = gym.make(
+            env = gymnasium.make(
                 env_name,
                 is_slippery=False,
                 render_mode="rgb_array",  # <<–– for video
                 max_episode_steps=max_episode_steps,
             )
         else:
-            env = gym.make(
+            env = gymnasium.make(
                 env_name,
                 render_mode="rgb_array",  # <<–– for video
                 max_episode_steps=max_episode_steps,
@@ -336,7 +334,7 @@ def _make_env(
 
         # 3. wrap with RecordVideo – only when
         #    the current episode is in `episodes_to_record`
-        env = gym.wrappers.RecordVideo(
+        env = gymnasium.wrappers.RecordVideo(
             env,
             video_folder=video_dir,
             episode_trigger=lambda ep: ep in episodes_to_record,
@@ -358,6 +356,63 @@ def convert_ndarray(obj):
         return [convert_ndarray(item) for item in obj]
     else:
         return obj
+
+
+def get_space_info(space):
+    if isinstance(space, gymnasium.spaces.Discrete):
+        kind = "discrete"
+        dim = space.n.item()
+    elif isinstance(space, gymnasium.spaces.Box):
+        kind = "continuous"
+        dim = int(np.prod(space.shape))
+    elif isinstance(space, gymnasium.spaces.Tuple):
+        # Recursive handling of Tuple
+        kinds = []
+        dims = []
+        for space in space.spaces:
+            k, d = get_space_info(space)
+            kinds.append(k)
+            dims.append(d)
+        # Check if all are the same kind
+        if all(k == "discrete" for k in kinds):
+            kind = "discrete"
+        elif all(k == "continuous" for k in kinds):
+            kind = "continuous"
+        else:
+            kind = "mixed"
+        dim = sum(dims)  # sum dimensions
+    else:
+        raise NotImplementedError(f"Unsupported observation space type: {type(space)}")
+
+    return kind, dim
+
+
+def setup_obs_tensor(obs, obs_space, device):
+    if isinstance(obs_space, gymnasium.spaces.Discrete):
+        obs_tensor = safe_tensor(obs, torch.long, device)
+    elif isinstance(obs_space, gymnasium.spaces.Tuple):
+        obs_tensor = torch.stack(
+            [
+                safe_tensor(
+                    o,
+                    (
+                        torch.long
+                        if isinstance(s, gymnasium.spaces.Discrete)
+                        else torch.float32
+                    ),
+                    device,
+                )
+                for o, s in zip(obs, obs_space.spaces)
+            ],
+            dim=-1,  # Stack along last dimension: (n_envs, n_elements)
+        )
+    else:
+        obs_tensor = safe_tensor(obs, torch.float32, device)
+
+    if obs_tensor.dim() == 1:
+        obs_tensor = obs_tensor.unsqueeze(-1)
+
+    return obs_tensor
 
 
 def run_gymnasium(
@@ -384,9 +439,18 @@ def run_gymnasium(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]
-    """x_index = gymnasium_envs.index("MountainCarContinuous-v0")
-    gymnasium_envs = gymnasium_envs[x_index:]"""
+    x_index = gymnasium_envs.index("Humanoid-v5")
+    gymnasium_envs = gymnasium_envs[x_index:]
+
     for env_index, env_name in enumerate(gymnasium_envs):
+        if (
+            env_name == "BipedalWalker-v3"  # 28
+            or env_name == "BipedalWalkerHardcore-v3"  # 28
+            or env_name == "CarRacing-v3"
+            or env_name == "Humanoid-v5"
+            or env_name == "HumanoidStandup-v5"
+        ):
+            continue
 
         safe_env_name = env_name.replace("/", "_").replace("\\", "_")
         json_path = os.path.join(path_simulation, f"{safe_env_name}.json")
@@ -401,7 +465,7 @@ def run_gymnasium(
         for algo_index, algo_name in enumerate(algorithms_names):
 
             # ─── build vectorised env with n_seeds instances ───────────────────
-            envs = gym.vector.SyncVectorEnv(
+            envs = gymnasium.vector.SyncVectorEnv(
                 [
                     _make_env(
                         rank,
@@ -424,27 +488,14 @@ def run_gymnasium(
                 envs.close()  # end‑algo
                 continue
 
-            metrics_dict["info"]["observation_space_kind"] = (
-                "discrete"
-                if isinstance(obs_space, gymnasium.spaces.Discrete)
-                else "continuous"
-            )
-            metrics_dict["info"]["observation_space_dim"] = (
-                obs_space.n
-                if isinstance(obs_space, gymnasium.spaces.Discrete)
-                else int(np.prod(obs_space.shape).item())
-            )
-
-            metrics_dict["info"]["action_space_kind"] = (
-                "discrete"
-                if isinstance(act_space, gymnasium.spaces.Discrete)
-                else "continuous"
-            )
-            metrics_dict["info"]["action_space_dim"] = (
-                act_space.n.item()
-                if isinstance(act_space, gymnasium.spaces.Discrete)
-                else int(np.prod(act_space.shape).item())
-            )
+            (
+                metrics_dict["info"]["observation_space_kind"],
+                metrics_dict["info"]["observation_space_dim"],
+            ) = get_space_info(obs_space)
+            (
+                metrics_dict["info"]["action_space_kind"],
+                metrics_dict["info"]["action_space_dim"],
+            ) = get_space_info(act_space)
 
             metrics_dict["info"]["algorithms"].append(algo_name)
 
@@ -494,11 +545,8 @@ def run_gymnasium(
                 # ─── ROLLOUT ‑‑ one episode across all envs ────────────────────
                 while not done_mask.all():
                     # observation tensor (dtype depends on space)
-                    obs_tensor = (
-                        safe_tensor(obs, torch.long, device)
-                        if isinstance(obs_space, gymnasium.spaces.Discrete)
-                        else safe_tensor(obs, torch.float32, device)
-                    )
+                    obs_tensor = setup_obs_tensor(obs, obs_space, device)
+
                     time_action = time.time()
                     # ─ actions & entropy etc.
                     actions_tensor = policy.get_actions(obs_tensor)
@@ -528,11 +576,7 @@ def run_gymnasium(
 
                     # ─ policy update
                     rewards_tensor = safe_tensor(rewards, torch.float32, device)
-                    next_obs_tensor = (
-                        safe_tensor(next_obs, torch.long, device)
-                        if isinstance(obs_space, gymnasium.spaces.Discrete)
-                        else safe_tensor(next_obs, torch.float32, device)
-                    )
+                    next_obs_tensor = setup_obs_tensor(next_obs, obs_space, device)
                     dones_tensor = safe_tensor(dones, torch.bool, device)
 
                     time_update = time.time()
@@ -554,7 +598,7 @@ def run_gymnasium(
                 mean_action_time.append(count_mean_action_time / step_count.mean())
                 mean_update_time.append(count_update_time / step_count.mean())
                 pbar.set_postfix(
-                    rew=f"{ep_rewards.mean():.3f}",
+                    mean_ep_rew=f"{ep_rewards.mean():.3f}",
                     get_action_time=f"{np.array(mean_action_time).mean():.5f}",
                     update_time=f"{np.array(mean_update_time).mean():.5f}",
                 )

@@ -1,8 +1,5 @@
 
-causal_augmentation: state_with_action
-
 causality_init:
-    N_max: 16
     parameter_learning_algo: logistic_regression
     inference_mechanism: exact
-    samples_causal_update: 2e4
+    samples_causal_update: 20000

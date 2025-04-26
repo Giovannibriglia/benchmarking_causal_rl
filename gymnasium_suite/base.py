@@ -222,11 +222,10 @@ class BaseCausalPolicy(BasePolicy, ABC):
             if isinstance(self.action_space, gym.spaces.Box)
             else 1
         )
-
+        # TODO: make sure on kwargs
         causality_init = kwargs.pop("causality_init", {})
 
         self.N_max = causality_init.get("N_max", 16)
-
         # Define the expected shape
         self.ok_shape = (n_envs,) + (self.N_max,) * self.action_space_dim
 
@@ -239,13 +238,12 @@ class BaseCausalPolicy(BasePolicy, ABC):
         self.samples_causal_update = int(
             causality_init.get("samples_causal_update", 2e4)
         )
-
         with open(
-            f"./cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
+            f"../cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
         ) as file:
             self.parameters_learning_config = yaml.safe_load(file)
 
-        with open(f"./cbn/conf/inference/{inference_mechanism}.yaml", "r") as file:
+        with open(f"../cbn/conf/inference/{inference_mechanism}.yaml", "r") as file:
             self.inference_config = yaml.safe_load(file)
 
         self.kwargs = {"log": False, "plot_prob": False}
@@ -299,15 +297,20 @@ class BaseCausalPolicy(BasePolicy, ABC):
         # (optional) cast dtype if needed
         if rav_flat.dtype != rav_flat.dtype:
             rav_flat = rav_flat.to(observations.dtype)
+
+        assert (
+            rav_flat.shape[0] == self.ok_shape[0]
+        ), f"wrong first dimension augmented dimensions: rav_flat.shape should be [{self.ok_shape[0]}], instead is [{rav_flat.shape[0]}]"
+
+        assert (
+            rav_flat.shape[1] == torch.prod(torch.tensor(self.ok_shape[1:])).item()
+        ), f"wrong other dimensions: rav_flat.shape should be [{self.ok_shape}], instead is [{rav_flat.shape}]"
+
         # concatenate along the feature axis
         res = torch.cat([observations, rav_flat], dim=1)  # -> [n_envs, n_obs + N*N]
 
         mean_res = torch.nanmean(res)
         res = torch.where(torch.isnan(res), mean_res, res)
-
-        assert (
-            res.shape == self.ok_shape
-        ), f"wrong augmented dimensions: res.shape should be [{self.ok_shape}], instead is [{res.shape}]"
 
         return res
 
@@ -317,7 +320,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
         if obs.dim() == 1:
             obs = obs.unsqueeze(-1)
         n_envs, n_obs = obs.shape
-        n_obs -= self.N_max ** (self.action_space_dim)
+        n_obs -= self.N_max**self.action_space_dim
         n_actions = actions.dim()
 
         # Validate input dimensions
@@ -346,7 +349,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
         if len(self.storing) >= self.samples_causal_update:
             self._update_knowledge()
             self.storing = []
-            print("update_done")
+            # print("update_done")
 
     def _update_knowledge(self):
         if not self.storing:
@@ -383,9 +386,10 @@ class BaseCausalPolicy(BasePolicy, ABC):
             pdfs, target_node_domains, parents_domains = self.bn.get_pdf(
                 target_node, evidence, N_max=self.N_max
             )
-
-            mean_pdfs = torch.nanmean(pdfs)
-            pdfs = torch.where(torch.isnan(pdfs), mean_pdfs, pdfs)
+            nan_mask = torch.isnan(pdfs)
+            if nan_mask.any():
+                mean_pdfs = pdfs[~nan_mask].mean()
+                pdfs[nan_mask] = mean_pdfs
 
             rav = self._setup_rav(pdfs, target_node_domains, parents_domains)
 
@@ -445,8 +449,6 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
             final_pdf[idx] = normalized_pdf"""
 
-        n_envs = pdfs.shape[0]
-
         parents_reward = self.bn.get_parents(self.bn.initial_dag, "reward")
         axes_to_avg = tuple(
             i + 1 for i, p in enumerate(parents_reward) if "action" not in p
@@ -455,13 +457,15 @@ class BaseCausalPolicy(BasePolicy, ABC):
         pdf_plot = torch.sum(pdfs, dim=axes_to_avg, keepdim=False)
         normalized_pdf = pdf_plot / (pdf_plot.sum(dim=-1, keepdim=True) + 1e-8)
 
-        idx = normalized_pdf.argmax(dim=-1)  # -> (n_samples,)*n_actions
+        idx = normalized_pdf.argmax(dim=-1)  # (n_envs,)*(n_actions)
 
-        row_idx = (
-            torch.arange(n_envs).unsqueeze(1).expand(-1, self.N_max)
-        )  # shape [5,16]
+        # --- Fix start here ---
+        while idx.ndim < reward_domain.ndim:
+            idx = idx.unsqueeze(-1)
 
-        most_probable_reward = reward_domain[row_idx, idx]
+        idx = idx.expand(*reward_domain.shape)
+
+        most_probable_reward = torch.gather(reward_domain, 1, idx)
 
         # Verify the final shape matches the expectation
         assert most_probable_reward.shape == self.ok_shape, ValueError(
@@ -572,7 +576,6 @@ def build_base_acnet(is_causal: bool = False):
 
             # buffer & metrics
             self._reset_buf()
-            self.metrics = MetricBuffer()
 
             # placeholder for extra tensor (set each step)
             self._extra_state: torch.Tensor | None = None
