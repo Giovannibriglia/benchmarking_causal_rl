@@ -305,12 +305,9 @@ class BaseCausalPolicy(BasePolicy, ABC):
         mean_res = torch.nanmean(res)
         res = torch.where(torch.isnan(res), mean_res, res)
 
-        assert res.shape == (
-            observations.shape[0],
-            observations.shape[1] + int(np.prod(self.ok_shape[1:])),
-        ), f"wrong augmented dimensions: res.shape is [{self.ok_shape}], instead is [{
-            observations.shape[0],
-            observations.shape[1] + int(np.prod(self.ok_shape[1:])),}]"
+        assert (
+            res.shape == self.ok_shape
+        ), f"wrong augmented dimensions: res.shape should be [{self.ok_shape}], instead is [{res.shape}]"
 
         return res
 
