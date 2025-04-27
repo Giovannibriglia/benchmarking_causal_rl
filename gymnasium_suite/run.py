@@ -436,11 +436,14 @@ def run_gymnasium(
     path_simulation = "benchmarking/" + generate_simulation_name("gymnasium_suite")
     os.makedirs(path_simulation, exist_ok=True)
 
+    path_saving_policy = path_simulation + "/policies"
+    os.makedirs(path_saving_policy, exist_ok=True)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]
-    x_index = gymnasium_envs.index("Humanoid-v5")
-    gymnasium_envs = gymnasium_envs[x_index:]
+    """x_index = gymnasium_envs.index("Humanoid-v5")
+    gymnasium_envs = gymnasium_envs[x_index:]"""
 
     for env_index, env_name in enumerate(gymnasium_envs):
         if (
@@ -598,9 +601,9 @@ def run_gymnasium(
                 mean_action_time.append(count_mean_action_time / step_count.mean())
                 mean_update_time.append(count_update_time / step_count.mean())
                 pbar.set_postfix(
-                    mean_ep_rew=f"{ep_rewards.mean():.3f}",
-                    get_action_time=f"{np.array(mean_action_time).mean():.5f}",
-                    update_time=f"{np.array(mean_update_time).mean():.5f}",
+                    episodic_reward=f"{ep_rewards.mean():.3f}",
+                    time_to_get_action=f"{np.array(mean_action_time).mean():.5f}",
+                    time_to_update=f"{np.array(mean_update_time).mean():.5f}",
                 )
 
                 # ─── checkpoint logging ───────────────────────────────────────
@@ -622,12 +625,17 @@ def run_gymnasium(
                     with open(json_path, "w") as fp:
                         json.dump(convert_ndarray(metrics_dict), fp, indent=2)
 
-            envs.close()  # end‑algo
+                    path_saving_policy_int = (
+                        path_saving_policy
+                        + f"/{algo_name}_{safe_env_name}_policy_checkpoint_{episode}"
+                    )
+                    policy.save_policy(path_saving_policy_int)
 
-            path_saving_policy = (
-                path_simulation + f"/{algo_name}_{safe_env_name}_policy"
+            envs.close()  # end‑algo
+            path_saving_policy_final = (
+                path_saving_policy + f"/{algo_name}_{safe_env_name}_policy_final"
             )
-            policy.save_policy(path_saving_policy)
+            policy.save_policy(path_saving_policy_final)
 
         if n_checkpoints > 0:
             plot_results(json_path)  # end‑env

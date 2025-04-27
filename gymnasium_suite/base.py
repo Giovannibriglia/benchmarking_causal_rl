@@ -261,6 +261,11 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
         self.storing = []
 
+    def save_policy(self, path: str):
+        if self.bn is not None:
+            path2 = path.replace("policy", "bn")
+            self.bn.save_model(path2)
+
     def update(
         self,
         observations: torch.Tensor,
@@ -644,6 +649,8 @@ def build_base_acnet(is_causal: bool = False):
             pass
 
         def save_policy(self, path: str):
+            super().save_policy(path)
+
             p = self._ensure_pt_path(path)
             torch.save(
                 {
@@ -839,6 +846,8 @@ def build_base_q_policy(is_causal: bool = False):
             raise NotImplementedError
 
         def save_policy(self, path: str):
+            super().save_policy(path)
+
             p = self._ensure_pt_path(path)
             data = {
                 "cur_ep": self.cur_ep,

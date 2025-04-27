@@ -76,7 +76,7 @@ class BayesianNetwork:
 
     def save_model(self, path: str):
         for node in self.nodes_obj:
-            self.nodes_obj[node].save_model(path)
+            self.nodes_obj[node].save_node(path)
 
     @staticmethod
     def get_nodes(dag: nx.DiGraph):
