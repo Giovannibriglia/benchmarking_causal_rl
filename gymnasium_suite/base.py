@@ -1,5 +1,6 @@
 import os
 import random
+import time
 from abc import ABC, abstractmethod
 from collections import deque
 from pathlib import Path
@@ -74,7 +75,12 @@ class BasePolicy(ABC):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
     ):
+        time_to_update = time.time()
         self._update(observations, actions, rewards, next_observations, dones)
+        time_to_update = time.time() - time_to_update
+        self.metrics.add(
+            time_to_update=time_to_update,
+        )
 
     @abstractmethod
     def _update(
@@ -90,10 +96,17 @@ class BasePolicy(ABC):
     def get_actions(
         self, observations: torch.Tensor, mask: torch.Tensor = None
     ) -> torch.Tensor:
+        time_to_get_actions = time.time()
+
         n_envs = observations.shape[0]
         res = self._get_actions(observations, mask=mask)
         assert res.shape[0] == n_envs, ValueError(
             f"actions has wrong dimension: {res.shape} first dimension should be {n_envs}"
+        )
+
+        time_to_get_actions = time.time() - time_to_get_actions
+        self.metrics.add(
+            time_to_get_actions=time_to_get_actions,
         )
 
         return res
@@ -649,7 +662,8 @@ def build_base_acnet(is_causal: bool = False):
             pass
 
         def save_policy(self, path: str):
-            super().save_policy(path)
+            if is_causal:
+                super().save_policy(path)
 
             p = self._ensure_pt_path(path)
             torch.save(
@@ -846,7 +860,8 @@ def build_base_q_policy(is_causal: bool = False):
             raise NotImplementedError
 
         def save_policy(self, path: str):
-            super().save_policy(path)
+            if is_causal:
+                super().save_policy(path)
 
             p = self._ensure_pt_path(path)
             data = {

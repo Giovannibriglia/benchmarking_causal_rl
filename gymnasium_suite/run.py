@@ -645,13 +645,13 @@ if __name__ == "__main__":
     # pip install gymnasium[all]
 
     n_seeds = 5
-    n_episodes = int(5e1)
+    n_episodes = int(2e1)
     algorithms = [
         "causal_ppo",
         "ppo",
     ]
     max_episode_steps = int(2e2)
-    n_checkpoints = int(2e1)
+    n_checkpoints = 5  # int(2e1)
 
     run_gymnasium(
         n_seeds,

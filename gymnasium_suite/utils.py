@@ -14,14 +14,54 @@ from gymnasium_suite.sac import make_sac_policy
 
 # map algo‑name → extra scalar keys to log
 EXTRA_KEYS = {
-    "dqn": ["td_loss", "avg_q", "epsilon"],
-    "causal_dqn": ["td_loss", "avg_q", "epsilon"],
-    "sac": ["td_loss", "avg_q", "epsilon"],
-    "causal_sac": ["td_loss", "avg_q", "epsilon"],
-    "a2c": ["entropy", "actor_loss", "value_loss", "kl"],
-    "causal_a2c": ["entropy", "actor_loss", "value_loss", "kl"],
-    "ppo": ["entropy", "actor_loss", "value_loss", "kl"],
-    "causal_ppo": ["entropy", "actor_loss", "value_loss", "kl"],
+    "dqn": ["td_loss", "avg_q", "epsilon", "time_to_update", "time_to_get_actions"],
+    "causal_dqn": [
+        "td_loss",
+        "avg_q",
+        "epsilon",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
+    "sac": ["td_loss", "avg_q", "epsilon", "time_to_update", "time_to_get_actions"],
+    "causal_sac": [
+        "td_loss",
+        "avg_q",
+        "epsilon",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
+    "a2c": [
+        "entropy",
+        "actor_loss",
+        "value_loss",
+        "kl",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
+    "causal_a2c": [
+        "entropy",
+        "actor_loss",
+        "value_loss",
+        "kl",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
+    "ppo": [
+        "entropy",
+        "actor_loss",
+        "value_loss",
+        "kl",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
+    "causal_ppo": [
+        "entropy",
+        "actor_loss",
+        "value_loss",
+        "kl",
+        "time_to_update",
+        "time_to_get_actions",
+    ],
 }
 
 
