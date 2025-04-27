@@ -18,8 +18,7 @@ def make_dqn_policy(is_causal: bool = False):
             obs_space: gym.spaces.Space,
             n_envs: int,
             n_episodes: int,
-            *,
-            device=None,
+            **kwargs,
         ):
             if not isinstance(act_space, gym.spaces.Discrete):
                 raise ValueError("DQN → discrete actions only.")
@@ -29,8 +28,6 @@ def make_dqn_policy(is_causal: bool = False):
                 obs_space,
                 n_envs,
                 n_episodes,
-                device=device
-                or torch.device("cuda" if torch.cuda.is_available() else "cpu"),
             )
 
             self.eps_hi, self.eps_lo = 0.9, 0.02

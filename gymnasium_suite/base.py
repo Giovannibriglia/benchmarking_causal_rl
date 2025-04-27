@@ -235,7 +235,6 @@ class BaseCausalPolicy(BasePolicy, ABC):
             if isinstance(self.action_space, gym.spaces.Box)
             else 1
         )
-        # TODO: make sure on kwargs
         causality_init = kwargs.pop("causality_init", {})
 
         self.N_max = causality_init.get("N_max", 16)
@@ -287,6 +286,8 @@ class BaseCausalPolicy(BasePolicy, ABC):
         next_observations: torch.Tensor,
         dones: torch.Tensor,
     ):
+        time_to_update = time.time()
+
         augmented_observations = self._augment_observation(observations)
         augmented_next_observations = self._augment_observation(next_observations)
         self.store_data(augmented_observations, actions, rewards)
@@ -295,9 +296,15 @@ class BaseCausalPolicy(BasePolicy, ABC):
             augmented_observations, actions, rewards, augmented_next_observations, dones
         )
 
+        time_to_update = time.time() - time_to_update
+        self.metrics.add(
+            time_to_update=time_to_update,
+        )
+
     def get_actions(
         self, observations: torch.Tensor, mask: torch.Tensor = None
     ) -> torch.Tensor:
+        time_to_get_actions = time.time()
         augmented_obs = self._augment_observation(observations)
         # causal_mask = mask  # TODO: make better
 
@@ -305,6 +312,11 @@ class BaseCausalPolicy(BasePolicy, ABC):
         res = self._get_actions(augmented_obs, mask=mask)
         assert res.shape[0] == n_envs, ValueError(
             f"actions has wrong dimension: {res.shape} first dimension should be {n_envs}"
+        )
+
+        time_to_get_actions = time.time() - time_to_get_actions
+        self.metrics.add(
+            time_to_get_actions=time_to_get_actions,
         )
 
         return res
@@ -475,14 +487,12 @@ class BaseCausalPolicy(BasePolicy, ABC):
         pdf_plot = torch.sum(pdfs, dim=axes_to_avg, keepdim=False)
         normalized_pdf = pdf_plot / (pdf_plot.sum(dim=-1, keepdim=True) + 1e-8)
 
-        idx = normalized_pdf.argmax(dim=-1)  # (n_envs,)*(n_actions)
+        idx = normalized_pdf.argmax(dim=-1)  # (n_envs,)*(N,)*n
 
-        # --- Fix start here ---
-        while idx.ndim < reward_domain.ndim:
-            idx = idx.unsqueeze(-1)
+        while reward_domain.ndim < idx.ndim:
+            reward_domain = reward_domain.unsqueeze(-1)
 
-        idx = idx.expand(*reward_domain.shape)
-
+        reward_domain = reward_domain.expand_as(idx)
         most_probable_reward = torch.gather(reward_domain, 1, idx)
 
         # Verify the final shape matches the expectation

@@ -78,18 +78,23 @@ def find_max_N(n_envs, n_features, leave_free_gb=1.0):
     available_memory = total_memory - int(leave_free_gb * 1024**3)  # leave N GB free
 
     memory_per_element = 4  # float32 is 4 bytes
-    n_max_elements = available_memory / 4
-    max_N = (available_memory / (memory_per_element * n_envs)) ** (1 / n_features)
-    max_N = int(max_N)  # floor it to an integer
+    n_max_elements = available_memory / memory_per_element
+    # total shape: (n_envs, n_features, N**(n_parents))
+    max_N = int((n_max_elements / (n_envs * (n_features + 1))) ** (1 / n_features))
 
-    if max_N >= 16:
+    if max_N >= 32:
+        max_N = 32
+    elif max_N >= 16:
         max_N = 16
     elif max_N >= 8:
-        max_N = max_N - (max_N % 8)
+        max_N = 8
     elif max_N >= 4:
-        max_N = max_N - (max_N % 4)
-    else:
+        max_N = 4
+    elif max_N >= 2:
         max_N = 2
+    else:
+        print("max_N = 1, GPU capacity may be not enoguh")
+        max_N = 1
     print(
         f"Max_N: {max_N} - max #elements: {n_max_elements} - #features: {n_features} - available memory: {round(available_memory/(1024**3),2)}/{round(total_memory/(1024**3),2)}"
     )

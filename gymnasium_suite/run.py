@@ -188,18 +188,25 @@ def plot_results(
             # ---- upper: chosen metric
             metric_arr = np.asarray(data[algo][key])
             m_mean, m_std = _iqr_stats(metric_arr, percentile_band)
+
+            # Top plot (Metric)
             ax_top.plot(episodes, m_mean, color=colors[algo], lw=2, label=algo)
             ax_top.fill_between(
-                episodes, m_mean - m_std, m_mean + m_std, color=colors[algo], alpha=0.15
+                episodes,
+                m_mean - m_std,
+                m_mean + m_std,
+                color=colors[algo],
+                alpha=0.15,
             )
 
-            # ---- lower: n_steps   (only for same algos)
+            # Lower plot (Steps)
             steps_arr = np.asarray(data[algo]["n_steps"])
             s_mean, s_std = _iqr_stats(steps_arr, percentile_band)
+
             ax_low.plot(episodes, s_mean, color=colors[algo], lw=2, label=algo)
             ax_low.fill_between(
                 episodes,
-                np.clip(s_mean - s_std, 1e-8, None),
+                np.clip(s_mean - s_std, a_min=1, a_max=None),
                 s_mean + s_std,
                 color=colors[algo],
                 alpha=0.25,
@@ -330,7 +337,7 @@ def _make_env(
         os.makedirs(video_dir, exist_ok=True)
 
         # Add the goal termination logic
-        env = GoalTerminationWrapper(env)
+        # env = GoalTerminationWrapper(env)
 
         # 3. wrap with RecordVideo – only when
         #    the current episode is in `episodes_to_record`
@@ -442,7 +449,7 @@ def run_gymnasium(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     gymnasium_envs = get_envs_names()  # ["FrozenLake-v1"]
-    """x_index = gymnasium_envs.index("Humanoid-v5")
+    """x_index = gymnasium_envs.index("LunarLanderContinuous-v3")
     gymnasium_envs = gymnasium_envs[x_index:]"""
 
     for env_index, env_name in enumerate(gymnasium_envs):
@@ -601,9 +608,7 @@ def run_gymnasium(
                 mean_action_time.append(count_mean_action_time / step_count.mean())
                 mean_update_time.append(count_update_time / step_count.mean())
                 pbar.set_postfix(
-                    episodic_reward=f"{ep_rewards.mean():.3f}",
-                    time_to_get_action=f"{np.array(mean_action_time).mean():.5f}",
-                    time_to_update=f"{np.array(mean_update_time).mean():.5f}",
+                    mean_episodic_reward=f"{metrics_dict[algo_name]['mean_reward'].mean():.3f}",
                 )
 
                 # ─── checkpoint logging ───────────────────────────────────────
@@ -645,13 +650,13 @@ if __name__ == "__main__":
     # pip install gymnasium[all]
 
     n_seeds = 5
-    n_episodes = int(2e1)
+    n_episodes = 1000
     algorithms = [
         "causal_ppo",
         "ppo",
     ]
-    max_episode_steps = int(2e2)
-    n_checkpoints = 5  # int(2e1)
+    max_episode_steps = 200
+    n_checkpoints = 20
 
     run_gymnasium(
         n_seeds,
