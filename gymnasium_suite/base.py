@@ -219,7 +219,7 @@ class BasePolicy(ABC):
         self._extra_state = x.to(self.device) if x is not None else None
 
 
-class BaseCausalPolicy(BasePolicy, ABC):
+class BaseCausalStateAugmentationPolicy(BasePolicy, ABC):
     def __init__(
         self,
         algo_name: str,
@@ -529,7 +529,7 @@ class BaseCausalPolicy(BasePolicy, ABC):
 
 
 def build_base_acnet(is_causal: bool = False):
-    base_policy = BaseCausalPolicy if is_causal else BasePolicy
+    base_policy = BaseCausalStateAugmentationPolicy if is_causal else BasePolicy
 
     class ACNet(nn.Module):
         """Actor–critic head for Box *or* Discrete action spaces."""
@@ -698,7 +698,7 @@ def build_base_acnet(is_causal: bool = False):
 
 
 def build_base_q_policy(is_causal: bool = False):
-    base_policy = BaseCausalPolicy if is_causal else BasePolicy
+    base_policy = BaseCausalStateAugmentationPolicy if is_causal else BasePolicy
 
     # Replay buffer shared by all off-policy methods
     class ReplayBuffer:
