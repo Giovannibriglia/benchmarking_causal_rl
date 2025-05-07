@@ -441,14 +441,16 @@ METRICS = ["ret", "adv_var", "prior_kl", "cpd_update", "value_mse", "q_loss"]
 
 # ───────── benchmark runner ─────────
 def run_benchmark(
-    env_id: str, episodes: int, rollout: int, seeds: int, checkpoints: int
+    env_id: str, n_episodes: int, rollout: int, n_seeds: int, n_checkpoints: int
 ) -> Dict[str, Dict[str, List[List[float]]]]:
 
-    ck_idx = np.linspace(1, episodes, checkpoints, dtype=int)
-
+    if n_checkpoints > n_episodes:
+        n_checkpoints = n_episodes
+    ck_idx = np.linspace(0, n_episodes - 1, n_checkpoints, dtype=int)
+    print(ck_idx)
     logs: Dict[str, Dict[str, List[List[float]]]] = {v: {} for v in AGENT_CLS}
 
-    pbar = tqdm(range(seeds), desc="training seeds...")
+    pbar = tqdm(range(n_seeds), desc="training seeds...")
 
     for seed_i in pbar:
         set_seed(seed_i)
@@ -460,7 +462,7 @@ def run_benchmark(
             )
             for v in AGENT_CLS
         }
-        for ep in range(episodes):
+        for ep in range(n_episodes):
             for v, a in agents.items():
                 a.rollout(rollout)
                 a.update()
@@ -468,10 +470,10 @@ def run_benchmark(
                 for v, a in agents.items():
                     a.metrics["ret"] = greedy_return(envs[v], a)
                     for k, val in a.metrics.items():
-                        logs[v].setdefault(k, [[] for _ in range(seeds)])[
+                        logs[v].setdefault(k, [[] for _ in range(n_seeds)])[
                             seed_i
                         ].append(val)
-            pbar.set_postfix(episodes=f"{ep}/{episodes}")
+            pbar.set_postfix(episodes=f"{ep+1}/{n_episodes}")
         for e in envs.values():
             e.close()
 
@@ -496,28 +498,63 @@ def greedy_return(env, agent):
 def save_logs(logs: Dict[str, List[Dict[str, float]]], path: str):
     with open(path, "w") as fp:
         json.dump(convert_ndarray(logs), fp, indent=2)
-    print(f"saved metrics 👉 {path}")
 
 
 # ───────── plotting & tables ─────────
+def _iqr_stats(arr: np.ndarray, q: int = 25) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Robust mean/std along axis‑0 using the inter‑quartile range.
+    Guaranteed to return finite numbers without numpy RuntimeWarnings.
+    Falls back to plain mean/std for columns where the IQR mask removes
+    every sample (or when there is only one sample row).
+    """
+    if arr.size == 0:  # completely empty array
+        shape = arr.shape[1:] or (1,)
+        return np.zeros(shape), np.zeros(shape)
+
+    # single seed → raw stats
+    if arr.shape[0] < 2:
+        return arr.astype(float), np.zeros_like(arr, dtype=float)
+
+    q1 = np.percentile(arr, q, axis=0)
+    q3 = np.percentile(arr, 100 - q, axis=0)
+    mask = (arr >= q1) & (arr <= q3)
+    trimmed = np.where(mask, arr, np.nan)
+
+    with np.errstate(all="ignore"):  # silence empty‑slice warnings
+        mean_iqr = np.nanmean(trimmed, axis=0)
+        std_iqr = np.nanstd(trimmed, axis=0)
+
+    # columns where IQR wiped everything (all NaN) → fall back to full range
+    fallback = np.isnan(mean_iqr)
+    if fallback.any():
+        mean_full = arr[:, fallback].mean(axis=0)
+        std_full = arr[:, fallback].std(axis=0)
+        mean_iqr[fallback] = mean_full
+        std_iqr[fallback] = std_full
+
+    return mean_iqr, std_iqr
 
 
-def plot_metric(json_path: str, key: str):
+def plot_metric(json_path: str, key: str, n_episodes: int, n_checkpoints: int):
+    f_size = 25
+
     logs = json.loads(Path(json_path).read_text())
-    xs = np.arange(len(next(iter(next(iter(logs.values())).values()))[0]))
-    plt.figure()
+    xs = np.linspace(0, n_episodes - 1, n_checkpoints - 1, dtype=int)
+    plt.figure(dpi=500, figsize=(16, 9))
     for v in logs:
         if key in logs[v].keys():
             arr = np.array(logs[v][key])  # shape (seeds, checkpoints)
-            mean = arr.mean(0)
-            std = arr.std(0)
-            plt.plot(xs, mean, label=v)
-            plt.fill_between(xs, mean - std, mean + std, alpha=0.2)
-    plt.xticks(xs)
-    plt.xlabel("checkpoint")
-    plt.ylabel(key)
-    plt.title(f"{key} across agents (mean±std over seeds)")
-    plt.legend()
+            mean, std = _iqr_stats(arr)
+            plt.plot(xs, mean, label=v, linewidth=3)
+            plt.fill_between(xs, mean - std, mean + std, alpha=0.1)
+    plt.xticks(xs, fontsize=f_size)
+    plt.yticks(fontsize=f_size)
+    plt.xlabel("episodes", fontsize=f_size)
+    plt.ylabel(key, fontsize=f_size)
+    plt.legend(loc="best", fontsize=20)
+    plt.grid(True)
+    plt.tight_layout()
     plt.show()
 
 
@@ -535,9 +572,8 @@ def table_summary(json_path: str) -> pd.DataFrame:
             if m in var_dict:
                 # take the last checkpoint value for every seed, then average
                 arr = np.array(var_dict[m])  # shape (seeds, checkpoints)
-                row[m] = (
-                    f"{np.mean(arr):.3f} ± {np.std(arr):.3f}" if arr.size else np.nan
-                )
+                mean, std = _iqr_stats(arr)
+                row[m] = f"{mean:.3f} ± {std:.3f}" if arr.size else np.nan
             else:
                 row[m] = np.nan
         rows[variant] = row
@@ -549,19 +585,20 @@ def table_summary(json_path: str) -> pd.DataFrame:
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--env", default="CartPole-v1")
-    p.add_argument("--episodes", type=int, default=5000)
+    p.add_argument("--n_episodes", type=int, default=2500)
     p.add_argument("--rollout", type=int, default=1024)
-    p.add_argument("--seeds", type=int, default=5)
-    p.add_argument("--checkpoints", type=int, default=50)
+    p.add_argument("--n_seeds", type=int, default=5)
+    p.add_argument("--n_checkpoints", type=int, default=50)
     args = p.parse_args()
 
+    if args.n_checkpoints > args.n_episodes:
+        args.n_checkpoints = args.n_episodes
+
     logs = run_benchmark(
-        args.env, args.episodes, args.rollout, args.seeds, args.checkpoints
+        args.env, args.n_episodes, args.rollout, args.n_seeds, args.n_checkpoints
     )
 
-    # run_benchmark("CartPole-v1", 10, 512, 2, 10)
-
     for m in METRICS:
-        plot_metric("bench.json", m)
+        plot_metric("benchmark.json", m, args.n_episodes, args.n_checkpoints)
 
-    table_summary("bench.json")
+    table_summary("benchmark.json")
