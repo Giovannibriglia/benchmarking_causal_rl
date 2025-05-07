@@ -22,7 +22,6 @@ Plot returns + variance for every agent::
 """
 from __future__ import annotations
 
-import argparse
 import dataclasses as dc
 import json
 from pathlib import Path
@@ -441,13 +440,13 @@ METRICS = ["ret", "adv_var", "prior_kl", "cpd_update", "value_mse", "q_loss"]
 
 # ───────── benchmark runner ─────────
 def run_benchmark(
-    env_id: str, n_episodes: int, rollout: int, n_seeds: int, n_checkpoints: int
+    env_id: str, n_episodes: int, rollout_len: int, n_seeds: int, n_checkpoints: int
 ) -> Dict[str, Dict[str, List[List[float]]]]:
 
     if n_checkpoints > n_episodes:
         n_checkpoints = n_episodes
     ck_idx = np.linspace(0, n_episodes - 1, n_checkpoints, dtype=int)
-    print(ck_idx)
+
     logs: Dict[str, Dict[str, List[List[float]]]] = {v: {} for v in AGENT_CLS}
 
     pbar = tqdm(range(n_seeds), desc="training seeds...")
@@ -464,7 +463,7 @@ def run_benchmark(
         }
         for ep in range(n_episodes):
             for v, a in agents.items():
-                a.rollout(rollout)
+                a.rollout(rollout_len)
                 a.update()
             if ep in ck_idx:
                 for v, a in agents.items():
@@ -583,22 +582,25 @@ def table_summary(json_path: str) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
+    """
+    import argparse
     p = argparse.ArgumentParser()
     p.add_argument("--env", default="CartPole-v1")
     p.add_argument("--n_episodes", type=int, default=2500)
-    p.add_argument("--rollout", type=int, default=1024)
+    p.add_argument("--rollout_len", type=int, default=1024)
     p.add_argument("--n_seeds", type=int, default=5)
     p.add_argument("--n_checkpoints", type=int, default=50)
-    args = p.parse_args()
+    args = p.parse_args()"""
 
-    if args.n_checkpoints > args.n_episodes:
-        args.n_checkpoints = args.n_episodes
+    env = "CartPole-v1"
+    n_episodes = 2500
+    rollout_len = 1024
+    n_seeds = 5
+    n_checkpoints = 50
 
-    logs = run_benchmark(
-        args.env, args.n_episodes, args.rollout, args.n_seeds, args.n_checkpoints
-    )
+    logs = run_benchmark(env, n_episodes, rollout_len, n_seeds, n_checkpoints)
 
     for m in METRICS:
-        plot_metric("benchmark.json", m, args.n_episodes, args.n_checkpoints)
+        plot_metric("benchmark.json", m, n_episodes, n_checkpoints)
 
     table_summary("benchmark.json")
