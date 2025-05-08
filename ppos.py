@@ -258,7 +258,7 @@ class PPOBaseline(PPOBase):
 
 
 class PPOCausalPrior(PPOBase):
-    def __init__(self, env, *, beta=1.0, **kw):
+    def __init__(self, env, *, beta=0.5, **kw):
         super().__init__(env, **kw)
         self.beta = beta
 
@@ -275,7 +275,7 @@ class PPOCausalPrior(PPOBase):
 
 
 class PPORandomPrior(PPOBase):
-    def __init__(self, *a, beta=1.0, **kw):
+    def __init__(self, *a, beta=0.5, **kw):
         super().__init__(*a, **kw)
         self.beta = beta
 
@@ -369,7 +369,7 @@ class PPORandomCritic(PPOBase):
 
 
 class PPOJointCPD(PPOCausalPrior):
-    def __init__(self, env, *, beta=1.0, cpd_lr=3e-4, **kw):
+    def __init__(self, env, *, beta=0.5, cpd_lr=3e-4, **kw):
         super().__init__(env, beta=beta, **kw)
         self.cpd = CPDNet(
             env.single_observation_space.shape[0], env.single_action_space.n
@@ -392,7 +392,7 @@ class PPOJointCPD(PPOCausalPrior):
 
 
 class PPORandomJoint(PPOCausalPrior):
-    def __init__(self, env, *, beta=1.0, cpd_lr=3e-4, **kw):
+    def __init__(self, env, *, beta=0.5, cpd_lr=3e-4, **kw):
         super().__init__(env, beta=beta, **kw)
         self.cpd = RandomCPDNet(
             env.single_observation_space.shape[0], env.single_action_space.n
@@ -640,7 +640,7 @@ def plot_metric(outdir: str, key: str, n_episodes: int):
             mu = np.nanmean(arr, axis=(0, 2))
             sd = np.nanstd(arr, axis=(0, 2))
             lo, hi = mu - sd, mu + sd
-        linewidth = 4 if var == "baseline" else 2
+        linewidth = 4 if var == "baseline" else 3
         plt.plot(xs, mu, label=var, linewidth=linewidth)
         plt.fill_between(xs, lo, hi, alpha=0.1)
 
@@ -657,8 +657,6 @@ def plot_metric(outdir: str, key: str, n_episodes: int):
 
 
 def table_summary(outdir: str):
-    print("TABLE IS GENERATED WRONG, YOU SHOULD TAKE IQR MEAN AND STD")
-    """Variant × metric table with *IQR mean* for eval_ret/len."""
     dirp = Path(outdir)
     union = set()
     rows = {}
@@ -666,13 +664,14 @@ def table_summary(outdir: str):
         union |= set(json.loads(mf.read_text()).keys())
     metrics = sorted(union)
 
-    def last_iqr_mean(seq):
-        last = seq[-1]
-        if isinstance(last, (list, tuple)):
-            q25, q75 = np.percentile(last, [25, 75])
-            inl = [x for x in last if q25 <= x <= q75]
+    def filter_array_percentile(seq, perc: int = 25):
+        if isinstance(seq, (list, tuple)):
+            q25, q75 = np.percentile(seq, [perc, int(100 - perc)])
+            q25 = q25.item()
+            q75 = q75.item()
+            inl = [x for x in seq if q25 <= x <= q75]
             return float(np.mean(inl)) if inl else float("nan")
-        return float(last)
+        return float(seq)
 
     for mf in dirp.glob("metrics_*.json"):
         var = mf.stem.split("_", 1)[1]
@@ -681,8 +680,23 @@ def table_summary(outdir: str):
         for m in metrics:
             seeds_dict = data.get(m, {})
             if seeds_dict:
-                vals = [last_iqr_mean(seq) for seq in seeds_dict.values() if seq]
-                row[m] = float(np.mean(vals)) if vals else math.nan
+                if isinstance(seeds_dict[str(0)][0], (float, int)):
+                    vals = [
+                        filter_array_percentile(seq)
+                        for seq in seeds_dict.values()
+                        if seq
+                    ]
+                else:
+                    n_eval_envs = len(seeds_dict[str(0)][0])
+                    vals = []
+                    for seq in seeds_dict.values():
+                        for n in range(n_eval_envs):
+                            seq_mean = np.mean(seq, axis=0)
+                            vals.append(seq_mean[n])
+
+                row[m] = (
+                    f"{np.mean(vals):.3f} +- {np.std(vals):.3f}" if vals else math.nan
+                )
             else:
                 row[m] = math.nan
         rows[var] = row
