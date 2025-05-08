@@ -312,7 +312,6 @@ class PPOCausalCritic(PPOBase):
             pc = causal_prior_cartpole(states)  # (B, A)
             q_all = self.q_net(states)  # (B, A)
             b_c = (pc * q_all).sum(-1)  # (B,)
-        # Replace default entropy metric with variance after baseline?
         self.metrics["causal_baseline_var"] = float(torch.var(b_c).item())
         return 0.0  # no extra actor loss term
 
@@ -348,7 +347,7 @@ class PPORandomCritic(PPOBase):
     # ------- override actor baseline inside the extra‑actor hook ----------
     def _extra_actor(self, logits, states, _):
         with torch.no_grad():
-            pc = causal_prior_cartpole(states)  # (B, A)
+            pc = random_prior_cartpole(states)  # (B, A)
             q_all = self.q_net(states)  # (B, A)
             b_c = (pc * q_all).sum(-1)  # (B,)
         # Replace default entropy metric with variance after baseline?
