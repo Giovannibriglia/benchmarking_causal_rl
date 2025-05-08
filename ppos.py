@@ -575,15 +575,16 @@ def _iqr_stats(arr: np.ndarray, q: int = 25) -> tuple[np.ndarray, np.ndarray]:
     return mean_iqr, std_iqr
 
 
-def plot_metric(outdir: str, key: str):
+def plot_metric(outdir: str, key: str, n_episodes: int):
     """Plot mean curve with *IQR‑based* ribbon for eval_* metrics.
 
     * eval_ret / eval_len → first flatten seeds×envs, keep only values in the
       25‑75 % percentile band per checkpoint; ribbon = μ ± σ of those inliers.
     * all other metrics → ribbon = μ ± σ across seeds (legacy behaviour).
     """
+    fontsize = 25
+
     dirp = Path(outdir)
-    plt.figure()
     min_T = math.inf
     series = []
 
@@ -619,7 +620,8 @@ def plot_metric(outdir: str, key: str):
         print(f"no '{key}' logged")
         return
 
-    xs = np.arange(min_T)
+    plt.figure(dpi=500, figsize=(16, 9))
+    xs = np.linspace(0, n_episodes - 1, min_T, dtype=int)
     for var, arr in series:
         arr = arr[:, :min_T]
         if key.startswith("eval_"):
@@ -639,15 +641,24 @@ def plot_metric(outdir: str, key: str):
             mu = np.nanmean(arr, axis=(0, 2))
             sd = np.nanstd(arr, axis=(0, 2))
             lo, hi = mu - sd, mu + sd
-        plt.plot(xs, mu, label=var)
-        plt.fill_between(xs, lo, hi, alpha=0.2)
-    plt.title(key)
-    plt.xlabel("checkpoint")
-    plt.legend()
+        linewidth = 4 if var == "baseline" else 2
+        plt.plot(xs, mu, label=var, linewidth=linewidth)
+        plt.fill_between(xs, lo, hi, alpha=0.1)
+
+    xtic = np.linspace(0, n_episodes - 1, 9, dtype=int)
+    plt.xticks(xtic, fontsize=fontsize)
+    plt.xlabel("episodes", fontsize=fontsize)
+    plt.yticks(fontsize=fontsize)
+    plt.ylabel(key, fontsize=fontsize)
+
+    plt.grid(True)
+    plt.legend(loc="best", fontsize=20)
+    plt.tight_layout()
     plt.show()
 
 
-def table_summary(outdir: str) -> pd.DataFrame:
+def table_summary(outdir: str):
+    print("TABLE IS GENERATED WRONG, YOU SHOULD TAKE IQR MEAN AND STD")
     """Variant × metric table with *IQR mean* for eval_ret/len."""
     dirp = Path(outdir)
     union = set()
@@ -689,14 +700,14 @@ if __name__ == "__main__":
     cli = argparse.ArgumentParser()
     cli.add_argument("--variant", choices=list(AGENTS) + ["all"], default="all")
     cli.add_argument("--env", default="CartPole-v1")
-    cli.add_argument("--episodes", type=int, default=10000)
+    cli.add_argument("--episodes", type=int, default=50000)
     cli.add_argument("--rollout", type=int, default=1024)
     cli.add_argument("--seeds", type=int, default=1)
-    cli.add_argument("--checkpoints", type=int, default=100)
+    cli.add_argument("--checkpoints", type=int, default=250)
     cli.add_argument("--n_train_envs", type=int, default=32)
     cli.add_argument("--n_eval_envs", type=int, default=32)
     cli.add_argument("--device", default=DEFAULT_DEVICE)
-    cli.add_argument("--outdir", default="runs_ok")
+    cli.add_argument("--outdir", default="runs_ok2")
 
     args = cli.parse_args()
 
@@ -728,6 +739,6 @@ if __name__ == "__main__":
         "prior_kl",
         "causal_baseline_var",
     ]:
-        plot_metric(root, k)
+        plot_metric(root, k, args.episodes)
 
     table_summary(root)
