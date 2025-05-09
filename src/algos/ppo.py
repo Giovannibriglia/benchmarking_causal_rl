@@ -1,0 +1,125 @@
+from pathlib import Path
+from typing import Union
+
+import numpy as np
+import torch
+from torch import nn
+
+from src.algos.base_actor_critic import BaseActorCritic
+
+
+class PPO(BaseActorCritic):
+    def __init__(
+        self,
+        *args,
+        clip_eps=0.2,
+        vf_coeff=0.5,
+        ent_coeff=0.01,
+        n_epochs=4,
+        batch_size=64,
+        **kw,
+    ):
+        super().__init__(*args, **kw)
+        self.clip_eps, self.vf_coeff, self.ent_coeff = clip_eps, vf_coeff, ent_coeff
+        self.n_epochs, self.batch_size = n_epochs, batch_size
+
+    def train(self):
+        mem, l, r = self._collect_rollout()
+        self.train_metrics.add(training_length=l, training_return=r)
+        self._ppo_update(mem)
+
+    def _ppo_update(self, mem):
+        def flat(x):
+            return x.reshape(-1, *x.shape[2:])
+
+        T, N = mem["actions"].shape[:2]
+
+        obs = flat(mem["obs"])
+        act = flat(mem["actions"])
+        old_logp = flat(mem["logp"])
+        old_value = flat(mem["values"])
+        returns = flat(mem["returns"])
+        adv = flat(mem["advantages"])
+        entropy_all = flat(mem["entropy"])
+
+        # advantage normalisation
+        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
+
+        idxs = np.arange(T * N)
+        for _ in range(self.n_epochs):
+            np.random.shuffle(idxs)
+            for start in range(0, T * N, self.batch_size):
+                b = torch.as_tensor(
+                    idxs[start : start + self.batch_size], device=self.device
+                )
+
+                lat = self.encoder(obs[b])
+                if self.is_discrete:
+                    logits = self.actor(lat)
+                    dist = self.dist_fn(logits)
+                    new_logp = dist.log_prob(act[b])  # [batch]
+                    batch_entropy = dist.entropy().mean()
+                else:
+                    mu = self.actor_mu(lat)
+                    dist = self.dist_fn(mu)
+                    new_logp = dist.log_prob(act[b]).sum(-1)  # [batch]
+                    batch_entropy = dist.entropy().sum(-1).mean()
+
+                value = self.critic(lat).squeeze(-1)  # [batch]
+
+                # PPO losses ---------------------------------------------------
+                ratio = torch.exp(new_logp - old_logp[b])
+                surr1 = ratio * adv[b]
+                surr2 = (
+                    torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
+                )
+                actor_loss = -torch.min(surr1, surr2).mean() + self.extra_actor_loss()
+                critic_loss = (
+                    0.5 * (returns[b] - value).pow(2).mean() + self.extra_critic_loss()
+                )
+                loss = (
+                    actor_loss
+                    + self.vf_coeff * critic_loss
+                    - self.ent_coeff * batch_entropy
+                )
+
+                self.optim.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+                self.optim.step()
+
+        # ---------- log extra metrics ----------
+        value_mse = (returns - old_value).pow(2).mean().item()
+        self._log_ac_metrics(
+            value_mse, adv.var(unbiased=False).item(), entropy_all.mean().item()
+        )
+
+    def _get_action(self, obs):
+        with torch.no_grad():
+            dist = self.dist_fn(
+                self.actor(self.encoder(obs))
+                if self.is_discrete
+                else self.actor_mu(self.encoder(obs))
+            )
+            return dist.sample()
+
+    # ---------- persistence ----------
+    def save_policy(self, path: Union[str, Path]) -> None:
+        torch.save(
+            {
+                "state_dict": self.state_dict(),
+                "clip_eps": self.clip_eps,
+                "vf_coeff": self.vf_coeff,
+                "ent_coeff": self.ent_coeff,
+                "is_discrete": self.is_discrete,
+            },
+            self._ensure_pt_path(path),
+        )
+
+    def load_policy(self, path: Union[str, Path]) -> None:
+        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
+        self.load_state_dict(ckpt["state_dict"])
+        # hyper‑params useful if you want to inspect them later
+        self.clip_eps = ckpt.get("clip_eps", 0.2)
+        self.vf_coeff = ckpt.get("vf_coeff", 0.5)
+        self.ent_coeff = ckpt.get("ent_coeff", 0.01)
