@@ -45,8 +45,7 @@ def plot_and_save_results(results_dir: str | Path):
                             "env": env_id,
                             "algo": algo_name,
                             "metric": metric,
-                            "mean": np.mean(y) if y else math.nan,
-                            "std": np.std(y) if y else math.nan,
+                            "value": f"{np.mean(y)} +- {np.std(y)}" if y else math.nan,
                         }
                     )
 
@@ -60,4 +59,4 @@ def plot_and_save_results(results_dir: str | Path):
     # ---------------------- summary CSV --------------------------------
     df = pd.DataFrame(table_rows)
     df.to_csv(root / "summary_table.csv", index=False)
-    print(f"Saved plots → {plot_dir} and CSV → {root/'summary_table.csv'}")
+    print(f"Saved plots in {plot_dir} and CSV in {root/'summary_table.csv'}")

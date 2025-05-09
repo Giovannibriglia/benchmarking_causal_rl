@@ -727,7 +727,7 @@ if __name__ == "__main__":
     root = Path(args.outdir)
     root.mkdir(exist_ok=True)
     variants = AGENTS if args.variant == "all" else {args.variant: AGENTS[args.variant]}
-    for v in variants:
+    """for v in variants:
         train_variant(
             v,
             args.env,
@@ -739,7 +739,7 @@ if __name__ == "__main__":
             args.n_eval_envs,
             root,
             args.device,
-        )
+        )"""
 
     for k in [
         "train_ret",

@@ -54,9 +54,13 @@ class A2C(BaseActorCritic):
 
         values = self.critic(latent).squeeze(-1)  # [B]
 
-        # ---------- A2C losses ----------
-        actor_loss = -(logp * adv).mean()
-        critic_loss = 0.5 * (returns - values).pow(2).mean()
+        base_actor_loss = -(logp * adv).mean()
+        base_critic_loss = 0.5 * (returns - values).pow(2).mean()
+        extra_a = self.extra_actor_loss()
+        extra_c = self.extra_critic_loss()
+
+        actor_loss = base_actor_loss + extra_a
+        critic_loss = base_critic_loss + extra_c
         loss = actor_loss + self.vf_coeff * critic_loss - self.ent_coeff * entropy
 
         # ---------- optimiser step ----------
@@ -66,6 +70,14 @@ class A2C(BaseActorCritic):
         self.optim.step()
 
         # ---------- logging ----------
+        self.train_metrics.add(
+            total_loss=float(loss),
+            actor_loss=float(base_actor_loss),
+            extra_actor_loss=float(extra_a),
+            critic_loss=float(base_critic_loss),
+            extra_critic_loss=float(extra_c),
+        )
+
         self._log_ac_metrics(
             mse=critic_loss.item(),
             adv_var=adv.var(unbiased=False).item(),

@@ -73,10 +73,15 @@ class PPO(BaseActorCritic):
                 surr2 = (
                     torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
                 )
-                actor_loss = -torch.min(surr1, surr2).mean() + self.extra_actor_loss()
-                critic_loss = (
-                    0.5 * (returns[b] - value).pow(2).mean() + self.extra_critic_loss()
-                )
+
+                # ---------- PPO losses -------------------------------------------------
+                base_actor_loss = -torch.min(surr1, surr2).mean()
+                base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
+                extra_a = self.extra_actor_loss()
+                extra_c = self.extra_critic_loss()
+
+                actor_loss = base_actor_loss + extra_a
+                critic_loss = base_critic_loss + extra_c
                 loss = (
                     actor_loss
                     + self.vf_coeff * critic_loss
@@ -87,6 +92,14 @@ class PPO(BaseActorCritic):
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), 0.5)
                 self.optim.step()
+
+                self.train_metrics.add(
+                    total_loss=float(loss),
+                    actor_loss=float(base_actor_loss),
+                    extra_actor_loss=float(extra_a),
+                    critic_loss=float(base_critic_loss),
+                    extra_critic_loss=float(extra_c),
+                )
 
         # ---------- log extra metrics ----------
         value_mse = (returns - old_value).pow(2).mean().item()
@@ -123,3 +136,11 @@ class PPO(BaseActorCritic):
         self.clip_eps = ckpt.get("clip_eps", 0.2)
         self.vf_coeff = ckpt.get("vf_coeff", 0.5)
         self.ent_coeff = ckpt.get("ent_coeff", 0.01)
+
+
+class CausalPriorPPO(PPO):
+    def extra_actor_loss(self):
+        pass
+
+    def extra_critic_loss(self):
+        pass
