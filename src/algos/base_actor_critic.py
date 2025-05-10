@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -64,10 +66,16 @@ class BaseActorCritic(BasePolicy, nn.Module):
         return Normal(mu, torch.exp(self.log_std))
 
     def parameters(self):
+        if self.is_discrete:  # categorical actor
+            actor_params = self.actor.parameters()
+            extras = []
+        else:  # Gaussian actor
+            actor_params = self.actor_mu.parameters()
+            extras = [self.log_std]  # trainable sigma
         return (
             list(self.encoder.parameters())
-            + list(self.actor.parameters())
-            + ([] if self.is_discrete else [self.log_std])
+            + list(actor_params)
+            + extras
             + list(self.critic.parameters())
         )
 
@@ -75,9 +83,6 @@ class BaseActorCritic(BasePolicy, nn.Module):
     class Memory(dict):
         pass
 
-    # ------------------------------------------------------------------
-    # BaseActorCritic – replace the old _collect_rollout with this one
-    # ------------------------------------------------------------------
     def _collect_rollout(self):
         env, device = self.env, self.device
         obs = env.reset().to(device)
@@ -138,14 +143,46 @@ class BaseActorCritic(BasePolicy, nn.Module):
         mem["advantages"] = returns - mem["values"]
 
         episode_return = mem["rewards"].sum(0).mean().item()
+
+        """print("latents: ", mem["obs"])
+        print("actions:", mem["actions"])
+        print("returns: ", mem["returns"])"""
+
+        """if self.actor_prior:
+            self.actor_prior.update(latents=mem["latents"])
+        if self.critic_prior:
+            self.critic_prior.update(latents=mem["latents"],
+                                     returns=mem["returns"])"""
+
         return mem, T, episode_return
 
-    # ------------------------------------------------------------------
+    def _post_update(self, memory: dict):
+        """
+        Called once per rollout *after* the algorithm’s parameter update
+        and *after* returns / advantages are available.
+
+        Override in a subclass to add extra logging, target‑network sync,
+        or whatever you need.  Default: do nothing.
+        """
+        pass
+
     def _log_ac_metrics(self, mse, adv_var, entropy):
         self.train_metrics.add(value_mse=mse, adv_var=adv_var, entropy=entropy)
 
-    def extra_actor_loss(self):
+    def extra_actor_loss(
+        self,
+        states: torch.Tensor | None = None,  # [B, feat]
+        logits: torch.Tensor | None = None,  # [B, n_actions]
+    ) -> torch.Tensor:
         return torch.tensor(0.0, device=self.device)
 
-    def extra_critic_loss(self):
+    def extra_critic_loss(
+        self,
+        states: torch.Tensor = None,
+        logits: torch.Tensor = None,
+    ):
         return torch.tensor(0.0, device=self.device)
+
+    @staticmethod
+    def flat(x):
+        return x.reshape(-1, *x.shape[2:])

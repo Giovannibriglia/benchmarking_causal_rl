@@ -4,6 +4,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn.functional as F
+
 from matplotlib import pyplot as plt
 
 
@@ -60,3 +63,18 @@ def plot_and_save_results(results_dir: str | Path):
     df = pd.DataFrame(table_rows)
     df.to_csv(root / "summary_table.csv", index=False)
     print(f"Saved plots in {plot_dir} and CSV in {root/'summary_table.csv'}")
+
+
+def compute_divergence(casual_dist, rl_dist, divergence: str = "kl"):
+    if divergence == "kl":
+        kl = (
+            (
+                F.softmax(rl_dist, -1)
+                * (F.log_softmax(rl_dist, -1) - torch.log(casual_dist + 1e-8))
+            )
+            .sum(-1)
+            .mean()
+        )
+        return kl
+    else:
+        raise NotImplementedError

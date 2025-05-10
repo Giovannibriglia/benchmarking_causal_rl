@@ -21,43 +21,45 @@ class A2C(BaseActorCritic):
         super().__init__(*args, lr=lr, **kw)
         self.vf_coeff, self.ent_coeff = vf_coeff, ent_coeff
 
-    # collect rollout is inherited
     def train(self):
         mem, L, R = self._collect_rollout()
         self.train_metrics.add(training_length=L, training_return=R)
+        self._post_update(mem)
         self._a2c_update(mem)
 
     def _a2c_update(self, mem):
-        def flat(x):
-            return x.reshape(-1, *x.shape[2:])
 
         # ---------- flatten T×N to B ----------
         # T, N = mem["actions"].shape[:2]
 
-        obs = flat(mem["obs"])  # [B, obs_dim]
-        actions = flat(mem["actions"])  # [B, ...]
-        returns = flat(mem["returns"]).detach()  # target; no grad
-        adv = flat(mem["advantages"]).detach()  # advantage; no grad
+        obs = self.flat(mem["obs"])  # [B, obs_dim]
+        actions = self.flat(mem["actions"])  # [B, ...]
+        returns = self.flat(mem["returns"]).detach()  # target; no grad
+        adv = self.flat(mem["advantages"]).detach()  # advantage; no grad
 
         # ---------- forward pass WITH gradient ----------
         latent = self.encoder(obs)
+
         if self.is_discrete:
             logits = self.actor(latent)
             dist = self.dist_fn(logits)
-            logp = dist.log_prob(actions)  # [B]
+            logp = dist.log_prob(actions)
             entropy = dist.entropy().mean()
+            extra_a = self.extra_actor_loss(latent, logits)
         else:
             mu = self.actor_mu(latent)
             dist = self.dist_fn(mu)
             logp = dist.log_prob(actions).sum(-1)
             entropy = dist.entropy().sum(-1).mean()
+            extra_a = self.extra_actor_loss(latent, mu)
+
+        value = self.critic(latent).squeeze(-1)
+        extra_c = self.extra_critic_loss(latent, value)
 
         values = self.critic(latent).squeeze(-1)  # [B]
 
         base_actor_loss = -(logp * adv).mean()
         base_critic_loss = 0.5 * (returns - values).pow(2).mean()
-        extra_a = self.extra_actor_loss()
-        extra_c = self.extra_critic_loss()
 
         actor_loss = base_actor_loss + extra_a
         critic_loss = base_critic_loss + extra_c

@@ -47,6 +47,9 @@ class BaseEnv(ABC):
         self.record_video = record_video
         self.video_dir = Path(video_dir or "videos").expanduser()
         self.make_kwargs = make_kwargs
+
+        self.vec_env = None
+        self.numpy_actions = False
         self._setup_env()
 
     # ------------------------------------------------------------------
@@ -62,7 +65,10 @@ class BaseEnv(ABC):
     def step(
         self, action: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List[dict]]:
-        obs, rew, term, trunc, info = self.vec_env.step(action.cpu().numpy())
+        if self.numpy_actions:
+            obs, rew, term, trunc, info = self.vec_env.step(action.cpu().numpy())
+        else:
+            obs, rew, term, trunc, info = self.vec_env.step(action)
         return (
             self._to_tensor(obs),
             self._to_tensor(rew, dtype=torch.float32),
@@ -157,3 +163,15 @@ class RandomPolicy(BasePolicy):
     def _get_action(self, obs: torch.Tensor) -> torch.Tensor:
         a = np.stack([self.env.action_space.sample() for _ in range(obs.shape[0])])
         return torch.as_tensor(a, device=self.device)
+
+
+class BasePrior:
+    def __init__(self):
+        pass
+
+    def get_prior(self, **kwargs) -> torch.Tensor:  # returns loss term
+        raise NotImplementedError
+
+    def update(self, obs, act, rew, **extras):
+        """Call after a rollout to refit the prior from data."""
+        pass

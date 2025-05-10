@@ -27,3 +27,5 @@ class GymnasiumEnv(BaseEnv):
         self.vec_env = SyncVectorEnv(
             [self._make_single(i, self.record_video) for i in range(self.n_envs)]
         )
+
+        self.numpy_actions = True

@@ -26,21 +26,19 @@ class PPO(BaseActorCritic):
     def train(self):
         mem, l, r = self._collect_rollout()
         self.train_metrics.add(training_length=l, training_return=r)
+        self._post_update(mem)
         self._ppo_update(mem)
 
     def _ppo_update(self, mem):
-        def flat(x):
-            return x.reshape(-1, *x.shape[2:])
-
         T, N = mem["actions"].shape[:2]
 
-        obs = flat(mem["obs"])
-        act = flat(mem["actions"])
-        old_logp = flat(mem["logp"])
-        old_value = flat(mem["values"])
-        returns = flat(mem["returns"])
-        adv = flat(mem["advantages"])
-        entropy_all = flat(mem["entropy"])
+        obs = self.flat(mem["obs"])
+        act = self.flat(mem["actions"])
+        old_logp = self.flat(mem["logp"])
+        old_value = self.flat(mem["values"])
+        returns = self.flat(mem["returns"])
+        adv = self.flat(mem["advantages"])
+        entropy_all = self.flat(mem["entropy"])
 
         # advantage normalisation
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
@@ -53,32 +51,32 @@ class PPO(BaseActorCritic):
                     idxs[start : start + self.batch_size], device=self.device
                 )
 
-                lat = self.encoder(obs[b])
+                states = self.encoder(obs[b])
+
                 if self.is_discrete:
-                    logits = self.actor(lat)
+                    logits = self.actor(states)
                     dist = self.dist_fn(logits)
-                    new_logp = dist.log_prob(act[b])  # [batch]
+                    new_logp = dist.log_prob(act[b])
                     batch_entropy = dist.entropy().mean()
+                    extra_a = self.extra_actor_loss(states, logits)
                 else:
-                    mu = self.actor_mu(lat)
+                    mu = self.actor_mu(states)
                     dist = self.dist_fn(mu)
-                    new_logp = dist.log_prob(act[b]).sum(-1)  # [batch]
+                    new_logp = dist.log_prob(act[b]).sum(-1)
                     batch_entropy = dist.entropy().sum(-1).mean()
+                    extra_a = self.extra_actor_loss(states, mu)
 
-                value = self.critic(lat).squeeze(-1)  # [batch]
+                value = self.critic(states).squeeze(-1)
+                extra_c = self.extra_critic_loss(states, value)
 
-                # PPO losses ---------------------------------------------------
                 ratio = torch.exp(new_logp - old_logp[b])
                 surr1 = ratio * adv[b]
                 surr2 = (
                     torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
                 )
 
-                # ---------- PPO losses -------------------------------------------------
                 base_actor_loss = -torch.min(surr1, surr2).mean()
                 base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
-                extra_a = self.extra_actor_loss()
-                extra_c = self.extra_critic_loss()
 
                 actor_loss = base_actor_loss + extra_a
                 critic_loss = base_critic_loss + extra_c
@@ -136,11 +134,3 @@ class PPO(BaseActorCritic):
         self.clip_eps = ckpt.get("clip_eps", 0.2)
         self.vf_coeff = ckpt.get("vf_coeff", 0.5)
         self.ent_coeff = ckpt.get("ent_coeff", 0.01)
-
-
-class CausalPriorPPO(PPO):
-    def extra_actor_loss(self):
-        pass
-
-    def extra_critic_loss(self):
-        pass
