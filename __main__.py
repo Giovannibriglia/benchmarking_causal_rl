@@ -10,7 +10,7 @@ if __name__ == "__main__":
     bench = Benchmark(
         env_suite="gymnasium",
         n_episodes_train=100,
-        n_checkpoints=5,
+        n_checkpoints=20,
         rollout_len=256,
         n_train_envs=8,
         n_eval_envs=4,
@@ -19,5 +19,4 @@ if __name__ == "__main__":
     )
 
     path_files = bench.run()
-
-    plot_and_save_results(path_files)
+    plot_and_save_results(path_files, bench.n_episodes_train)

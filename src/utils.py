@@ -10,7 +10,26 @@ import torch.nn.functional as F
 from matplotlib import pyplot as plt
 
 
-def plot_and_save_results(results_dir: str | Path):
+def _iqr_mean(arr, percentile: int = 25):
+    """
+    Replace values outside the interquartile range with the 25th and 75th percentiles.
+
+    Args:
+        arr (np.ndarray): Input 1D or ND array.
+        percentile (int): Lower percentile bound (default: 25). Upper is 100 - percentile.
+
+    Returns:
+        np.ndarray: Array with outliers replaced by percentile bounds.
+    """
+    lower = np.percentile(arr, percentile)
+    upper = np.percentile(arr, 100 - percentile)
+
+    # Clip values outside the percentile range
+    arr_clipped = np.clip(arr, lower, upper)
+    return arr_clipped
+
+
+def plot_and_save_results(results_dir: str | Path, n_episodes: int):
     """
     Read every  *_metrics.json  in *results_dir*, aggregate metrics and
     generate one plot per metric plus a summary CSV (mean ± std of returns).
@@ -20,6 +39,9 @@ def plot_and_save_results(results_dir: str | Path):
             FrozenLake-v1_metrics.json
             ...
     """
+
+    fontsize = 25
+
     root = Path(results_dir)
     plot_dir = root / "plots"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -39,8 +61,11 @@ def plot_and_save_results(results_dir: str | Path):
             plt.figure(dpi=500, figsize=(16, 9))
             for algo_name, m_dict in algo_dict.items():
                 y = m_dict.get(metric, [])
-                x = range(len(y))
-                plt.plot(x, y, label=algo_name)
+                # y = list(_iqr_mean(y))
+
+                n_checkpoints = len(y)
+                x = np.linspace(0, n_episodes, n_checkpoints)
+                plt.plot(x, y, label=algo_name, linewidth=3)
 
                 if metric.endswith("return"):
                     table_rows.append(
@@ -52,11 +77,14 @@ def plot_and_save_results(results_dir: str | Path):
                         }
                     )
 
-            plt.title(f"{metric} – {env_id}")
-            plt.xlabel("checkpoint #")
-            plt.legend()
+            plt.title(f"{env_id}", fontsize=fontsize + 5)
+            # xt = np.linspace(0, n_episodes, n_checkpoints)
+            plt.xticks(fontsize=fontsize - 2)
+            plt.xlabel("episodes", fontsize=fontsize)
+            plt.ylabel(f"{metric}", fontsize=fontsize)
+            plt.legend(loc="best", fontsize=fontsize - 5)
             plt.tight_layout()
-            plt.savefig(plot_dir / f"{env_id}_{metric}.png", dpi=150)
+            plt.savefig(plot_dir / f"{env_id}_{metric}.png", dpi=500)
             plt.close()
 
     # ---------------------- summary CSV --------------------------------

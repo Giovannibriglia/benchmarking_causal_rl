@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from abc import abstractmethod
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -60,6 +62,26 @@ class BaseActorCritic(BasePolicy, nn.Module):
         )
         self.to(self.device)
         self.optim = Adam(self.parameters(), lr=lr)
+
+    def train(self):
+        mem, L, R = self._collect_rollout()
+        self.train_metrics.add(training_length=L, training_return=R)
+        self._post_update(mem)
+        self._algo_update(mem)
+
+    @abstractmethod
+    def _algo_update(self, mem):
+        raise NotImplementedError
+
+    def _post_update(self, mem):
+        """
+        Called once per rollout *after* the algorithm’s parameter update
+        and *after* returns / advantages are available.
+
+        Override in a subclass to add extra logging, target‑network sync,
+        or whatever you need.  Default: do nothing.
+        """
+        pass
 
     # ------------------------------------------------------------------
     def _normal_dist(self, mu):
@@ -155,16 +177,6 @@ class BaseActorCritic(BasePolicy, nn.Module):
                                      returns=mem["returns"])"""
 
         return mem, T, episode_return
-
-    def _post_update(self, memory: dict):
-        """
-        Called once per rollout *after* the algorithm’s parameter update
-        and *after* returns / advantages are available.
-
-        Override in a subclass to add extra logging, target‑network sync,
-        or whatever you need.  Default: do nothing.
-        """
-        pass
 
     def _log_ac_metrics(self, mse, adv_var, entropy):
         self.train_metrics.add(value_mse=mse, adv_var=adv_var, entropy=entropy)

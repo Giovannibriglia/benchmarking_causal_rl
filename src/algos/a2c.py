@@ -21,13 +21,7 @@ class A2C(BaseActorCritic):
         super().__init__(*args, lr=lr, **kw)
         self.vf_coeff, self.ent_coeff = vf_coeff, ent_coeff
 
-    def train(self):
-        mem, L, R = self._collect_rollout()
-        self.train_metrics.add(training_length=L, training_return=R)
-        self._post_update(mem)
-        self._a2c_update(mem)
-
-    def _a2c_update(self, mem):
+    def _algo_update(self, mem):
 
         # ---------- flatten T×N to B ----------
         # T, N = mem["actions"].shape[:2]

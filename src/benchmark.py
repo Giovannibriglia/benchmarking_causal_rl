@@ -18,11 +18,11 @@ class Benchmark:
     def __init__(
         self,
         env_suite="gymnasium",
-        n_episodes_train=100000,
+        n_episodes_train=10000,
         n_checkpoints=100,
         rollout_len=2048,
-        n_train_envs=8,
-        n_eval_envs=4,
+        n_train_envs=32,
+        n_eval_envs=16,
         seed=42,
         device=DEFAULT_DEVICE,
     ):
@@ -92,7 +92,6 @@ class Benchmark:
             algo_data.setdefault(k, []).append(v)
         path.write_text(json.dumps(data, indent=2))
 
-    # ------------------------------------------------------------------
     def run(self):
         """Main training/evaluation loop."""
         for env_id in self.env_names:

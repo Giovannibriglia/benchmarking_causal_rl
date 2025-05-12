@@ -23,13 +23,7 @@ class PPO(BaseActorCritic):
         self.clip_eps, self.vf_coeff, self.ent_coeff = clip_eps, vf_coeff, ent_coeff
         self.n_epochs, self.batch_size = n_epochs, batch_size
 
-    def train(self):
-        mem, l, r = self._collect_rollout()
-        self.train_metrics.add(training_length=l, training_return=r)
-        self._post_update(mem)
-        self._ppo_update(mem)
-
-    def _ppo_update(self, mem):
+    def _algo_update(self, mem):
         T, N = mem["actions"].shape[:2]
 
         obs = self.flat(mem["obs"])

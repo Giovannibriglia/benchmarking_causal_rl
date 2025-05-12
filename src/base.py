@@ -154,6 +154,12 @@ class BasePolicy(ABC):
     def load_policy(self, path: Union[str, Path]):
         _ = torch.load(self._ensure_pt_path(path))
 
+    def _setup_actor_prior(self):
+        raise NotImplementedError
+
+    def _setup_critic_prior(self):
+        raise NotImplementedError
+
 
 class RandomPolicy(BasePolicy):
     def train(self):

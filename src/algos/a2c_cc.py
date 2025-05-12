@@ -9,10 +9,10 @@ import yaml
 from cbn.base.bayesian_network import BayesianNetwork
 from torch import nn
 
-from src.algos import PPO
+from src.algos import A2C
 
 
-class CausalCriticPPO(PPO):
+class CausalCriticA2C(A2C):
     def __init__(
         self,
         *args,
@@ -58,7 +58,6 @@ class CausalCriticPPO(PPO):
         torch.save(
             {
                 "state_dict": self.state_dict(),
-                "clip_eps": self.clip_eps,
                 "vf_coeff": self.vf_coeff,
                 "ent_coeff": self.ent_coeff,
                 "is_discrete": self.is_discrete,
@@ -69,13 +68,8 @@ class CausalCriticPPO(PPO):
         self.bn.save_model(path)
 
     def load_policy(self, path: Union[str, Path]) -> None:
-        # TODO: load bn
-        print("YOU NEED TO LOG THE BN")
-
         ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
         self.load_state_dict(ckpt["state_dict"])
-        # hyper‑params useful if you want to inspect them later
-        self.clip_eps = ckpt.get("clip_eps", 0.2)
         self.vf_coeff = ckpt.get("vf_coeff", 0.5)
         self.ent_coeff = ckpt.get("ent_coeff", 0.01)
 
@@ -108,8 +102,8 @@ class CausalCriticPPO(PPO):
           out    : [B, n_actions]  (rows sum to 1)
         """
         if states.ndim == 1:
-            # batch_size = states.shape
-            # n_features = 1
+            batch_size = states.shape
+            n_features = 1
             evidence = {"obs_0": states.unsqueeze(-1)}
         else:
             batch_size, n_features = states.shape
