@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
-import numpy as np
 import torch
 
 DEFAULT_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -114,25 +113,38 @@ class BasePolicy(ABC):
         self.train_metrics, self.eval_metrics = MetricBuffer(), MetricBuffer()
 
     # ------------------------------------------------------------------
-    def _rollout(self, env: BaseEnv) -> Tuple[int, float]:
+    def _rollout_evaluation(self, env: BaseEnv) -> Tuple[List[int], List[float]]:
         obs = env.reset().to(self.device)
         total_r = torch.zeros(env.n_envs, device=self.device)
-        total_l = torch.zeros_like(total_r)
+        total_l = torch.zeros(env.n_envs, device=self.device)
+
         for _ in range(self.rollout_len):
             with torch.no_grad():
                 act = self._get_action(obs)
             nxt_obs, rew, term, trunc, _ = env.step(act)
             nxt_obs, rew = nxt_obs.to(self.device), rew.to(self.device)
+
             total_r += rew
             total_l += 1
             obs = nxt_obs
+
+            # stop when **all** envs are done
             if (term | trunc).all():
                 break
-        return int(total_l.mean().cpu()), float(total_r.mean().cpu())
+
+        # move to CPU & convert to Python lists
+        lengths = total_l.cpu().tolist()  # [len_env0, len_env1, ...]
+        returns = total_r.cpu().tolist()  # [ret_env0, ret_env1, ...]
+        return lengths, returns
 
     def evaluate(self):
-        l, r = self._rollout(self.eval_env)
-        self.eval_metrics.add(evaluation_length=l, evaluation_return=r)
+        lengths, returns = self._rollout_evaluation(self.eval_env)
+
+        # log each env separately, so we know “where” each reward/length came from
+        for idx, (l, r) in enumerate(zip(lengths, returns)):
+            self.eval_metrics.add(
+                **{f"evaluation_length_{idx}": l, f"evaluation_return_{idx}": r}
+            )
 
     # ------------------------------------------------------------------
     @abstractmethod
@@ -159,16 +171,6 @@ class BasePolicy(ABC):
 
     def _setup_critic_prior(self):
         raise NotImplementedError
-
-
-class RandomPolicy(BasePolicy):
-    def train(self):
-        l, r = self._rollout(self.env)
-        self.train_metrics.add(training_length=l, training_return=r)
-
-    def _get_action(self, obs: torch.Tensor) -> torch.Tensor:
-        a = np.stack([self.env.action_space.sample() for _ in range(obs.shape[0])])
-        return torch.as_tensor(a, device=self.device)
 
 
 class BasePrior:

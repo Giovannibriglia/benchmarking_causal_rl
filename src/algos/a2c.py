@@ -22,60 +22,54 @@ class A2C(BaseActorCritic):
         self.vf_coeff, self.ent_coeff = vf_coeff, ent_coeff
 
     def _algo_update(self, mem):
+        # ---------- flatten ----------
+        obs = self.flat(mem["obs"])
+        actions = self.flat(mem["actions"]).long()  # ensure long for discrete
+        returns = self.flat(mem["returns"]).detach()
+        adv = self.flat(mem["advantages"]).detach()
+        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
-        # ---------- flatten T×N to B ----------
-        # T, N = mem["actions"].shape[:2]
-
-        obs = self.flat(mem["obs"])  # [B, obs_dim]
-        actions = self.flat(mem["actions"])  # [B, ...]
-        returns = self.flat(mem["returns"]).detach()  # target; no grad
-        adv = self.flat(mem["advantages"]).detach()  # advantage; no grad
-
-        # ---------- forward pass WITH gradient ----------
+        # ---------- forward ----------
         latent = self.encoder(obs)
-
         if self.is_discrete:
             logits = self.actor(latent)
             dist = self.dist_fn(logits)
-            logp = dist.log_prob(actions)
+            logp = dist.log_prob(actions)  # [B]
             entropy = dist.entropy().mean()
-            extra_a = self.extra_actor_loss(latent, logits)
+            extra_a = self.extra_actor_loss(latent, dist)
         else:
             mu = self.actor_mu(latent)
             dist = self.dist_fn(mu)
             logp = dist.log_prob(actions).sum(-1)
             entropy = dist.entropy().sum(-1).mean()
-            extra_a = self.extra_actor_loss(latent, mu)
+            extra_a = self.extra_actor_loss(latent, dist)
 
-        value = self.critic(latent).squeeze(-1)
+        value = self.critic(latent).squeeze(-1)  # [B]
         extra_c = self.extra_critic_loss(latent, value)
 
-        values = self.critic(latent).squeeze(-1)  # [B]
-
         base_actor_loss = -(logp * adv).mean()
-        base_critic_loss = 0.5 * (returns - values).pow(2).mean()
+        base_critic_loss = 0.5 * (returns - value).pow(2).mean()
 
         actor_loss = base_actor_loss + extra_a
         critic_loss = base_critic_loss + extra_c
         loss = actor_loss + self.vf_coeff * critic_loss - self.ent_coeff * entropy
 
-        # ---------- optimiser step ----------
+        # ---------- step ----------
         self.optim.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.parameters(), 0.5)
         self.optim.step()
 
-        # ---------- logging ----------
+        # ---------- metrics ----------
         self.train_metrics.add(
-            total_loss=float(loss),
+            total_loss=float(loss.item()),
             actor_loss=float(base_actor_loss),
             extra_actor_loss=float(extra_a),
             critic_loss=float(base_critic_loss),
             extra_critic_loss=float(extra_c),
         )
-
         self._log_ac_metrics(
-            mse=critic_loss.item(),
+            mse=base_critic_loss.item(),
             adv_var=adv.var(unbiased=False).item(),
             entropy=entropy.item(),
         )

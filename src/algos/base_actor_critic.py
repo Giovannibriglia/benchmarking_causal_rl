@@ -166,16 +166,6 @@ class BaseActorCritic(BasePolicy, nn.Module):
 
         episode_return = mem["rewards"].sum(0).mean().item()
 
-        """print("latents: ", mem["obs"])
-        print("actions:", mem["actions"])
-        print("returns: ", mem["returns"])"""
-
-        """if self.actor_prior:
-            self.actor_prior.update(latents=mem["latents"])
-        if self.critic_prior:
-            self.critic_prior.update(latents=mem["latents"],
-                                     returns=mem["returns"])"""
-
         return mem, T, episode_return
 
     def _log_ac_metrics(self, mse, adv_var, entropy):
