@@ -5,10 +5,8 @@ from .ppo_ca import CausalActorPPO
 from .ppo_cc import CausalCriticPPO
 
 AGENTS = {
-    # "ppo_ca": CausalActorPPO,
-    "ppo_cc": CausalCriticPPO,
-    "ppo_base": PPO,
     # "ppo_cc": CausalCriticPPO,
-    "a2c_base": A2C,
+    # "ppo_base": PPO,
     "a2c_cc": CausalCriticA2C,
+    "a2c_base": A2C,
 }

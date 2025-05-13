@@ -6,10 +6,10 @@ if __name__ == "__main__":
     # TODO: fix video storing
     bench = Benchmark(
         env_suite="gymnasium",
-        n_episodes_train=2000,
+        n_episodes_train=1000,
         n_checkpoints=50,
         rollout_len=1024,
-        n_train_envs=16,
+        n_train_envs=8,
         n_eval_envs=8,
         seed=42,
         device="cuda",

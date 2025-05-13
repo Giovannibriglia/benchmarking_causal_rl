@@ -52,13 +52,13 @@ class PPO(BaseActorCritic):
                     dist = self.dist_fn(logits)
                     new_logp = dist.log_prob(act[b])
                     batch_entropy = dist.entropy().mean()
-                    extra_a = self.extra_actor_loss(states, dist)
+                    extra_a = self.extra_actor_loss(states, logits)
                 else:
                     mu = self.actor_mu(states)
                     dist = self.dist_fn(mu)
                     new_logp = dist.log_prob(act[b]).sum(-1)
                     batch_entropy = dist.entropy().sum(-1).mean()
-                    extra_a = self.extra_actor_loss(states, dist)
+                    extra_a = self.extra_actor_loss(states, mu)
 
                 value = self.critic(states).squeeze(-1)
                 extra_c = self.extra_critic_loss(states, value)
