@@ -4,12 +4,13 @@ from typing import Union
 import networkx as nx
 import pandas as pd
 import torch
-import yaml
 
-from cbn.base.bayesian_network import BayesianNetwork
 from torch import nn
+from vbn.core import CausalBayesNet
+from vbn.utils import infer_types_and_cards
 
 from src.algos import A2C
+from src.algos.utils import set_learning_and_inference_objects
 
 
 class CausalCriticA2C(A2C):
@@ -22,36 +23,39 @@ class CausalCriticA2C(A2C):
 
         causality_init = kwargs.pop("causality_init", {})
 
-        self.N_max = causality_init.get("N_max", 16)
+        self.num_samples = causality_init.get("num_samples", 32)
 
         self.dag = causality_init.get("dag", None)
-        data = causality_init.get("data", None)
+        self.types = causality_init.get("types", None)
+        self.cards = causality_init.get("cards", None)
 
-        parameter_learning_algo = causality_init.get(
-            "parameter_learning_algo", "logistic_regression"
-        )
-        inference_mechanism = causality_init.get("inference_mechanism", "exact")
+        self.discrete = causality_init.get("discrete", False)
+        self.approximate = causality_init.get("approximate", False)
 
-        with open(
-            f"cbn/conf/parameter_learning/{parameter_learning_algo}.yaml", "r"
-        ) as file:
-            self.parameters_learning_config = yaml.safe_load(file)
+        chkpt_path = causality_init.get("chkpt_path", None)
 
-        with open(f"cbn/conf/inference/{inference_mechanism}.yaml", "r") as file:
-            self.inference_config = yaml.safe_load(file)
-
-        self.kwargs = {"log": False, "plot_prob": False}
-
-        if self.dag is not None and data is not None:
-            self.bn = BayesianNetwork(
-                dag=self.dag,
-                data=data,
-                parameters_learning_config=self.parameters_learning_config,
-                inference_config=self.inference_config,
-                **self.kwargs,
-            )
+        if self.dag is not None and self.cards is not None and self.types is not None:
+            self.bn: CausalBayesNet = CausalBayesNet(self.dag, self.types, self.cards)
         else:
             self.bn = None
+
+        if chkpt_path is not None and self.bn is not None:
+            self.lp = self.bn.load_params(str(chkpt_path))
+        else:
+            self.lp = None
+
+        self.fit_method, self.inf_method = set_learning_and_inference_objects(
+            self.discrete, self.approximate
+        )
+
+        if self.bn is not None and self.inf_method is not None:
+            self.inf_obj = self.bn.setup_inference(self.inf_method)
+
+        self.kwargs_inf = {"num_samples": self.num_samples}
+        self.kwargs_fit = {
+            "epochs": 100,
+            "batch_size": 1024,
+        }
 
     # --------  -- persistence ----------
     def save_policy(self, path: Union[str, Path]) -> None:
@@ -65,13 +69,7 @@ class CausalCriticA2C(A2C):
             self._ensure_pt_path(path),
         )
 
-        self.bn.save_model(path)
-
-    def load_policy(self, path: Union[str, Path]) -> None:
-        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
-        self.load_state_dict(ckpt["state_dict"])
-        self.vf_coeff = ckpt.get("vf_coeff", 0.5)
-        self.ent_coeff = ckpt.get("ent_coeff", 0.01)
+        self.bn.save_params(self.lp, str(path))
 
     @staticmethod
     def _replace_infs(t: torch.Tensor) -> torch.Tensor:
@@ -98,31 +96,41 @@ class CausalCriticA2C(A2C):
         """
         Dummy prior – replace with your own CPD.
         Returns categorical probabilities over actions for each state.
-          states : [B, feat]
+          states : [B, obs_dim]
+          actions: [B, act_dim]
           out    : [B, n_actions]  (rows sum to 1)
         """
         if states.ndim == 1:
-            batch_size = states.shape
-            n_features = 1
-            evidence = {"obs_0": states.unsqueeze(-1)}
+            # batch_size = states.shape
+            # n_features = 1
+            evidence = {"obs_0": states}
         else:
             batch_size, n_features = states.shape
-            evidence = {
-                f"obs_{f}": states[:, f].unsqueeze(-1) for f in range(n_features)
-            }
+            evidence = {f"obs_{f}": states[:, f] for f in range(n_features)}
 
-        evidence["action"] = actions.unsqueeze(-1)
+        do = {}
+        if actions.ndim == 1:
+            do["action_0"] = actions
+        else:
+            for i in range(actions.shape[1]):
+                do[f"action_{i}"] = actions[:, i]
 
-        pdfs, target_node_domains, parents_domains = self.bn.get_pdf(
-            "return", evidence, N_max=self.N_max
+        posterior_pdfs, posterior_samples, _ = self.bn.infer(
+            self.inf_obj,
+            lp=self.lp,
+            evidence=evidence,
+            query=["return"],
+            do=do,
+            return_samples=True,
+            **self.kwargs_inf,
         )
 
-        nan_mask = torch.isnan(pdfs)
+        nan_mask = torch.isnan(posterior_pdfs)
         if nan_mask.any():
-            mean_pdfs = pdfs[~nan_mask].mean()
-            pdfs[nan_mask] = mean_pdfs
+            mean_pdfs = posterior_pdfs[~nan_mask].mean()
+            posterior_pdfs[nan_mask] = mean_pdfs
 
-        most_probable_reward = pdfs.max(dim=-1).values.view(-1)
+        most_probable_reward = posterior_pdfs.max(dim=-1).values.view(-1)
 
         log_p = torch.log(most_probable_reward)
         log_p = self._replace_infs(log_p)
@@ -139,7 +147,7 @@ class CausalCriticA2C(A2C):
 
         # ---------- flatten rollout tensors ----------
         states = mem["obs"].reshape(-1, *mem["obs"].shape[2:])  # [B, obs_dim]
-        actions = mem["actions"].reshape(-1).long()  # [B]
+        actions = mem["actions"].reshape(-1, *mem["actions"].shape[2:])  # [B, act_dim]
         returns = mem["returns"].reshape(-1).detach()  # [B]
 
         # ---------- prepare encoder input ----------
@@ -175,47 +183,55 @@ class CausalCriticA2C(A2C):
 
         n_obs = 1 if mem["obs"].dim() == 2 else mem["obs"].shape[-1]
 
+        n_actions = 1 if mem["actions"].dim() == 2 else mem["actions"].shape[-1]
+
         if n_obs == 1:
             obs_flat = mem["obs"].reshape(-1)
         else:
             obs_flat = mem["obs"].reshape(
                 -1, mem["obs"].shape[-1]
             )  # shape: [T*N, obs_dim]
-        actions_flat = mem["actions"].reshape(-1)  # shape: [T*N]
+
+        if n_actions == 1:
+            actions_flat = mem["actions"].reshape(-1)
+        else:
+            actions_flat = mem["actions"].reshape(
+                -1, mem["actions"].shape[-1]
+            )  # shape: [T*N, qct_dim
+
         returns_flat = mem["returns"].reshape(-1)  # shape: [T*N]
 
-        # Use a dict comprehension for obs columns efficiently
         if n_obs == 1:
             data_dict = {
                 "obs_0": obs_flat.cpu().numpy(),
-                "action": actions_flat.cpu().numpy(),
-                "return": returns_flat.cpu().numpy(),
             }
         else:
-            data_dict = {
-                **{
-                    f"obs_{i}": obs_flat[:, i].cpu().numpy()
-                    for i in range(obs_flat.shape[1])
-                },
-                "action": actions_flat.cpu().numpy(),
-                "return": returns_flat.cpu().numpy(),
-            }
+            data_dict = {}
+            for i in range(obs_flat.shape[1]):
+                data_dict[f"obs_{i}"] = obs_flat[:, i].cpu().numpy()
+
+        if n_actions == 1:
+            data_dict["action_0"] = actions_flat.cpu().numpy()
+        else:
+            for i in range(actions_flat.shape[1]):
+                data_dict[f"action_{i}"] = actions_flat[:, i].cpu().numpy()
+
+        data_dict["return"] = returns_flat.cpu().numpy()
 
         data = pd.DataFrame(data_dict)
 
         if self.bn is not None:
             # Use the updated DataFrame to update your Bayesian Network or knowledge representation
-            self.bn.update_knowledge(data)
+            self.lp = self.bn.add_data(data, update_params=True, return_lp=True)
         else:
             dag = self._get_dag(data)
 
-            self.bn = BayesianNetwork(
-                dag=dag,
-                data=data,
-                parameters_learning_config=self.parameters_learning_config,
-                inference_config=self.inference_config,
-                **self.kwargs,
-            )
+            if self.types is None or self.cards is None:
+                self.types, self.cards = infer_types_and_cards(data)
+
+            self.bn = CausalBayesNet(dag, self.types, self.cards)
+            self.lp = self.bn.fit(self.fit_method, data, **self.kwargs_fit)
+            self.inf_obj = self.bn.setup_inference(self.inf_method)
 
     def _get_dag(
         self, data: pd.DataFrame, target_feature: str = "return", do_key: str = "action"

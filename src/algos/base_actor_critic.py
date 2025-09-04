@@ -30,6 +30,7 @@ class BaseActorCritic(BasePolicy, nn.Module):
         self.gamma, self.gae_lambda = gamma, gae_lambda
 
         obs_space, act_space = env.observation_space, env.action_space
+
         if isinstance(obs_space, gym.spaces.Discrete):
             self.encoder = nn.Embedding(obs_space.n, hidden_dim)
             latent = hidden_dim

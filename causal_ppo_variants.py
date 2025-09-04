@@ -241,6 +241,8 @@ class PPOBase:
         for _ in range(self.k_epochs):
             lg, vals = self.ac(S)
             dist = Categorical(logits=lg)
+            entropy = dist.entropy().mean()
+            self.metrics["entropy"] = entropy.item()
             lp = dist.log_prob(A)
             ratio = torch.exp(lp - oldLP)
             surr1 = ratio * ADV
@@ -271,6 +273,16 @@ class PPOCausalPrior(PPOBase):
     def _extra_actor_loss(self, lg, S, ADV):
         with torch.no_grad():
             p = causal_prior_cartpole(S)
+
+        p1 = p[0, :].detach().cpu().numpy()
+        l1 = lg[0, :].detach().cpu().numpy()
+
+        plt.figure()
+        plt.plot(p1, label="p1")
+        plt.plot(l1, label="l1")
+        plt.legend(loc="best")
+        plt.show()
+
         kl = (
             (F.softmax(lg, -1) * (F.log_softmax(lg, -1) - torch.log(p + 1e-8)))
             .sum(-1)
@@ -310,17 +322,6 @@ class PPOCausalCritic(PPOBase):
             env.observation_space.shape[0], env.action_space.n
         ).to(self.device)
         self.opt_q = torch.optim.Adam(self.q_net.parameters(), lr=3e-4)
-
-    # ---------- actor loss gets an **extra** causal‑KL term if you like ----------
-    def _extra_actor_loss(self, logits, states, advs):
-        # causal baseline (variance reduction only)
-        with torch.no_grad():
-            p_causal = causal_prior_cartpole(states)  # (B,A)
-            q_all = self.q_net(states)  # (B,A)
-            baseline = (p_causal * q_all).sum(-1)  # (B,)
-        # save for later (see _post_update) and return 0 – we don't bias the loss here
-        self._cached_baseline = baseline
-        return 0.0
 
     # ---------- critic loss is done after PPO update so we have the targets ----------
     def _post_update(self, states, acts, advs, returns):
@@ -426,8 +427,8 @@ class PPORandomJointCPD(PPOCausalPrior):
 
 
 AGENT_CLS = dict(
-    baseline=PPOBaseline,
     prior=PPOCausalPrior,
+    baseline=PPOBaseline,
     random_prior=PPORandomPrior,
     critic=PPOCausalCritic,
     random_critic=PPORandomCausalCritic,
@@ -435,13 +436,16 @@ AGENT_CLS = dict(
     random_joint=PPORandomJointCPD,
 )
 
-METRICS = ["ret", "adv_var", "prior_kl", "cpd_update", "value_mse", "q_loss"]
+METRICS = ["ret", "adv_var", "prior_kl", "cpd_update", "value_mse", "q_loss", "entropy"]
 
 
 # ───────── benchmark runner ─────────
 def run_benchmark(
     env_id: str, n_episodes: int, rollout_len: int, n_seeds: int, n_checkpoints: int
 ) -> Dict[str, Dict[str, List[List[float]]]]:
+
+    ck_dir = Path("checkpoints")
+    ck_dir.mkdir(exist_ok=True)
 
     if n_checkpoints > n_episodes:
         n_checkpoints = n_episodes
@@ -466,8 +470,22 @@ def run_benchmark(
                 a.rollout(rollout_len)
                 a.update()
             if ep in ck_idx:
-                for v, a in agents.items():
-                    a.metrics["ret"] = greedy_return(envs[v], a)
+                ck = list(ck_idx).index(ep)
+                for v, agent in agents.items():
+                    torch.save(
+                        {
+                            "actor_critic": agent.ac.state_dict(),
+                            # Joint variant has an extra CPD net
+                            "cpd": (
+                                getattr(agent, "cpd", None).state_dict()
+                                if hasattr(agent, "cpd")
+                                else None
+                            ),
+                            # (add q_net for CausalCritic if you swap that in)
+                        },
+                        ck_dir / f"{v}_seed{seed_i}_ck{ck}.pt",
+                    )
+                    a.metrics["ret"] = greedy_return(envs[v], agent)
                     for k, val in a.metrics.items():
                         logs[v].setdefault(k, [[] for _ in range(n_seeds)])[
                             seed_i
@@ -539,7 +557,7 @@ def plot_metric(json_path: str, key: str, n_episodes: int, n_checkpoints: int):
     f_size = 25
 
     logs = json.loads(Path(json_path).read_text())
-    xs = np.linspace(0, n_episodes - 1, n_checkpoints - 1, dtype=int)
+    xs = np.linspace(0, n_episodes - 1, n_checkpoints, dtype=int)
     plt.figure(dpi=500, figsize=(16, 9))
     for v in logs:
         if key in logs[v].keys():
@@ -547,7 +565,8 @@ def plot_metric(json_path: str, key: str, n_episodes: int, n_checkpoints: int):
             mean, std = _iqr_stats(arr)
             plt.plot(xs, mean, label=v, linewidth=3)
             plt.fill_between(xs, mean - std, mean + std, alpha=0.1)
-    plt.xticks(xs, fontsize=f_size)
+    xtic = np.linspace(0, n_episodes - 1, 10, dtype=int)
+    plt.xticks(xtic, fontsize=f_size)
     plt.yticks(fontsize=f_size)
     plt.xlabel("episodes", fontsize=f_size)
     plt.ylabel(key, fontsize=f_size)
@@ -571,7 +590,9 @@ def table_summary(json_path: str) -> pd.DataFrame:
             if m in var_dict:
                 # take the last checkpoint value for every seed, then average
                 arr = np.array(var_dict[m])  # shape (seeds, checkpoints)
-                mean, std = _iqr_stats(arr)
+                mean_arr, std_arr = _iqr_stats(arr)
+                mean = np.mean(mean_arr)
+                std = np.mean(std_arr)
                 row[m] = f"{mean:.3f} ± {std:.3f}" if arr.size else np.nan
             else:
                 row[m] = np.nan
@@ -604,3 +625,10 @@ if __name__ == "__main__":
         plot_metric("benchmark.json", m, n_episodes, n_checkpoints)
 
     table_summary("benchmark.json")
+
+    """
+    ckpt = torch.load("checkpoints/joint_seed1_ck10.pt")
+    agent.ac.load_state_dict(ckpt["actor_critic"])
+    if ckpt["cpd"] is not None:
+    agent.cpd.load_state_dict(ckpt["cpd"])
+    """

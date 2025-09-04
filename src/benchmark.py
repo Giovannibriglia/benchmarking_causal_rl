@@ -19,10 +19,10 @@ class Benchmark:
         self,
         env_suite="gymnasium",
         n_episodes_train=10000,
-        n_checkpoints=100,
-        rollout_len=2048,
+        n_checkpoints=20,
+        rollout_len=512,
         n_train_envs=32,
-        n_eval_envs=16,
+        n_eval_envs=32,
         seed=42,
         device=DEFAULT_DEVICE,
     ):
@@ -42,6 +42,7 @@ class Benchmark:
         self.dir_saving = Path("runs") / self._generate_simulation_name(
             f"{env_suite}_benchmark"
         )
+        print("Experiment dir:", self.dir_saving)
         self.dir_saving.mkdir(parents=True, exist_ok=True)
 
         self.policy_path = self.dir_saving / "policies"
@@ -50,7 +51,6 @@ class Benchmark:
         self.algorithms: Dict[str, type[BasePolicy]] = AGENTS
         self.results: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
 
-        # Pre‑compute checkpoints indices (integers) for quick lookup
         self.checkpoints = set(
             np.linspace(0, n_episodes_train, n_checkpoints, dtype=int)
         )
@@ -111,11 +111,14 @@ class Benchmark:
                     record_video=True,
                 )
 
+                kwargs_agent = {}
+
                 agent = AlgoCls(
                     train_env,
                     eval_env,
                     rollout_len=self.rollout_len,
                     device=self.device,
+                    **kwargs_agent,
                 )
                 self.results[env_id].setdefault(algo_name, {})
 

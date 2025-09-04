@@ -1,8 +1,0 @@
-
-estimator_name: "linear_regression"
-
-optimizer:
-  name: "Adam"
-
-train:
-  n_epochs: 1000

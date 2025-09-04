@@ -105,6 +105,7 @@ class BasePolicy(ABC):
         eval_env: BaseEnv,
         rollout_len: int = 1024,
         device: str | torch.device = DEFAULT_DEVICE,
+        **kwargs_agent,
     ) -> None:
         self.env = env
         self.eval_env = eval_env
@@ -171,15 +172,3 @@ class BasePolicy(ABC):
 
     def _setup_critic_prior(self):
         raise NotImplementedError
-
-
-class BasePrior:
-    def __init__(self):
-        pass
-
-    def get_prior(self, **kwargs) -> torch.Tensor:  # returns loss term
-        raise NotImplementedError
-
-    def update(self, obs, act, rew, **extras):
-        """Call after a rollout to refit the prior from data."""
-        pass

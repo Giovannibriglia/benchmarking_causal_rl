@@ -1,7 +1,7 @@
 from .a2c import A2C
 from .a2c_cc import CausalCriticA2C
+
 from .ppo import PPO
-from .ppo_ca import CausalActorPPO
 from .ppo_cc import CausalCriticPPO
 
 AGENTS = {

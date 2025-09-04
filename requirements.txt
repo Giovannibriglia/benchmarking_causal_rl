@@ -10,3 +10,4 @@ ufmt==2.0.0
 usort==1.0.4
 openpyxl
 networkx
+tensordict>=0.4.0

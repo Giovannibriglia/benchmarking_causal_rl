@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 from matplotlib import pyplot as plt
-
+from tqdm import tqdm
 
 # ────────────────────────── helpers ───────────────────────────────────────────
 
@@ -79,7 +79,7 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int = 1_000):
     summary_rows: list[dict[str, str | float]] = []
 
     # ────── iterate envs ──────────────────────────────────────────────────────
-    for env, algo_dict in data.items():
+    for env, algo_dict in tqdm(data.items(), desc="Plotting..."):
 
         # ─── evaluation_return & evaluation_length  (stats AND plots) ─────────
         for prefix in ("return", "length"):
@@ -132,6 +132,7 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int = 1_000):
             "extra_critic_loss",
             "extra_ctitic_loss",
             "total_loss",
+            "",
         }
         for metric in sorted(
             {
