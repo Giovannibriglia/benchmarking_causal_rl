@@ -7,7 +7,8 @@ import torch
 
 from torch import nn
 from vbn.core import CausalBayesNet
-from vbn.utils import infer_types_and_cards
+
+# from vbn.utils import infer_types_and_cards
 
 from src.algos import A2C
 from src.algos.utils import set_learning_and_inference_objects
@@ -69,7 +70,7 @@ class CausalCriticA2C(A2C):
             self._ensure_pt_path(path),
         )
 
-        self.bn.save_params(self.lp, str(path))
+        self.bn.save_params(self.lp, str(path) + ".td")
 
     @staticmethod
     def _replace_infs(t: torch.Tensor) -> torch.Tensor:
@@ -174,7 +175,7 @@ class CausalCriticA2C(A2C):
             causal_adv.std(unbiased=False) + 1e-8
         )
 
-        # ---------- stash for PPO update ----------
+        # ---------- stash for algo update ----------
         mem["advantages"] = causal_adv
         mem["old_logp"] = old_logp
 
@@ -227,7 +228,9 @@ class CausalCriticA2C(A2C):
             dag = self._get_dag(data)
 
             if self.types is None or self.cards is None:
-                self.types, self.cards = infer_types_and_cards(data)
+                self.types = {str(n): "continuous" for n in dag.nodes()}
+                self.cards = {}
+                # self.types, self.cards = infer_types_and_cards(data)
 
             self.bn = CausalBayesNet(dag, self.types, self.cards)
             self.lp = self.bn.fit(self.fit_method, data, **self.kwargs_fit)
