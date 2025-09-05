@@ -18,9 +18,9 @@ class Benchmark:
     def __init__(
         self,
         env_suite="gymnasium",
-        n_episodes_train=10000,
+        n_episodes_train=500,
         n_checkpoints=20,
-        rollout_len=512,
+        rollout_len=1024,
         n_train_envs=32,
         n_eval_envs=32,
         seed=42,

@@ -1,12 +1,11 @@
 from .a2c import A2C
-from .a2c_cc import CausalCriticA2C
-
+from .a2c_new import CBNOnlyA2C
 from .ppo import PPO
-from .ppo_cc import CausalCriticPPO
+from .ppo_new import CBNOnlyPPO
 
 AGENTS = {
-    # "ppo_cc": CausalCriticPPO,
-    # "ppo_base": PPO,
-    "a2c_cc": CausalCriticA2C,
-    "a2c_base": A2C,
+    "a2c_cc": CBNOnlyA2C,
+    "a2c": A2C,
+    "ppo_cc": CBNOnlyPPO,
+    "ppo": PPO,
 }

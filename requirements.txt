@@ -11,3 +11,4 @@ usort==1.0.4
 openpyxl
 networkx
 tensordict>=0.4.0
+gymnasium[all]

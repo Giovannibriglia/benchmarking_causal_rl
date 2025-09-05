@@ -102,10 +102,6 @@ class BaseActorCritic(BasePolicy, nn.Module):
             + list(self.critic.parameters())
         )
 
-    # ------------------------------------------------------------------
-    class Memory(dict):
-        pass
-
     def _collect_rollout(self):
         env, device = self.env, self.device
         obs = env.reset().to(device)

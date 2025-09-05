@@ -79,8 +79,9 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int = 1_000):
     summary_rows: list[dict[str, str | float]] = []
 
     # ────── iterate envs ──────────────────────────────────────────────────────
-    for env, algo_dict in tqdm(data.items(), desc="Plotting..."):
-
+    pbar = tqdm(data.items())
+    for env, algo_dict in pbar:
+        pbar.set_description(f"Plotting: {env}...")
         # ─── evaluation_return & evaluation_length  (stats AND plots) ─────────
         for prefix in ("return", "length"):
             stats = {}
@@ -106,7 +107,7 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int = 1_000):
 
             if stats:
                 x = np.linspace(0, n_episodes, next(iter(stats.values()))[0].size)
-                plt.figure(figsize=(16, 9), dpi=500)
+                plt.figure(figsize=(9, 6), dpi=500)
                 for algo, (m, (lq, uq), sd) in stats.items():
                     plt.plot(x, m, label=algo, linewidth=3)
                     # plt.fill_between(x, lq, uq, alpha=0.25)
