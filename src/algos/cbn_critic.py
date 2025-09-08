@@ -46,7 +46,7 @@ class VBNCritic:
         self.types = causality_init.get("types", None)
         self.cards = causality_init.get("cards", None)
         self.discrete = causality_init.get("discrete", False)
-        self.approximate = causality_init.get("approximate", False)
+        self.approximate = causality_init.get("approximate", True)
         chkpt_path = causality_init.get("chkpt_path", None)
 
         # learning & inference backends

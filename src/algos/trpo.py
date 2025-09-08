@@ -119,7 +119,7 @@ class TRPO(BaseActorCritic):
             return Normal(mu, std)
 
     def _surrogate(self, obs, act, old_logp, adv):
-        latent = self.encoder(obs)
+        latent = self._encode(obs)
         dist = self._distribution(latent)
         if self.is_discrete:
             logp = dist.log_prob(act)
@@ -148,7 +148,7 @@ class TRPO(BaseActorCritic):
         F v ≈ ∇²_θ KL(π_θ_old || π_θ) v + damping * v
         """
         # Build current dist (depends on current θ)
-        latent = self.encoder(obs)
+        latent = self._encode(obs)
         dist_new = self._distribution(latent)
 
         mean_kl = self._mean_kl(dist_old, dist_new)
@@ -205,7 +205,7 @@ class TRPO(BaseActorCritic):
             adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
         # ------------------ 1) Critic (value) regression ------------------
-        latent = self.encoder(obs)
+        latent = self._encode(obs)
         value = self.critic(latent).squeeze(-1)
         value_loss = 0.5 * (returns - value).pow(2).mean()
 
@@ -219,7 +219,7 @@ class TRPO(BaseActorCritic):
         # ------------------ 2) Policy natural gradient --------------------
         # Build old distribution snapshot (no grad)
         with torch.no_grad():
-            latent_old = self.encoder(obs)
+            latent_old = self._encode(obs)
             dist_old = self._distribution(latent_old)
 
         # Surrogate gradient (note: maximize surrogate)
@@ -258,12 +258,9 @@ class TRPO(BaseActorCritic):
 
     def _get_action(self, obs: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            latent = self.encoder(obs)
+            latent = self._encode(obs)
             dist = self._distribution(latent)
-            if self.is_discrete:
-                return dist.sample()
-            else:
-                return dist.sample()  # already [N, act_dim]
+            return dist.sample()
 
     # ---------- persistence ----------
     def save_policy(self, path):

@@ -44,8 +44,7 @@ class PPO(BaseActorCritic):
                 b = torch.as_tensor(
                     idxs[start : start + self.batch_size], device=self.device
                 )
-
-                states = self.encoder(obs[b])
+                states = self._encode(obs[b])
 
                 if self.is_discrete:
                     logits = self.actor(states)
@@ -101,10 +100,9 @@ class PPO(BaseActorCritic):
 
     def _get_action(self, obs):
         with torch.no_grad():
+            latent = self._encode(obs)
             dist = self.dist_fn(
-                self.actor(self.encoder(obs))
-                if self.is_discrete
-                else self.actor_mu(self.encoder(obs))
+                self.actor(latent) if self.is_discrete else self.actor_mu(latent)
             )
             return dist.sample()
 

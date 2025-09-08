@@ -22,19 +22,22 @@ class A2C(BaseActorCritic):
         self.vf_coeff, self.ent_coeff = vf_coeff, ent_coeff
 
     def _algo_update(self, mem):
-        # ---------- flatten ----------
         obs = self.flat(mem["obs"])
-        actions = self.flat(mem["actions"]).long()  # ensure long for discrete
+        actions = (
+            self.flat(mem["actions"]).long()
+            if self.is_discrete
+            else self.flat(mem["actions"])
+        )
         returns = self.flat(mem["returns"]).detach()
         adv = self.flat(mem["advantages"]).detach()
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
-        # ---------- forward ----------
-        latent = self.encoder(obs)
+        latent = self._encode(obs)
+
         if self.is_discrete:
             logits = self.actor(latent)
             dist = self.dist_fn(logits)
-            logp = dist.log_prob(actions)  # [B]
+            logp = dist.log_prob(actions)
             entropy = dist.entropy().mean()
             extra_a = self.extra_actor_loss(latent, dist)
         else:
@@ -76,10 +79,9 @@ class A2C(BaseActorCritic):
 
     def _get_action(self, obs):
         with torch.no_grad():
+            latent = self._encode(obs)
             dist = self.dist_fn(
-                self.actor(self.encoder(obs))
-                if self.is_discrete
-                else self.actor_mu(self.encoder(obs))
+                self.actor(latent) if self.is_discrete else self.actor_mu(latent)
             )
             return dist.sample()
 

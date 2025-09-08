@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from abc import abstractmethod
 
+import gymnasium
 import gymnasium as gym
 import numpy as np
 import torch
+from gymnasium.spaces import flatdim, flatten
 from torch import nn
 from torch.distributions import Categorical, Normal
 from torch.optim import Adam
@@ -30,17 +32,32 @@ class BaseActorCritic(BasePolicy, nn.Module):
         self.gamma, self.gae_lambda = gamma, gae_lambda
 
         obs_space, act_space = env.observation_space, env.action_space
+        self._obs_space = obs_space  # keep a handle for flatten()
 
-        if isinstance(obs_space, gym.spaces.Discrete):
+        # ----- Encoder selection (robust to Tuple/Dict/Multi*) -----
+        if isinstance(obs_space, gymnasium.spaces.Discrete):
             self.encoder = nn.Embedding(obs_space.n, hidden_dim)
             latent = hidden_dim
-        else:
+            self._use_space_flatten = False
+        elif (
+            isinstance(obs_space, gymnasium.spaces.Box) and obs_space.shape is not None
+        ):
             flat = int(np.prod(obs_space.shape))
             self.encoder = nn.Sequential(
                 nn.Flatten(), nn.Linear(flat, hidden_dim), nn.Tanh()
             )
             latent = hidden_dim
+            self._use_space_flatten = False
+        else:
+            # Tuple / Dict / MultiDiscrete / MultiBinary or any space with no .shape
+            self._obs_flatdim = flatdim(obs_space)
+            self.encoder = nn.Sequential(
+                nn.Linear(self._obs_flatdim, hidden_dim), nn.Tanh()
+            )
+            latent = hidden_dim
+            self._use_space_flatten = True
 
+        # ----- Actor heads (unchanged) -----
         if isinstance(act_space, gym.spaces.Discrete):
             self.is_discrete = True
             self.actor = nn.Sequential(
@@ -64,6 +81,191 @@ class BaseActorCritic(BasePolicy, nn.Module):
         self.to(self.device)
         self.optim = Adam(self.parameters(), lr=lr)
 
+    # ---------- helpers ----------
+    def _normal_dist(self, mu):  # unchanged
+        return Normal(mu, torch.exp(self.log_std))
+
+    def parameters(self):  # unchanged
+        if self.is_discrete:
+            actor_params = self.actor.parameters()
+            extras = []
+        else:
+            actor_params = self.actor_mu.parameters()
+            extras = [self.log_std]
+        return (
+            list(self.encoder.parameters())
+            + list(actor_params)
+            + extras
+            + list(self.critic.parameters())
+        )
+
+    def _flatten_obs_batch(self, obs) -> torch.Tensor:
+        """
+        Robustly flatten a batch of observations from arbitrary Gym spaces into float32 [B, flatdim].
+        Handles Tuple/Dict spaces whether batch arrives as:
+          • tuple/list of component arrays/tensors (len = n_components), each shape [B, ...]
+          • a tensor accidentally constructed with shape [n_components, B, ...]
+          • normal np.ndarray/torch.Tensor for Box-like spaces
+        """
+        space = self._obs_space
+
+        # -------- Tuple spaces --------
+        if isinstance(space, gymnasium.spaces.Tuple):
+            n_comp = len(space.spaces)
+
+            # (A) tuple/list of components, each [B, ...] (can be tensor or ndarray)
+            if isinstance(obs, (tuple, list)) and len(obs) == n_comp:
+                comps = [
+                    (
+                        c.detach().cpu().numpy()
+                        if isinstance(c, torch.Tensor)
+                        else np.asarray(c)
+                    )
+                    for c in obs
+                ]
+                B = comps[0].shape[0]
+                samples = [tuple(c[i] for c in comps) for i in range(B)]
+                flat = np.stack([flatten(space, s) for s in samples], axis=0)
+                return torch.as_tensor(flat, device=self.device, dtype=torch.float32)
+
+            # (B) tensor shaped [n_comp, B, ...]
+            if (
+                isinstance(obs, torch.Tensor)
+                and obs.ndim >= 2
+                and obs.shape[0] == n_comp
+            ):
+                comps = [obs[i].detach().cpu().numpy() for i in range(n_comp)]
+                B = comps[0].shape[0]
+                samples = [tuple(c[i] for c in comps) for i in range(B)]
+                flat = np.stack([flatten(space, s) for s in samples], axis=0)
+                return torch.as_tensor(flat, device=self.device, dtype=torch.float32)
+
+        # -------- Dict spaces --------
+        if isinstance(space, gymnasium.spaces.Dict):
+            if isinstance(obs, dict):
+                keys = list(space.spaces.keys())
+                arrs = {
+                    k: (
+                        v.detach().cpu().numpy()
+                        if isinstance(v, torch.Tensor)
+                        else np.asarray(v)
+                    )
+                    for k, v in obs.items()
+                }
+                B = arrs[keys[0]].shape[0]
+                samples = [{k: arrs[k][i] for k in keys} for i in range(B)]
+                flat = np.stack([flatten(space, s) for s in samples], axis=0)
+                return torch.as_tensor(flat, device=self.device, dtype=torch.float32)
+
+            if (
+                isinstance(obs, torch.Tensor)
+                and obs.ndim >= 2
+                and obs.shape[0] == len(space.spaces)
+            ):
+                keys = list(space.spaces.keys())
+                comps = [obs[i].detach().cpu().numpy() for i in range(len(keys))]
+                B = comps[0].shape[0]
+                samples = [
+                    {k: comps[j][i] for j, k in enumerate(keys)} for i in range(B)
+                ]
+                flat = np.stack([flatten(space, s) for s in samples], axis=0)
+                return torch.as_tensor(flat, device=self.device, dtype=torch.float32)
+
+        # -------- Default (Box / Multi*) --------
+        if isinstance(obs, torch.Tensor):
+            arr = obs.detach().cpu().numpy()
+        else:
+            arr = np.asarray(obs)
+
+        if arr.dtype == object:
+            samples = list(arr)
+            flat = np.stack([flatten(space, s) for s in samples], axis=0)
+        else:
+            if arr.ndim == 1:
+                arr = arr[:, None]
+            B = arr.shape[0]
+            flat = arr.reshape(B, -1)
+
+        return torch.as_tensor(flat, device=self.device, dtype=torch.float32)
+
+    def _encode(self, obs: torch.Tensor):
+        if isinstance(self.encoder, nn.Embedding):
+            return self.encoder(obs.long())
+        if self._use_space_flatten:
+            x = self._flatten_obs_batch(obs)
+            return self.encoder(x)  # float32 -> Linear
+        return self.encoder(obs.float())
+
+    # ---------- rollout (use _encode) ----------
+    def _collect_rollout(self):
+        env, device = self.env, self.device
+        obs = env.reset()  # <-- was: env.reset().to(device)
+
+        mem = dict(
+            obs=[], actions=[], logp=[], values=[], rewards=[], dones=[], entropy=[]
+        )
+        for _ in range(self.rollout_len):
+            with torch.no_grad():
+                latent = self._encode(obs)  # handles tuple/dict/Box uniformly
+                if self.is_discrete:
+                    logits = self.actor(latent)
+                    dist = self.dist_fn(logits)
+                    act = dist.sample()
+                    logp = dist.log_prob(act)
+                    ent = dist.entropy()
+                else:
+                    mu = self.actor_mu(latent)
+                    dist = self.dist_fn(mu)
+                    act = dist.sample()
+                    logp = dist.log_prob(act).sum(-1)
+                    ent = dist.entropy().sum(-1)
+                val = self.critic(latent).squeeze(-1)
+
+            nxt_obs, rew, term, trunc, _ = env.step(act)
+            # DON'T try to .to() the structured obs:
+            nxt_obs = nxt_obs
+            rew = rew.to(device)
+
+            mem["obs"].append(obs)  # keep raw structured obs per step
+            mem["actions"].append(act)
+            mem["logp"].append(logp)
+            mem["values"].append(val)
+            mem["rewards"].append(rew)
+            mem["dones"].append(term | trunc)
+            mem["entropy"].append(ent)
+            obs = nxt_obs
+
+        # stack numeric tensors as before
+        for k in ["actions", "logp", "values", "rewards", "dones", "entropy"]:
+            mem[k] = torch.stack(mem[k], dim=0)
+
+        # but flatten tuple/dict observations per step first, then stack to [T, N, flatdim]
+        mem["obs"] = torch.stack(
+            [self._flatten_obs_batch(o) for o in mem["obs"]], dim=0
+        )
+
+        # ---------- GAE ----------
+        T, N = self.rollout_len, env.n_envs
+        with torch.no_grad():
+            last_latent = self._encode(obs)  # works for structured obs
+            last_val = self.critic(last_latent).squeeze(-1)
+
+        returns = torch.zeros(T, N, device=device)
+        gae = torch.zeros(N, device=device)
+
+        for t in reversed(range(T)):
+            mask = 1.0 - mem["dones"][t].float()
+            delta = mem["rewards"][t] + self.gamma * last_val * mask - mem["values"][t]
+            gae = delta + self.gamma * self.gae_lambda * mask * gae
+            returns[t] = gae + mem["values"][t]
+            last_val = mem["values"][t]
+
+        mem["returns"] = returns
+        mem["advantages"] = returns - mem["values"]
+
+        episode_return = mem["rewards"].sum(0).mean().item()
+        return mem, T, episode_return
+
     def train(self):
         mem, L, R = self._collect_rollout()
         self.train_metrics.add(training_length=L, training_return=R)
@@ -83,87 +285,6 @@ class BaseActorCritic(BasePolicy, nn.Module):
         or whatever you need.  Default: do nothing.
         """
         pass
-
-    # ------------------------------------------------------------------
-    def _normal_dist(self, mu):
-        return Normal(mu, torch.exp(self.log_std))
-
-    def parameters(self):
-        if self.is_discrete:  # categorical actor
-            actor_params = self.actor.parameters()
-            extras = []
-        else:  # Gaussian actor
-            actor_params = self.actor_mu.parameters()
-            extras = [self.log_std]  # trainable sigma
-        return (
-            list(self.encoder.parameters())
-            + list(actor_params)
-            + extras
-            + list(self.critic.parameters())
-        )
-
-    def _collect_rollout(self):
-        env, device = self.env, self.device
-        obs = env.reset().to(device)
-
-        mem = dict(
-            obs=[], actions=[], logp=[], values=[], rewards=[], dones=[], entropy=[]
-        )
-        for _ in range(self.rollout_len):
-            with torch.no_grad():
-                latent = self.encoder(obs)
-                if self.is_discrete:  # ------------ DISCRETE
-                    logits = self.actor(latent)  # [N, n_actions]
-                    dist = self.dist_fn(logits)
-                    act = dist.sample()  # [N]
-                    logp = dist.log_prob(act)  # [N]  (keep per‑env dim!)
-                    ent = dist.entropy()  # [N]
-                else:  # ----------- CONTINUOUS
-                    mu = self.actor_mu(latent)  # [N, act_dim]
-                    dist = self.dist_fn(mu)
-                    act = dist.sample()  # [N, act_dim]
-                    logp = dist.log_prob(act).sum(-1)  # [N]
-                    ent = dist.entropy().sum(-1)  # [N]
-                val = self.critic(latent).squeeze(-1)  # [N]
-
-            nxt_obs, rew, term, trunc, _ = env.step(act)
-            nxt_obs, rew = nxt_obs.to(device), rew.to(device)
-
-            mem["obs"].append(obs)
-            mem["actions"].append(act)
-            mem["logp"].append(logp)
-            mem["values"].append(val)
-            mem["rewards"].append(rew)
-            mem["dones"].append(term | trunc)
-            mem["entropy"].append(ent)
-            obs = nxt_obs
-
-        # stack to tensors with shape [T, N, ...]
-        for k in mem:
-            mem[k] = torch.stack(mem[k], dim=0)
-
-        # ---------- GAE ----------
-        T, N = self.rollout_len, env.n_envs
-        with torch.no_grad():
-            last_val = self.critic(self.encoder(obs)).squeeze(-1)
-
-        returns = torch.zeros(T, N, device=device)
-        # adv = torch.zeros_like(returns)
-        gae = torch.zeros(N, device=device)
-
-        for t in reversed(range(T)):
-            mask = 1.0 - mem["dones"][t].float()
-            delta = mem["rewards"][t] + self.gamma * last_val * mask - mem["values"][t]
-            gae = delta + self.gamma * self.gae_lambda * mask * gae
-            returns[t] = gae + mem["values"][t]
-            last_val = mem["values"][t]
-
-        mem["returns"] = returns
-        mem["advantages"] = returns - mem["values"]
-
-        episode_return = mem["rewards"].sum(0).mean().item()
-
-        return mem, T, episode_return
 
     def _log_ac_metrics(self, mse, adv_var, entropy):
         self.train_metrics.add(value_mse=mse, adv_var=adv_var, entropy=entropy)

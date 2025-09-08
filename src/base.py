@@ -55,8 +55,19 @@ class BaseEnv(ABC):
     def _to_tensor(self, x, *, dtype=None):
         """Return x as torch.Tensor on self.device with sensible default dtypes.
         Floats -> float32, ints -> long, bools -> bool (unless dtype is given)."""
+
+        # --- NEW: keep structured obs as structured; recurse into leaves ---
+        if isinstance(x, (tuple, list)):
+            # preserve container type and order
+            return type(x)(self._to_tensor(xx, dtype=dtype) for xx in x)
+        if isinstance(x, dict):
+            return {k: self._to_tensor(v, dtype=dtype) for k, v in x.items()}
+        # numpy "object" arrays often come from tuples-of-arrays; keep as list
+        if isinstance(x, np.ndarray) and x.dtype == object:
+            return [self._to_tensor(xx, dtype=dtype) for xx in x.tolist()]
+        # --- END NEW ---
+
         if isinstance(x, torch.Tensor):
-            # If caller didn't request a dtype, coerce floating to float32 to match modules
             if (
                 dtype is None
                 and torch.is_floating_point(x)
@@ -132,27 +143,24 @@ class BasePolicy(ABC):
 
     # ------------------------------------------------------------------
     def _rollout_evaluation(self, env: BaseEnv) -> Tuple[List[int], List[float]]:
-        obs = env.reset().to(self.device)
+        obs = env.reset()  # <-- was: env.reset().to(self.device)
         total_r = torch.zeros(env.n_envs, device=self.device)
         total_l = torch.zeros(env.n_envs, device=self.device)
 
         for _ in range(self.rollout_len):
             with torch.no_grad():
-                act = self._get_action(obs)
+                act = self._get_action(obs)  # your algos should use _encode inside
             nxt_obs, rew, term, trunc, _ = env.step(act)
-            nxt_obs, rew = nxt_obs.to(self.device), rew.to(self.device)
-
-            total_r += rew
-            total_l += 1
+            # keep structured obs; just move rewards
             obs = nxt_obs
+            total_r += rew.to(self.device)
+            total_l += 1
 
-            # stop when **all** envs are done
             if (term | trunc).all():
                 break
 
-        # move to CPU & convert to Python lists
-        lengths = total_l.cpu().tolist()  # [len_env0, len_env1, ...]
-        returns = total_r.cpu().tolist()  # [ret_env0, ret_env1, ...]
+        lengths = total_l.cpu().tolist()
+        returns = total_r.cpu().tolist()
         return lengths, returns
 
     def evaluate(self):

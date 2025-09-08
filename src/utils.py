@@ -369,5 +369,61 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
             sub_with_mean = pd.concat([sub, grp_means], ignore_index=True)
             sub_with_mean.to_csv(tables_dir / f"group_{grp}.csv", index=False)
 
+        # ────── Error-bar plots for MEAN rows (overall + per-group) ──────────────
+        # Overall MEAN (across all envs)
+        overall_mean_csv = tables_dir / "overall_with_mean.csv"
+        if overall_mean_csv.exists():
+            df_overall = pd.read_csv(overall_mean_csv)
+            df_overall_mean = df_overall[df_overall["env"] == "MEAN"]
+            _plot_mean_algo_errorbars(
+                df_overall_mean,
+                tables_dir / "plots" / "overall_mean_algos_errorbar_return.png",
+                title="Overall MEAN per Algorithm (IQM ± IQR std of evaluation_return)",
+            )
+
+        # Per-group MEAN (across envs in each group)
+        for grp_csv in tables_dir.glob("group_*.csv"):
+            df_grp = pd.read_csv(grp_csv)
+            group_name = grp_csv.stem.replace("group_", "")
+            df_grp_mean = df_grp[df_grp["env"] == "MEAN"]
+            _plot_mean_algo_errorbars(
+                df_grp_mean,
+                tables_dir / "plots" / f"{group_name}_mean_algos_errorbar_return.png",
+                title=f"{group_name} – MEAN per Algorithm (IQM ± IQR std of evaluation_return)",
+            )
     # Done
     # print(f"Plots in {plot_dir}\nSummary CSV: summary_table.csv\nRobust CSV: robust_table.csv")
+
+
+def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str):
+    """
+    df_mean is expected to contain one row per algo (env == 'MEAN'),
+    with columns: 'algo', 'iqm_evaluation_return', 'iqr_std_evaluation_return'.
+    """
+    needed_cols = {"algo", "iqm_evaluation_return", "iqr_std_evaluation_return"}
+    if not needed_cols.issubset(df_mean.columns):
+        # Graceful skip if those metrics are not present
+        return
+
+    # keep MEAN rows only (already filtered by caller, but double-safety)
+    dfm = df_mean.copy()
+    if "env" in dfm.columns:
+        dfm = dfm[dfm["env"] == "MEAN"]
+
+    if dfm.empty:
+        return
+
+    algos = dfm["algo"].tolist()
+    vals = dfm["iqm_evaluation_return"].astype(float).to_numpy()
+    errs = dfm["iqr_std_evaluation_return"].astype(float).to_numpy()
+
+    plt.figure(figsize=(10, 6), dpi=500)
+    x = np.arange(len(algos))
+    plt.errorbar(x, vals, yerr=errs, fmt="o", capsize=6, linewidth=2)
+    plt.xticks(x, algos, rotation=20)
+    plt.ylabel("IQM evaluation_return")
+    plt.title(title)
+    plt.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_path)
+    plt.close()

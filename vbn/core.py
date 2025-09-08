@@ -214,6 +214,44 @@ class CausalBayesNet:
         else:
             raise NotImplementedError(method)
 
+    @torch.no_grad()
+    def _safe_ridge_solve(
+        self,
+        XTX: torch.Tensor,
+        XTy: torch.Tensor,
+        ridge_start: float = 1e-6,
+        max_ridge: float = 1e6,
+        tries: int = 8,
+    ):
+        """Solve (XTX + λI) β = XTy robustly; escalate λ if needed; fallback to lstsq/pinv."""
+        # Clean bad values
+        XTX = torch.nan_to_num(XTX, nan=0.0, posinf=0.0, neginf=0.0)
+        XTy = torch.nan_to_num(XTy, nan=0.0, posinf=0.0, neginf=0.0)
+
+        D = XTX.shape[0]
+        if D == 0:
+            # degenerate: no params; return empty
+            return torch.empty((0, 1), device=XTX.device, dtype=XTX.dtype), ridge_start
+
+        identity = torch.eye(D, device=XTX.device, dtype=XTX.dtype)
+        lam = float(ridge_start)
+
+        for _ in range(tries):
+            A = XTX + lam * identity
+            try:
+                beta = torch.linalg.solve(A, XTy)
+                return beta, lam
+            except torch._C._LinAlgError:
+                lam = min(max(lam * 10.0, 1e-12), max_ridge)
+
+        # Fallbacks
+        A = XTX + lam * identity
+        try:
+            beta = torch.linalg.lstsq(A, XTy).solution
+        except Exception:
+            beta = torch.linalg.pinv(A) @ XTy
+        return beta, lam
+
     @staticmethod
     def infer(
         inference_obj,
@@ -488,15 +526,10 @@ class CausalBayesNet:
 
     @torch.no_grad()
     def _finalize_incremental_updates(self, ridge: float = 1e-6):
-        """
-        Normalize discrete counts to probabilities; solve linear-Gaussian params.
-        """
-        # Discrete: normalize counts row-wise
+        # -------- Discrete (unchanged) --------
         for node, ntype in self.types.items():
             if ntype == "discrete":
-                C = self.tabular_counts[
-                    node
-                ]  # [Pcfg, card_y] or [card_y] if no parents
+                C = self.tabular_counts[node]
                 if C.ndim == 1:
                     Z = C.sum().clamp_min(1.0)
                     self.tabular_probs[node] = C / Z
@@ -504,23 +537,39 @@ class CausalBayesNet:
                     Z = C.sum(dim=1, keepdim=True).clamp_min(1.0)
                     self.tabular_probs[node] = C / Z
 
-        # Continuous: solve (XTX + λI)β = XTy, then estimate noise σ^2
+        # -------- Continuous (robust solve) --------
         for node, ntype in self.types.items():
-            if ntype == "continuous":
-                XTX = self.XTX[node]
-                XTy = self.XTy[node]
-                N = max(int(self.N[node]), 1)
-                D = XTX.shape[0]
-                beta = torch.linalg.solve(
-                    XTX + ridge * torch.eye(D, device=XTX.device, dtype=XTX.dtype), XTy
-                )  # [D, 1]
-                self.lin_weights[node] = beta.squeeze(1)  # store
+            if ntype != "continuous":
+                continue
 
-                # noise variance estimate (σ^2) using accumulated stats:
-                # σ^2 = (yy - 2β^T XTy + β^T XTX β) / N
-                yy = self.yy[node]
-                s2 = (yy - 2 * (beta.T @ XTy).item() + (beta.T @ XTX @ beta).item()) / N
-                self.lin_noise_var[node] = max(float(s2), 1e-9)
+            XTX = self.XTX[node]
+            XTy = self.XTy[node]
+            N = int(self.N[node])  # total rows seen
+            if N <= 0:
+                # no data yet: zero weights, small noise
+                D = XTX.shape[0]
+                self.lin_weights[node] = torch.zeros(
+                    D, device=self.device, dtype=self.dtype
+                )
+                self.lin_noise_var[node] = 1e-6
+                continue
+
+            # Solve (XTX + λI) β = XTy robustly
+            beta, used_ridge = self._safe_ridge_solve(XTX, XTy, ridge_start=ridge)
+
+            # Store β
+            self.lin_weights[node] = beta.squeeze(1)
+
+            # noise variance: σ^2 = (yy - 2βᵀXTy + βᵀXTXβ) / max(N - dof, 1)
+            yy = float(self.yy[node])
+            bTXTy = float((beta.T @ XTy).item())
+            bTXTXb = float((beta.T @ XTX @ beta).item())
+            dof = max(XTX.shape[0], 1)  # parameters count
+            denom = max(N - dof, 1)  # avoid zero/neg
+            s2 = (yy - 2.0 * bTXTy + bTXTXb) / denom
+            if not (s2 > 0 and torch.isfinite(torch.tensor(s2))):
+                s2 = 1e-6
+            self.lin_noise_var[node] = float(s2)
 
     # ---- 5) utilities -------------------------------------------------------
     @staticmethod

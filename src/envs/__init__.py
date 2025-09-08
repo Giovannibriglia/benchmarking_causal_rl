@@ -6,8 +6,6 @@ from src.envs.gymnasium import GymnasiumEnv
 ENV_CLASSES: Dict[str, type[BaseEnv]] = {"gymnasium": GymnasiumEnv}
 ENV_NAMES: Dict[str, List[str]] = {
     "gymnasium": [
-        "CarRacing-v3",
-        "Blackjack-v1",
         "CartPole-v1",
         "MountainCar-v0",
         "MountainCarContinuous-v0",
@@ -29,5 +27,7 @@ ENV_NAMES: Dict[str, List[str]] = {
         "Hopper-v5",
         "Swimmer-v5",
         "Walker2d-v5",
+        "Blackjack-v1",
+        "CarRacing-v3",
     ]
 }

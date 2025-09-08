@@ -1,4 +1,3 @@
-# vbn/learning/discrete_mle.py
 from __future__ import annotations
 
 import math
