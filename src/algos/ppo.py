@@ -128,3 +128,4 @@ class PPO(BaseActorCritic):
         self.clip_eps = ckpt.get("clip_eps", 0.2)
         self.vf_coeff = ckpt.get("vf_coeff", 0.5)
         self.ent_coeff = ckpt.get("ent_coeff", 0.01)
+        self.is_discrete = ckpt.get("is_discrete", False)

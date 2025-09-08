@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Tuple, Union
 
+import numpy as np
 import torch
 
 DEFAULT_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -51,13 +52,29 @@ class BaseEnv(ABC):
         self.numpy_actions = False
         self._setup_env()
 
-    # ------------------------------------------------------------------
     def _to_tensor(self, x, *, dtype=None):
-        """Return *x* as torch.Tensor on self.device (avoid copies if possible)."""
+        """Return x as torch.Tensor on self.device with sensible default dtypes.
+        Floats -> float32, ints -> long, bools -> bool (unless dtype is given)."""
         if isinstance(x, torch.Tensor):
-            if x.device is self.device and (dtype is None or x.dtype == dtype):
-                return x  # nothing to do
+            # If caller didn't request a dtype, coerce floating to float32 to match modules
+            if (
+                dtype is None
+                and torch.is_floating_point(x)
+                and x.dtype != torch.float32
+            ):
+                x = x.to(dtype=torch.float32)
             return x.to(device=self.device, dtype=dtype or x.dtype)
+
+        # numpy/array-likes: pick good defaults if dtype not forced
+        if hasattr(x, "dtype") and dtype is None:
+            npdt = x.dtype
+            if np.issubdtype(npdt, np.floating):
+                dtype = torch.float32
+            elif np.issubdtype(npdt, np.integer):
+                dtype = torch.long
+            elif np.issubdtype(npdt, np.bool_):
+                dtype = torch.bool
+
         return torch.as_tensor(x, device=self.device, dtype=dtype)
 
     # ------------------------------------------------------------------
