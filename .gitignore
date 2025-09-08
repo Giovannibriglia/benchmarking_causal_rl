@@ -3,6 +3,3 @@ dist
 runs
 build
 wandb
-
-src/algos/a2c_cc
-src/algos/ppo_cc
