@@ -28,6 +28,6 @@ ENV_NAMES: Dict[str, List[str]] = {
         "Swimmer-v5",
         "Walker2d-v5",
         "Blackjack-v1",
-        "CarRacing-v3",
+        # "CarRacing-v3",
     ]
 }

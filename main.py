@@ -1,9 +1,63 @@
-from src.benchmark import Benchmark
+import argparse
 
+from src.benchmark import Benchmark
 from src.utils import plot_and_save_results
 
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Benchmark runner")
+
+    parser.add_argument(
+        "--env_suite",
+        type=str,
+        default="gymnasium",
+        help="Environment suite to benchmark (e.g. gymnasium, vmas, pettingzoo)",
+    )
+    parser.add_argument(
+        "--n_episodes_train", type=int, default=250, help="Number of training episodes"
+    )
+    parser.add_argument(
+        "--n_checkpoints",
+        type=int,
+        default=25,
+        help="Number of checkpoints to save during training",
+    )
+    parser.add_argument(
+        "--rollout_len",
+        type=int,
+        default=1024,
+        help="Rollout length per environment per update",
+    )
+    parser.add_argument(
+        "--n_train_envs", type=int, default=16, help="Number of training environments"
+    )
+    parser.add_argument(
+        "--n_eval_envs", type=int, default=16, help="Number of evaluation environments"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Torch device (cpu, cuda, etc.)",
+    )
+
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    bench = Benchmark(env_suite="gymnasium", n_episodes_train=500)
+    args = get_args()
+
+    bench = Benchmark(
+        env_suite=args.env_suite,
+        n_episodes_train=args.n_episodes_train,
+        n_checkpoints=args.n_checkpoints,
+        rollout_len=args.rollout_len,
+        n_train_envs=args.n_train_envs,
+        n_eval_envs=args.n_eval_envs,
+        seed=args.seed,
+        device=args.device,
+    )
 
     path_files = bench.run()
     plot_and_save_results(path_files, bench.n_episodes_train)

@@ -2,6 +2,7 @@ import json
 import re
 from pathlib import Path
 
+import matplotlib
 import numpy as np
 import pandas as pd
 
@@ -11,6 +12,18 @@ from tqdm import tqdm
 # ────────────────────────── helpers ───────────────────────────────────────────
 
 EVAL_RE = re.compile(r"^evaluation_(return|length)_(\d+)$")
+
+
+# Consistent colormap for algorithms
+COLOR_MAP = {}
+
+
+def get_algo_color(algo: str, palette: str = "set1") -> str:
+    """Return consistent color for each algo using tab10."""
+    if algo not in COLOR_MAP:
+        idx = len(COLOR_MAP) % 10  # cycle tab10 if more than 10 algos
+        COLOR_MAP[algo] = matplotlib.colormaps[palette](idx)
+    return COLOR_MAP[algo]
 
 
 def _stack_runs(mdict: dict[str, list[float]], prefix: str) -> np.ndarray:
@@ -183,9 +196,9 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
                 x = np.linspace(0, n_episodes, next(iter(stats.values()))[0].size)
                 plt.figure(figsize=(9, 6), dpi=500)
                 for algo, (m, (lq, uq), sd) in stats.items():
-                    plt.plot(x, m, label=algo, linewidth=3)
-                    # You chose σ shading; keep it
-                    plt.fill_between(x, m - sd, m + sd, alpha=0.1)
+                    c = get_algo_color(algo)
+                    plt.plot(x, m, label=algo, linewidth=3, color=c)
+                    plt.fill_between(x, m - sd, m + sd, color=c, alpha=0.2)
                 plt.title(f"{env}", fontsize=fontsize + 3)
                 plt.xlabel("episodes", fontsize=fontsize)
                 plt.ylabel(f"evaluation {prefix}", fontsize=fontsize)
@@ -221,7 +234,8 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
                     continue
                 y_arr = np.asarray(y, float)
                 x = np.linspace(0, n_episodes, len(y_arr))
-                plt.plot(x, y_arr, label=algo, linewidth=3)
+                c = get_algo_color(algo)
+                plt.plot(x, y_arr, label=algo, linewidth=3, c=c)
                 drew = True
 
                 m, s, q25, q75 = _summarise(y_arr)
@@ -396,20 +410,13 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
 
 
 def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str):
-    """
-    df_mean is expected to contain one row per algo (env == 'MEAN'),
-    with columns: 'algo', 'iqm_evaluation_return', 'iqr_std_evaluation_return'.
-    """
-    needed_cols = {"algo", "iqm_evaluation_return", "iqr_std_evaluation_return"}
-    if not needed_cols.issubset(df_mean.columns):
-        # Graceful skip if those metrics are not present
+    needed = {"algo", "iqm_evaluation_return", "iqr_std_evaluation_return"}
+    if not needed.issubset(df_mean.columns):
         return
 
-    # keep MEAN rows only (already filtered by caller, but double-safety)
     dfm = df_mean.copy()
     if "env" in dfm.columns:
         dfm = dfm[dfm["env"] == "MEAN"]
-
     if dfm.empty:
         return
 
@@ -417,9 +424,21 @@ def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str)
     vals = dfm["iqm_evaluation_return"].astype(float).to_numpy()
     errs = dfm["iqr_std_evaluation_return"].astype(float).to_numpy()
 
-    plt.figure(figsize=(10, 6), dpi=500)
     x = np.arange(len(algos))
-    plt.errorbar(x, vals, yerr=errs, fmt="o", capsize=6, linewidth=2)
+
+    plt.figure(figsize=(6, 4), dpi=500)
+    for i, algo in enumerate(algos):
+        c = get_algo_color(algo)
+        plt.errorbar(
+            x[i],
+            vals[i],
+            yerr=errs[i],
+            fmt="o",
+            capsize=6,
+            linewidth=2,
+            color=c,
+        )
+
     plt.xticks(x, algos, rotation=20)
     plt.ylabel("IQM evaluation_return")
     plt.title(title)

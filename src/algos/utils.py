@@ -9,10 +9,10 @@ def set_learning_and_inference_objects(if_discrete: bool, approximate: bool):
             inf_method = "discrete_exact"
     else:
         if approximate:
-            fit_method = "continuous_mlp_gaussian"
-            inf_method = "continuous_approx"
-        else:
             fit_method = "continuous_gaussian"
             inf_method = "continuous_gaussian"
+        else:
+            fit_method = "continuous_mlp_gaussian"
+            inf_method = "continuous_approx"
 
     return fit_method, inf_method
