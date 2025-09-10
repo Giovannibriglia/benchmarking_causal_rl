@@ -18,7 +18,7 @@ EVAL_RE = re.compile(r"^evaluation_(return|length)_(\d+)$")
 COLOR_MAP = {}
 
 
-def get_algo_color(algo: str, palette: str = "set1") -> str:
+def get_algo_color(algo: str, palette: str = "Set1") -> str:
     """Return consistent color for each algo using tab10."""
     if algo not in COLOR_MAP:
         idx = len(COLOR_MAP) % 10  # cycle tab10 if more than 10 algos
@@ -392,7 +392,7 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
             _plot_mean_algo_errorbars(
                 df_overall_mean,
                 tables_dir / "plots" / "overall_mean_algos_errorbar_return.png",
-                title="Overall MEAN per Algorithm (IQM ± IQR std of evaluation_return)",
+                title="Overall - IQM ± IQR std of evaluation_return ",
             )
 
         # Per-group MEAN (across envs in each group)
@@ -403,7 +403,7 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
             _plot_mean_algo_errorbars(
                 df_grp_mean,
                 tables_dir / "plots" / f"{group_name}_mean_algos_errorbar_return.png",
-                title=f"{group_name} – MEAN per Algorithm (IQM ± IQR std of evaluation_return)",
+                title=f"{group_name} – IQM ± IQR std of evaluation_return",
             )
     # Done
     # print(f"Plots in {plot_dir}\nSummary CSV: summary_table.csv\nRobust CSV: robust_table.csv")
@@ -426,7 +426,7 @@ def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str)
 
     x = np.arange(len(algos))
 
-    plt.figure(figsize=(6, 4), dpi=500)
+    plt.figure(figsize=(5, 3), dpi=500)
     for i, algo in enumerate(algos):
         c = get_algo_color(algo)
         plt.errorbar(
@@ -442,6 +442,7 @@ def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str)
     plt.xticks(x, algos, rotation=20)
     plt.ylabel("IQM evaluation_return")
     plt.title(title)
+    plt.grid(True)
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(out_path)

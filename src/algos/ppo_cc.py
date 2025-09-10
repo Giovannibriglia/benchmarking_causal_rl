@@ -36,7 +36,7 @@ class PPO_CC(PPO, VBNCritic):
                 b = torch.as_tensor(
                     idxs[start : start + self.batch_size], device=self.device
                 )
-                states = self.encoder(obs[b])
+                states = self._encode(obs[b])
 
                 if self.is_discrete:
                     logits = self.actor(states)

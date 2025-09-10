@@ -11,6 +11,7 @@ def get_args():
         "--env_suite",
         type=str,
         default="gymnasium",
+        choices=["gymnasium"],
         help="Environment suite to benchmark (e.g. gymnasium, vmas, pettingzoo)",
     )
     parser.add_argument(
