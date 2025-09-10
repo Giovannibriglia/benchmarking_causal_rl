@@ -5,8 +5,9 @@ from typing import Union
 
 import torch
 
-from src.algos.cbn_critic import VBNCritic
 from src.algos.trpo import conjugate_grad, flat_grad, flat_params, TRPO
+
+from src.algos.vbn_critic import VBNCritic
 
 
 class TRPO_CC(TRPO, VBNCritic):
@@ -25,51 +26,86 @@ class TRPO_CC(TRPO, VBNCritic):
 
     # after rollout: compute causal V, advantages, and old_logp under current policy
     def _post_update(self, mem):
-        self._post_update_fill_adv_and_logp(mem)
+        self._post_update_fill_adv_and_logp(mem)  # fills mem["advantages"]
+        self._log_adv_summary(mem)
 
     # main TRPO step BUT: no neural value regression (critic is the BN)
+    # in src/algos/trpo_cc.py
     def _algo_update(self, mem):
-        obs = self.flat(mem["obs"]).detach()
-        act = self.flat(mem["actions"])
-        old_logp = mem["old_logp"].detach()
-        adv = self.flat(mem["advantages"]).detach()
+        obs = self.flat(mem["obs"]).detach()  # [B, ...]
+        act = self.flat(mem["actions"])  # [B] / [B,1] or [B,Ad]
+        old_logp = self.flat(mem["old_logp"]).detach()  # [B] expected; may arrive wrong
+        adv = self.flat(mem["advantages"]).detach()  # [B] or [B,1]
+
+        # ---- normalize shapes ----
+        if adv.ndim > 1:
+            adv = adv.squeeze(-1)
+        if old_logp.ndim > 1:
+            old_logp = old_logp.squeeze(-1)
+
+        B = adv.shape[0]
+
+        # If old_logp was produced as a pairwise matrix [B,B] and then flattened -> [B*B], fix by taking the diagonal
+        if old_logp.numel() == B * B and old_logp.ndim == 1:
+            old_logp = old_logp.view(B, B).diag()
+
+        # Actions cleanup (avoid pairwise [B,B])
+        if self.is_discrete:
+            if act.ndim == 2 and act.shape[0] == act.shape[1] == B:
+                act = act.diag()
+            if act.ndim > 1:
+                act = act.squeeze(-1)
+            act = act.long()
+            assert act.shape == (B,)
+        else:
+            act_dim = self.log_std.numel()
+            if act.ndim == 1:
+                act = act.view(-1, act_dim)
+            elif act.ndim == 2 and act.shape[-1] != act_dim:
+                act = act.reshape(-1, act_dim)
+            assert act.shape == (B, act_dim)
+
+        assert old_logp.shape == (
+            B,
+        ), f"old_logp shape {old_logp.shape}, expected {(B,)}"
+        assert adv.shape == (B,), f"adv shape {adv.shape}, expected {(B,)}"
 
         if self.adv_norm:
             adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
-        # snapshot old dist (no grad)
         with torch.no_grad():
-            latent_old = self.encoder(obs)
+            latent_old = self._encode(obs)
             dist_old = self._distribution(latent_old)
 
-        # surrogate (maximize)
         surr, _ = self._surrogate(obs, act, old_logp, adv)
         policy_params = self._policy_params()
-        g = flat_grad(surr, policy_params, retain_graph=True).detach()  # ∇_θ J
+        g = flat_grad(surr, policy_params, retain_graph=True).detach()
 
-        # Fisher-vector product
         f_Ax = lambda v: self._fvp(obs, dist_old, v)
-
-        # natural gradient direction via CG
         step_dir = conjugate_grad(f_Ax, g, iters=self.cg_iters)
-
-        # step size for KL constraint: x^T A x = 2*max_kl
         shs = (step_dir * f_Ax(step_dir)).sum()
         step_scale = torch.sqrt(2.0 * self.max_kl / (shs + 1e-10))
         full_step = step_scale * step_dir
         expected_improve = (g * full_step).sum().item()
 
-        # line search under KL
         params_flat = flat_params(policy_params).detach()
         ok, _ = self._line_search(
             obs, act, adv, old_logp, dist_old, params_flat, full_step, expected_improve
         )
 
-        # metrics (no value MSE; critic is causal BN)
-        self.train_metrics.add(
+        entropy_mean = (
+            self._policy_entropy(obs).item()
+            if hasattr(self, "_policy_entropy")
+            else 0.0
+        )
+        self._log_update_metrics(
+            entropy=entropy_mean,
+            adv_var=adv.var(unbiased=False).item(),
+            value_mse=0.0,
             trpo_line_ok=float(ok),
             trpo_expected_improve=float(expected_improve),
-            value_mse=0.0,
+            natgrad_norm=step_dir.norm().item(),
+            uses_causal_critic=1.0,
         )
 
     # ---------- persistence (include BN params) ----------

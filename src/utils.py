@@ -383,49 +383,57 @@ def plot_and_save_results(results_dir: str | Path, n_episodes: int):
             sub_with_mean = pd.concat([sub, grp_means], ignore_index=True)
             sub_with_mean.to_csv(tables_dir / f"group_{grp}.csv", index=False)
 
-        # ────── Error-bar plots for MEAN rows (overall + per-group) ──────────────
-        # Overall MEAN (across all envs)
-        overall_mean_csv = tables_dir / "overall_with_mean.csv"
-        if overall_mean_csv.exists():
-            df_overall = pd.read_csv(overall_mean_csv)
-            df_overall_mean = df_overall[df_overall["env"] == "MEAN"]
-            _plot_mean_algo_errorbars(
-                df_overall_mean,
-                tables_dir / "plots" / "overall_mean_algos_errorbar_return.png",
-                title="Overall - IQM ± IQR std of evaluation_return ",
+        # ───── Error-bar plots with equal-weight per env (avg of env IQMs) ─────
+        # Overall (use only env rows)
+        df_env_only = df_wide[df_wide["env"] != "MEAN"].copy()
+        if not df_env_only.empty and "iqm_evaluation_return" in df_env_only.columns:
+            _plot_mean_algo_errorbars_from_envrows(
+                df_env_only,
+                tables_dir / "plots" / "overall_mean_algos_errorbar_return.pdf",
+                title="Overall: IQM(evaluation_return) ± std across env means",
             )
 
-        # Per-group MEAN (across envs in each group)
-        for grp_csv in tables_dir.glob("group_*.csv"):
-            df_grp = pd.read_csv(grp_csv)
-            group_name = grp_csv.stem.replace("group_", "")
-            df_grp_mean = df_grp[df_grp["env"] == "MEAN"]
-            _plot_mean_algo_errorbars(
-                df_grp_mean,
-                tables_dir / "plots" / f"{group_name}_mean_algos_errorbar_return.png",
-                title=f"{group_name} – IQM ± IQR std of evaluation_return",
+        # Per-group (equal weight per env inside each group)
+        for grp, sub in df_env_only.groupby("group_env"):
+            if "iqm_evaluation_return" not in sub.columns or sub.empty:
+                continue
+            _plot_mean_algo_errorbars_from_envrows(
+                sub,
+                tables_dir / "plots" / f"{grp}_mean_algos_errorbar_return.pdf",
+                title=f"{grp}: IQM(evaluation_return) ± std across env means",
             )
     # Done
     # print(f"Plots in {plot_dir}\nSummary CSV: summary_table.csv\nRobust CSV: robust_table.csv")
 
 
-def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str):
-    needed = {"algo", "iqm_evaluation_return", "iqr_std_evaluation_return"}
-    if not needed.issubset(df_mean.columns):
+def _plot_mean_algo_errorbars_from_envrows(
+    df_env_rows: pd.DataFrame, out_path: Path, title: str
+):
+    """
+    Build error bars by averaging over env-level IQMs (equal weight per env).
+    y = mean_env( iqm_evaluation_return )
+    err = std_env( iqm_evaluation_return )
+    df_env_rows: rows per (env, group_env, algo), NOT including the MEAN rows.
+    """
+    needed = {"algo", "iqm_evaluation_return"}
+    if not needed.issubset(df_env_rows.columns) or df_env_rows.empty:
         return
 
-    dfm = df_mean.copy()
-    if "env" in dfm.columns:
-        dfm = dfm[dfm["env"] == "MEAN"]
-    if dfm.empty:
+    # aggregate per algo over envs (equal weight per env)
+    stats = (
+        df_env_rows.groupby("algo")["iqm_evaluation_return"]
+        .agg(avg_over_env="mean", std_over_env="std")
+        .reset_index()
+    )
+
+    if stats.empty:
         return
 
-    algos = dfm["algo"].tolist()
-    vals = dfm["iqm_evaluation_return"].astype(float).to_numpy()
-    errs = dfm["iqr_std_evaluation_return"].astype(float).to_numpy()
+    algos = stats["algo"].tolist()
+    vals = stats["avg_over_env"].to_numpy(dtype=float)
+    errs = stats["std_over_env"].to_numpy(dtype=float)
 
     x = np.arange(len(algos))
-
     plt.figure(figsize=(5, 3), dpi=500)
     for i, algo in enumerate(algos):
         c = get_algo_color(algo)
@@ -437,10 +445,10 @@ def _plot_mean_algo_errorbars(df_mean: pd.DataFrame, out_path: Path, title: str)
             capsize=6,
             linewidth=2,
             color=c,
+            alpha=0.8,
         )
-
     plt.xticks(x, algos, rotation=20)
-    plt.ylabel("IQM evaluation_return")
+    plt.ylabel("IQM evaluation_return (avg over envs)")
     plt.title(title)
     plt.grid(True)
     plt.tight_layout()

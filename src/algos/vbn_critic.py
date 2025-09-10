@@ -235,31 +235,74 @@ class VBNCritic:
             self.inf_obj = self.bn.setup_inference(self.inf_method)
 
     def _post_update_fill_adv_and_logp(self, mem):
-        self._causal_update(mem)
-        states = mem["obs"].reshape(-1, *mem["obs"].shape[2:])
-        actions = mem["actions"].reshape(-1, *mem["actions"].shape[2:])
-        returns = mem["returns"].reshape(-1).detach()
+        """
+        Sets:
+          mem["advantages"]: [T,N]
+          mem["old_logp"]:   [T,N]  (log πθ(a_t | s_t) under current policy)
 
-        latent = self.encoder(
-            states.long() if isinstance(self.encoder, nn.Embedding) else states.float()
-        )
+        Assumes mem has:
+          mem["obs"]:     [T,N,flat] for Box or [T,N,1] for Discrete
+          mem["actions"]: [T,N] (discrete) or [T,N,Ad] (continuous)
+          mem["returns"]: [T,N] (already computed upstream, only if you use it for A)
+        """
+        device = self.device
+        obs = mem["obs"].to(device)
+        act = mem["actions"].to(device)
+
+        T, N = obs.shape[:2]
+        B = T * N
+
+        # ---------- Build latent with the *right* index shape ----------
+        # If encoder is an Embedding (discrete obs), we must feed [B] integer indices,
+        # NOT [B,1], otherwise the policy batch_shape becomes [B,1] and log_prob broadcasts.
+        if isinstance(self.encoder, nn.Embedding):
+            # obs: [T,N,1] -> [T,N] -> [B]
+            if obs.ndim == 3 and obs.shape[-1] == 1:
+                obs_idx = obs.squeeze(-1)
+            else:
+                # fallback: treat last dim as the index already
+                obs_idx = obs[..., 0]
+            obs_vec = obs_idx.reshape(B).long()  # [B]
+            latent = self._encode(obs_vec)  # -> [B, hidden]
+        else:
+            # Box / Tuple / Dict: keep flattened features [B, feat]
+            obs_flat = obs if obs.ndim == 3 else obs.unsqueeze(-1)
+            latent = self._encode(obs_flat.view(B, -1))  # -> [B, hidden]
+
+        # ---------- Current policy distribution over actions ----------
+        dist = self._policy_dist_from_latent(latent)  # batch_shape == [B]
+
+        # ---------- Log-prob of the *executed* action ----------
         if self.is_discrete:
+            # [T,N] -> [B] Long
+            act_vec = act.view(B).long()  # [B]
+            logp_vec = dist.log_prob(act_vec)  # [B]
+        else:
+            # [T,N,Ad] -> [B,Ad]
+            act_dim = self.log_std.numel()
+            act_vec = act.view(B, act_dim)
+            logp_vec = dist.log_prob(act_vec).sum(-1)  # [B]
+
+        old_logp = logp_vec.view(T, N).detach()  # [T,N]
+        mem["old_logp"] = old_logp
+
+    # --- add this method in VBNCritic ---
+    def _policy_dist_from_latent(self, latent):
+        """
+        Return the current policy distribution from a latent.
+        Works for TRPO (has _distribution) and for A2C/PPO (have dist_fn).
+        """
+        if hasattr(self, "_distribution"):
+            # TRPO implements _distribution(latent)
+            return self._distribution(latent)
+
+        # A2C / PPO path:
+        if getattr(self, "is_discrete", False):
             logits = self.actor(latent)
-            dist = self.dist_fn(logits)
-            old_logp = dist.log_prob(actions.long().view(-1))
+            return self.dist_fn(logits)
         else:
             mu = self.actor_mu(latent)
-            dist = self.dist_fn(mu)
-            old_logp = dist.log_prob(actions).sum(-1)
-
-        Vc, Qtab = self._v_causal(states, dist)
-        adv = returns - Vc.detach()
-        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
-
-        mem["advantages"] = adv
-        mem["values"] = Vc.detach()
-        mem["old_logp"] = old_logp.detach()
-        self._cached_q_table = Qtab
+            return self.dist_fn(mu)
 
     def _bn_params_path(self, base_path: Union[str, Path]) -> Path:
         p = Path(base_path)

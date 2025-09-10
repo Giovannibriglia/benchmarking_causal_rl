@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from src.algos.a2c import A2C
-from src.algos.cbn_critic import VBNCritic
+from src.algos.vbn_critic import VBNCritic
 
 
 class A2C_CC(A2C, VBNCritic):
@@ -28,7 +28,8 @@ class A2C_CC(A2C, VBNCritic):
 
     # ── hook: after rollout collection, fill advantages & old_logp via CBN ──
     def _post_update(self, mem):
-        self._post_update_fill_adv_and_logp(mem)
+        self._post_update_fill_adv_and_logp(mem)  # fills mem["advantages"]
+        self._log_adv_summary(mem)
 
     # ── main optimization step (actor only; no neural critic) ──
     def _algo_update(self, mem):
@@ -36,30 +37,32 @@ class A2C_CC(A2C, VBNCritic):
         actions = self.flat(mem["actions"])
         adv = self.flat(mem["advantages"]).detach()
 
-        # A2C: normalize advantages (again, harmless if already normalized)
+        # normalize advantages
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
-        # forward
-        latent = self.encoder(
-            obs.long() if isinstance(self.encoder, nn.Embedding) else obs.float()
-        )
+        # encode once
+        latent = self._encode(obs)
+
         if self.is_discrete:
             logits = self.actor(latent)
             dist = self.dist_fn(logits)
-            logp = dist.log_prob(actions.view(-1).long())
+            logp = dist.log_prob(actions.view(-1).long())  # [B]
             entropy = dist.entropy().mean()
-            extra_a = self.extra_actor_loss(latent, dist)
+            extra_a = self.extra_actor_loss(latent, logits)
         else:
             mu = self.actor_mu(latent)
             dist = self.dist_fn(mu)
-            logp = dist.log_prob(actions).sum(-1)
+            act = (
+                actions if actions.ndim == 2 else actions.view(-1, self.log_std.numel())
+            )
+            logp = dist.log_prob(act).sum(-1)  # [B]
             entropy = dist.entropy().sum(-1).mean()
-            extra_a = self.extra_actor_loss(latent, dist)
+            extra_a = self.extra_actor_loss(latent, mu)
 
-        # base actor loss
+        # base actor loss (no critic mse in CC)
         base_actor_loss = -(logp * adv).mean()
 
-        # optional KL(pi || pi_causal_prior) for discrete single-head
+        # optional KL(pi || pi_causal_prior) for discrete
         kl_loss = torch.tensor(0.0, device=self.device)
         if (
             getattr(self, "kl_coeff", 0.0) > 0.0
@@ -73,26 +76,26 @@ class A2C_CC(A2C, VBNCritic):
             kl = (probs * (log_probs - log_probs_c)).sum(-1).mean()
             kl_loss = self.kl_coeff * kl
 
-        # no critic MSE
         extra_c = self.extra_critic_loss(latent, torch.zeros_like(logp))
         loss = base_actor_loss + extra_a + kl_loss - self.ent_coeff * entropy
 
         self.optim.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+        grad_norm = nn.utils.clip_grad_norm_(self.parameters(), 0.5).item()
         self.optim.step()
 
-        # metrics
-        self.train_metrics.add(
-            total_loss=float(loss.item()),
-            actor_loss=float(base_actor_loss.item()),
-            extra_actor_loss=float(extra_a.item()),
+        self._log_update_metrics(
+            total_loss=float(loss),
+            actor_loss=float(base_actor_loss),
             critic_loss=0.0,
-            extra_critic_loss=float(extra_c.item()),
-            kl_loss=float(kl_loss.item()),
-        )
-        self._log_ac_metrics(
-            mse=0.0, adv_var=adv.var(unbiased=False).item(), entropy=entropy.item()
+            entropy=float(entropy),
+            adv_var=adv.var(unbiased=False).item(),
+            value_mse=0.0,
+            extra_actor_loss=float(extra_a),
+            extra_critic_loss=float(extra_c),
+            grad_norm=grad_norm,
+            kl_loss=float(kl_loss),
+            uses_causal_critic=1.0,
         )
 
     # ── persistence ──

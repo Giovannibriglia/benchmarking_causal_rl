@@ -119,19 +119,50 @@ class TRPO(BaseActorCritic):
             return Normal(mu, std)
 
     def _surrogate(self, obs, act, old_logp, adv):
+        """
+        Computes the TRPO surrogate objective J(θ) = E[(πθ/πold) * A] (+ optional entropy bonus).
+        Shapes are normalized so that:
+          - old_logp: [B]
+          - adv:      [B]
+          - act:      [B] (discrete) or [B, act_dim] (continuous)
+        """
+        # --- normalize shapes ---
+        if old_logp.ndim > 1:
+            old_logp = old_logp.squeeze(-1)
+        if adv.ndim > 1:
+            adv = adv.squeeze(-1)
+
+        if self.is_discrete:
+            # actions must be 1D Long [B]
+            if act.ndim > 1:
+                act = act.squeeze(-1)
+            act = act.long()
+        else:
+            # actions must be [B, act_dim]
+            act_dim = self.log_std.numel()
+            if act.ndim == 1:
+                act = act.view(-1, act_dim)
+            elif act.ndim == 2 and act.shape[-1] != act_dim:
+                act = act.reshape(-1, act_dim)
+
+        # --- current policy ---
         latent = self._encode(obs)
         dist = self._distribution(latent)
+
+        # log prob of executed actions
         if self.is_discrete:
-            logp = dist.log_prob(act)
+            logp = dist.log_prob(act)  # [B]
             ent = dist.entropy().mean()
         else:
-            # actions shape [B, act_dim]
-            logp = dist.log_prob(act).sum(-1)
+            logp = dist.log_prob(act).sum(-1)  # [B]
             ent = dist.entropy().sum(-1).mean()
-        ratio = torch.exp(logp - old_logp)
+
+        # --- surrogate ---
+        ratio = torch.exp(logp - old_logp)  # [B]
         surr = (ratio * adv).mean()
         if self.ent_coeff != 0.0:
-            surr += self.ent_coeff * ent
+            surr = surr + self.ent_coeff * ent
+
         return surr, dist
 
     def _mean_kl(self, dist_old, dist_new):
@@ -192,13 +223,42 @@ class TRPO(BaseActorCritic):
     def _algo_update(self, mem):
         """
         TRPO step: (1) fit value function by regression, (2) compute natural gradient step for policy.
+        Uses mem["old_logp"] if present (e.g., in causal variants); otherwise falls back to mem["logp"].
         """
-        # Flatten rollout
-        obs = self.flat(mem["obs"]).detach()
-        act = self.flat(mem["actions"])
-        old_logp = self.flat(mem["logp"]).detach()
-        returns = self.flat(mem["returns"]).detach()
-        adv = self.flat(mem["advantages"]).detach()
+        # ----- flatten rollout buffers -----
+        obs = self.flat(mem["obs"]).detach()  # [B, ...]
+        act = self.flat(mem["actions"])  # [B] or [B,Ad] or [B,1]
+        old_logp = self.flat(mem.get("old_logp", mem["logp"])).detach()  # [B] or [B,1]
+        returns = self.flat(mem["returns"]).detach()  # [B] or [B,1]
+        adv = self.flat(mem["advantages"]).detach()  # [B] or [B,1]
+
+        # ----- normalize shapes -----
+        if old_logp.ndim > 1:
+            old_logp = old_logp.squeeze(-1)
+        if adv.ndim > 1:
+            adv = adv.squeeze(-1)
+        if returns.ndim > 1:
+            returns = returns.squeeze(-1)
+
+        if self.is_discrete:
+            if act.ndim > 1:
+                act = act.squeeze(-1)
+            act = act.long()  # [B]
+        else:
+            act_dim = self.log_std.numel()
+            if act.ndim == 1:
+                act = act.view(-1, act_dim)
+            elif act.ndim == 2 and act.shape[-1] != act_dim:
+                act = act.reshape(-1, act_dim)  # [B, Ad]
+
+        # sanity checks
+        B = old_logp.shape[0]
+        assert adv.shape == (B,), f"adv {adv.shape}"
+        assert returns.shape == (B,), f"returns {returns.shape}"
+        if self.is_discrete:
+            assert act.shape == (B,), f"act {act.shape}"
+        else:
+            assert act.shape == (B, self.log_std.numel()), f"act {act.shape}"
 
         # Advantage normalization (recommended)
         if self.adv_norm:
@@ -206,7 +266,7 @@ class TRPO(BaseActorCritic):
 
         # ------------------ 1) Critic (value) regression ------------------
         latent = self._encode(obs)
-        value = self.critic(latent).squeeze(-1)
+        value = self.critic(latent).squeeze(-1)  # [B]
         value_loss = 0.5 * (returns - value).pow(2).mean()
 
         self.vf_optim.zero_grad()
@@ -217,44 +277,63 @@ class TRPO(BaseActorCritic):
         self.vf_optim.step()
 
         # ------------------ 2) Policy natural gradient --------------------
-        # Build old distribution snapshot (no grad)
         with torch.no_grad():
             latent_old = self._encode(obs)
             dist_old = self._distribution(latent_old)
 
-        # Surrogate gradient (note: maximize surrogate)
+        # Surrogate gradient (maximize)
         surr, _ = self._surrogate(obs, act, old_logp, adv)
         policy_params = self._policy_params()
-        grad = flat_grad(surr, policy_params, retain_graph=True)  # grad of J(θ)
-        g = grad.detach()
+        g = flat_grad(surr, policy_params, retain_graph=True).detach()  # ∇θ J
 
         # Fisher-vector product operator
         def f_Ax(v):
             return self._fvp(obs, dist_old, v)
 
-        # Solve A x = g for x (natural gradient direction)
+        # Conjugate gradient to solve A x = g
         step_dir = conjugate_grad(f_Ax, g, iters=self.cg_iters)
 
-        # Compute step size to satisfy KL constraint: x^T A x = 2 ε  -> step = sqrt(2 ε / (x^T A x)) * x
-        shs = (step_dir * f_Ax(step_dir)).sum()  # x^T A x
+        # Scale to satisfy KL constraint: x^T A x = 2 ε
+        shs = (step_dir * f_Ax(step_dir)).sum()
         step_scale = torch.sqrt(2.0 * self.max_kl / (shs + 1e-10))
         full_step = step_scale * step_dir
 
-        # Expected improvement rate ≈ g^T step
         expected_improve = (g * full_step).sum().item()
 
         # Line search
         params_flat = flat_params(policy_params).detach()
-        ok, new_params = self._line_search(
+        ok, _ = self._line_search(
             obs, act, adv, old_logp, dist_old, params_flat, full_step, expected_improve
         )
 
-        # Metrics
-        self.train_metrics.add(
+        # Optional: entropy logging
+        entropy_mean = (
+            self._policy_entropy(obs).item()
+            if hasattr(self, "_policy_entropy")
+            else 0.0
+        )
+
+        self._log_update_metrics(
+            entropy=entropy_mean,
+            adv_var=adv.var(unbiased=False).item(),
+            value_mse=((returns - value.detach()) ** 2).mean().item(),
             trpo_line_ok=float(ok),
             trpo_expected_improve=float(expected_improve),
-            value_mse=float(((returns - value.detach()) ** 2).mean().item()),
+            natgrad_norm=step_dir.norm().item(),
         )
+
+    def _policy_entropy(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Mean entropy of the current policy πθ over a batch of obs.
+        For Normal, we sum entropies over action dims then average over batch.
+        """
+        with torch.no_grad():
+            latent = self._encode(obs)
+            dist = self._distribution(latent)
+            ent = dist.entropy()
+            if ent.dim() > 1:  # Normal: [B, act_dim] -> sum over dims
+                ent = ent.sum(-1)
+            return ent.mean()  # scalar tensor
 
     def _get_action(self, obs: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():

@@ -6,8 +6,9 @@ from typing import Union
 import numpy as np, torch
 from torch import nn
 
-from src.algos.cbn_critic import VBNCritic
 from src.algos.ppo import PPO
+
+from src.algos.vbn_critic import VBNCritic
 
 
 class PPO_CC(PPO, VBNCritic):
@@ -16,15 +17,17 @@ class PPO_CC(PPO, VBNCritic):
         VBNCritic.__init__(self, **(cbn_kwargs or {}))
 
     def _post_update(self, mem):
-        self._post_update_fill_adv_and_logp(mem)
+        self._post_update_fill_adv_and_logp(mem)  # fills mem["advantages"]
+        self._log_adv_summary(mem)
 
     def _algo_update(self, mem):
         # (unchanged from the previous answer, but uses mem["advantages"] and no critic loss)
         T, N = mem["actions"].shape[:2]
         obs = self.flat(mem["obs"])
         act = self.flat(mem["actions"])
-        old_logp = mem["old_logp"]
+        old_logp = self.flat(mem["old_logp"])
         adv = self.flat(mem["advantages"])
+        returns = self.flat(mem["returns"])
         entropy_all = self.flat(mem["entropy"])
 
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
@@ -51,27 +54,48 @@ class PPO_CC(PPO, VBNCritic):
                     batch_entropy = dist.entropy().sum(-1).mean()
                     extra_a = self.extra_actor_loss(states, mu)
 
+                value = self.critic(states).squeeze(-1)
+                extra_c = self.extra_critic_loss(states, value)
+
                 ratio = torch.exp(new_logp - old_logp[b])
                 surr1 = ratio * adv[b]
                 surr2 = (
                     torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
                 )
                 base_actor_loss = -torch.min(surr1, surr2).mean()
+                base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
 
-                extra_c = self.extra_critic_loss(states, torch.zeros_like(new_logp))
-                loss = base_actor_loss + extra_a - self.ent_coeff * batch_entropy
+                approx_kl = (
+                    (old_logp[b] - new_logp).mean().item()
+                )  # common PPO estimator
+                clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
+
+                actor_loss = base_actor_loss + extra_a
+                critic_loss = base_critic_loss + extra_c
+                loss = (
+                    actor_loss
+                    + self.vf_coeff * critic_loss
+                    - self.ent_coeff * batch_entropy
+                )
 
                 self.optim.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+                grad_norm = nn.utils.clip_grad_norm_(self.parameters(), 0.5).item()
                 self.optim.step()
 
-                self.train_metrics.add(
-                    total_loss=float(loss),
-                    actor_loss=float(base_actor_loss),
-                    extra_actor_loss=float(extra_a),
+                self._log_update_metrics(
+                    total_loss=loss.item(),
+                    actor_loss=base_actor_loss.item(),
                     critic_loss=0.0,
-                    extra_critic_loss=float(extra_c),
+                    entropy=batch_entropy.item(),
+                    adv_var=adv[b].var(unbiased=False).item(),
+                    value_mse=0.0,
+                    extra_actor_loss=extra_a.item(),
+                    extra_critic_loss=extra_c.item(),
+                    grad_norm=grad_norm,
+                    ppo_clip_frac=clip_frac,
+                    ppo_approx_kl=approx_kl,
+                    uses_causal_critic=1.0,
                 )
 
         self._log_ac_metrics(

@@ -64,17 +64,16 @@ class A2C(BaseActorCritic):
         self.optim.step()
 
         # ---------- metrics ----------
-        self.train_metrics.add(
-            total_loss=float(loss.item()),
-            actor_loss=float(base_actor_loss),
-            extra_actor_loss=float(extra_a),
-            critic_loss=float(base_critic_loss),
-            extra_critic_loss=float(extra_c),
-        )
-        self._log_ac_metrics(
-            mse=base_critic_loss.item(),
-            adv_var=adv.var(unbiased=False).item(),
+        # unified metrics
+        self._log_update_metrics(
+            total_loss=loss.item(),
+            actor_loss=base_actor_loss.item(),
+            critic_loss=base_critic_loss.item(),
             entropy=entropy.item(),
+            adv_var=adv.var(unbiased=False).item(),
+            value_mse=base_critic_loss.item(),  # same as critic MSE here
+            extra_actor_loss=extra_a.item(),
+            extra_critic_loss=extra_c.item(),
         )
 
     def _get_action(self, obs):

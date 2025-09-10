@@ -67,9 +67,13 @@ class PPO(BaseActorCritic):
                 surr2 = (
                     torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
                 )
-
                 base_actor_loss = -torch.min(surr1, surr2).mean()
                 base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
+
+                approx_kl = (
+                    (old_logp[b] - new_logp).mean().item()
+                )  # common PPO estimator
+                clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
 
                 actor_loss = base_actor_loss + extra_a
                 critic_loss = base_critic_loss + extra_c
@@ -81,21 +85,29 @@ class PPO(BaseActorCritic):
 
                 self.optim.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(self.parameters(), 0.5)
+                grad_norm = nn.utils.clip_grad_norm_(self.parameters(), 0.5).item()
                 self.optim.step()
 
-                self.train_metrics.add(
-                    total_loss=float(loss),
-                    actor_loss=float(base_actor_loss),
-                    extra_actor_loss=float(extra_a),
-                    critic_loss=float(base_critic_loss),
-                    extra_critic_loss=float(extra_c),
+                self._log_update_metrics(
+                    total_loss=loss.item(),
+                    actor_loss=base_actor_loss.item(),
+                    critic_loss=base_critic_loss.item(),
+                    entropy=batch_entropy.item(),
+                    adv_var=adv[b].var(unbiased=False).item(),
+                    value_mse=0.0,  # we'll log epoch-level MSE below
+                    extra_actor_loss=extra_a.item(),
+                    extra_critic_loss=extra_c.item(),
+                    grad_norm=grad_norm,
+                    # PPO-specific
+                    ppo_clip_frac=clip_frac,
+                    ppo_approx_kl=approx_kl,
                 )
 
         # ---------- log extra metrics ----------
         value_mse = (returns - old_value).pow(2).mean().item()
-        self._log_ac_metrics(
-            value_mse, adv.var(unbiased=False).item(), entropy_all.mean().item()
+        self._log_update_metrics(
+            value_mse=value_mse,
+            entropy=entropy_all.mean().item(),
         )
 
     def _get_action(self, obs):

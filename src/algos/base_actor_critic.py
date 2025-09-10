@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from typing import Any, Dict
 
 import gymnasium
 import gymnasium as gym
@@ -262,6 +263,7 @@ class BaseActorCritic(BasePolicy, nn.Module):
 
         mem["returns"] = returns
         mem["advantages"] = returns - mem["values"]
+        self._log_adv_summary(mem)
 
         episode_return = mem["rewards"].sum(0).mean().item()
         return mem, T, episode_return
@@ -289,6 +291,15 @@ class BaseActorCritic(BasePolicy, nn.Module):
     def _log_ac_metrics(self, mse, adv_var, entropy):
         self.train_metrics.add(value_mse=mse, adv_var=adv_var, entropy=entropy)
 
+    def _log_adv_summary(self, mem):
+        adv = self.flat(mem["advantages"])
+        self.train_metrics.add(
+            adv_mean=float(adv.mean().item()),
+            adv_std=float(adv.std(unbiased=False).item()),
+            adv_min=float(adv.min().item()),
+            adv_max=float(adv.max().item()),
+        )
+
     def extra_actor_loss(
         self,
         states: torch.Tensor | None = None,  # [B, feat]
@@ -306,3 +317,67 @@ class BaseActorCritic(BasePolicy, nn.Module):
     @staticmethod
     def flat(x):
         return x.reshape(-1, *x.shape[2:])
+
+    # A minimal schema of common metrics we want everywhere
+    _COMMON_METRICS = (
+        "total_loss",
+        "actor_loss",
+        "critic_loss",
+        "entropy",
+        "adv_var",
+        "value_mse",
+        "extra_actor_loss",
+        "extra_critic_loss",
+        "grad_norm",
+        "lr",
+    )
+
+    def _current_lr(self) -> float:
+        if hasattr(self, "optim") and self.optim.param_groups:
+            return float(self.optim.param_groups[0].get("lr", float("nan")))
+        return float("nan")
+
+    def _log_update_metrics(
+        self,
+        *,
+        total_loss: float | None = None,
+        actor_loss: float | None = None,
+        critic_loss: float | None = None,
+        entropy: float | None = None,
+        adv_var: float | None = None,
+        value_mse: float | None = None,
+        extra_actor_loss: float | None = None,
+        extra_critic_loss: float | None = None,
+        grad_norm: float | None = None,
+        # any algo-specific extras will pass through **extras
+        **extras: Any,
+    ) -> None:
+        """Unify metric keys across all algos, while allowing algo-specific extras."""
+
+        def _to_num(x):
+            if x is None:
+                return float("nan")
+            try:
+                return float(x)
+            except Exception:
+                return float("nan")
+
+        payload: Dict[str, float] = {
+            "total_loss": _to_num(total_loss),
+            "actor_loss": _to_num(actor_loss),
+            "critic_loss": _to_num(critic_loss),
+            "entropy": _to_num(entropy),
+            "adv_var": _to_num(adv_var),
+            "value_mse": _to_num(value_mse),
+            "extra_actor_loss": _to_num(extra_actor_loss),
+            "extra_critic_loss": _to_num(extra_critic_loss),
+            "grad_norm": _to_num(grad_norm),
+            "lr": _to_num(self._current_lr()),
+        }
+
+        # attach per-algo extras (kept flat)
+        for k, v in extras.items():
+            payload[k] = _to_num(v)
+
+        # your buffer already supports kwargs via .add(...)
+        self.train_metrics.add(**payload)
