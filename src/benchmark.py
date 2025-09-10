@@ -51,9 +51,26 @@ class Benchmark:
         self.algorithms: Dict[str, type[BasePolicy]] = AGENTS
         self.results: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
 
-        self.checkpoints = set(
-            np.linspace(0, n_episodes_train, n_checkpoints, dtype=int)
-        )
+        cp = np.linspace(0, n_episodes_train, n_checkpoints, dtype=np.int64)
+        cp = np.unique(cp)  # drop duplicates from rounding
+        self.checkpoints = [int(x) for x in cp.tolist()]  # cast to plain ints
+
+        info_dict = {
+            "env_suite": self.env_suite,  # str
+            "n_episodes_train": self.n_episodes_train,  # int
+            "n_checkpoints": self.n_checkpoints,  # int
+            "rollout_len": self.rollout_len,  # int
+            "n_train_envs": self.n_train_envs,  # int
+            "n_eval_envs": self.n_eval_envs,  # int
+            "seed": self.seed,  # int
+            "device": str(self.device),  # str
+            "env_names": self.env_names,  # list[str]
+            "algorithms": list(self.algorithms.keys()),  # list[str]
+            "checkpoints": self.checkpoints,  # list[int]
+        }
+
+        with open(self.dir_saving / "benchmark_info.json", "w") as f:
+            json.dump(info_dict, f, indent=4)
 
     @staticmethod
     def _generate_simulation_name(base: str) -> str:
