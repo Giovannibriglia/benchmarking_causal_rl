@@ -169,6 +169,8 @@ class Benchmark:
                         os.makedirs(policy_path, exist_ok=True)
                         agent.save_policy(policy_path / f"episode_{ep}")
 
+                del agent
+
                 # Close the envs (important for RecordVideo flush)
                 train_env.close()
                 eval_env.close()

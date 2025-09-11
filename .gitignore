@@ -3,3 +3,5 @@ dist
 runs
 build
 wandb
+plot.py
+*/videos
