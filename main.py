@@ -54,11 +54,14 @@ if __name__ == "__main__":
         n_episodes_train=args.n_episodes_train,
         n_checkpoints=args.n_checkpoints,
         rollout_len=args.rollout_len,
-        n_train_envs=args.n_train_envs,
-        n_eval_envs=args.n_eval_envs,
+        n_train_envs=8,  # args.n_train_envs,
+        n_eval_envs=8,  # args.n_eval_envs,
         seed=args.seed,
         device=args.device,
     )
 
     path_files = bench.run()
     plot_and_save_results(path_files, bench.n_episodes_train)
+
+    # path_files = "runs/gymnasium_first_ok"
+    # plot_and_save_results(path_files, 250)

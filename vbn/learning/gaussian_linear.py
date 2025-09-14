@@ -40,7 +40,7 @@ class GaussianLinearLearner(torch.nn.Module):
         b = torch.zeros(nc, device=self.device, dtype=self.dtype)
         sigma2 = torch.zeros(nc, device=self.device, dtype=self.dtype)
 
-        Identity = None
+        # Identity = None
         for child in cont_order:
             i = name2idx[child]
             pa = [
@@ -56,16 +56,40 @@ class GaussianLinearLearner(torch.nn.Module):
 
             P_idx = torch.tensor([name2idx[p] for p in pa], device=self.device)
             Xp = Xall[:, P_idx]
+            # Build design with intercept
             X = torch.cat(
                 [torch.ones(N, 1, device=self.device, dtype=self.dtype), Xp], dim=1
+            )  # [N, d+1]
+            d_plus_1 = X.shape[1]
+
+            # Promote to float64 for numerical stability (optional but recommended)
+            X64 = X.to(torch.float64)
+            y64 = y.to(torch.float64)
+
+            # Tikhonov augmentation: do NOT penalize the intercept
+            # Create sqrt(lambda) * I with (0,0) = 0 to avoid penalizing the bias
+            lam = float(self.ridge)
+            if lam <= 0:
+                lam = 1e-8  # ensure some stabilization
+            sqrtlam = lam**0.5
+
+            Identity = torch.eye(d_plus_1, device=self.device, dtype=torch.float64)
+            Identity[0, 0] = 0.0  # no penalty on intercept
+            Xa = torch.cat([X64, sqrtlam * Identity], dim=0)  # [(N + d+1), d+1]
+            ya = torch.cat(
+                [y64, torch.zeros(d_plus_1, device=self.device, dtype=torch.float64)],
+                dim=0,
             )
-            Xt = X.transpose(0, 1)
-            if Identity is None or Identity.shape[0] != X.shape[1]:
-                Identity = torch.eye(X.shape[1], device=self.device, dtype=self.dtype)
-            theta = torch.linalg.solve(Xt @ X + self.ridge * Identity, Xt @ y)
+
+            # Stable least-squares (SVD-based), handles rank-deficiency gracefully
+            theta64 = torch.linalg.lstsq(Xa, ya, rcond=None).solution  # [d+1]
+
+            theta = theta64.to(self.dtype)
+
             b[i] = theta[0]
             W[i, P_idx] = theta[1:]
-            res = y - X @ theta
+
+            res = y - (X @ theta.to(self.dtype))
             sigma2[i] = torch.clamp((res * res).mean(), min=1e-12)
 
         lg = LGParams(order=cont_order, name2idx=name2idx, W=W, b=b, sigma2=sigma2)

@@ -70,9 +70,7 @@ class PPO(BaseActorCritic):
                 base_actor_loss = -torch.min(surr1, surr2).mean()
                 base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
 
-                approx_kl = (
-                    (old_logp[b] - new_logp).mean().item()
-                )  # common PPO estimator
+                approx_kl = (old_logp[b] - new_logp).mean().item()
                 clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
 
                 actor_loss = base_actor_loss + extra_a
@@ -94,7 +92,7 @@ class PPO(BaseActorCritic):
                     critic_loss=base_critic_loss.item(),
                     entropy=batch_entropy.item(),
                     adv_var=adv[b].var(unbiased=False).item(),
-                    value_mse=0.0,  # we'll log epoch-level MSE below
+                    value_mse=0.0,  # epoch-level below
                     extra_actor_loss=extra_a.item(),
                     extra_critic_loss=extra_c.item(),
                     grad_norm=grad_norm,
@@ -134,7 +132,6 @@ class PPO(BaseActorCritic):
     def load_policy(self, path: Union[str, Path]) -> None:
         ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
         self.load_state_dict(ckpt["state_dict"])
-        # hyper‑params useful if you want to inspect them later
         self.clip_eps = ckpt.get("clip_eps", 0.2)
         self.vf_coeff = ckpt.get("vf_coeff", 0.5)
         self.ent_coeff = ckpt.get("ent_coeff", 0.01)

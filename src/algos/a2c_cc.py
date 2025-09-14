@@ -28,7 +28,18 @@ class A2C_CC(A2C, VBNCritic):
 
     # ── hook: after rollout collection, fill advantages & old_logp via CBN ──
     def _post_update(self, mem):
-        self._post_update_fill_adv_and_logp(mem)  # fills mem["advantages"]
+        """
+        After a rollout, (1) fit/update the causal BN on this batch,
+        (2) compute V_c(s) and overwrite mem['advantages'] = returns - V_c,
+        (3) fill mem['old_logp'] for algorithms that need it (kept for consistency).
+        """
+        # 1) update/fit the BN on this rollout
+        self._causal_update(mem)
+
+        # 2) fill *both* advantages and old_logp in one shot
+        self._post_update_fill_adv_and_logp(mem)
+
+        # 3) (optional) log summary
         self._log_adv_summary(mem)
 
     # ── main optimization step (actor only; no neural critic) ──

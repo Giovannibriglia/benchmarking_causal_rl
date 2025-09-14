@@ -119,7 +119,7 @@ class VBNCritic:
         return torch.zeros(1, device=self.device)
 
     def _q_causal(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        assert self.bn is not None and self.inf_obj is not None, "CBN not initialized."
+        assert self.bn is not None and self.inf_obj is not None, "VBN not initialized."
         evidence = self._build_evidence(states)
         do = self._build_do(actions)
         posterior_pdfs, posterior_samples, _ = self.bn.infer(
@@ -234,57 +234,63 @@ class VBNCritic:
             self.lp = self.bn.fit(self.fit_method, df, **self.kwargs_fit)
             self.inf_obj = self.bn.setup_inference(self.inf_method)
 
+    def _post_update(self, mem):
+        # 1) update/fit the BN on this rollout
+        self._causal_update(mem)
+
+        # 2) fill *both* advantages and old_logp in one shot
+        self._fill_causal_adv_and_old_logp(mem)
+
+        # 3) (optional) log summary
+        self._log_adv_summary(mem)
+
     def _post_update_fill_adv_and_logp(self, mem):
         """
-        Sets:
-          mem["advantages"]: [T,N]
-          mem["old_logp"]:   [T,N]  (log πθ(a_t | s_t) under current policy)
-
-        Assumes mem has:
-          mem["obs"]:     [T,N,flat] for Box or [T,N,1] for Discrete
-          mem["actions"]: [T,N] (discrete) or [T,N,Ad] (continuous)
-          mem["returns"]: [T,N] (already computed upstream, only if you use it for A)
+        Fills:
+          • mem["advantages"] = returns - V_causal(s)   [T,N]
+          • mem["old_logp"]   = log πθ(a|s)            [T,N]
+        Assumes mem has "obs", "actions", "returns".
         """
         device = self.device
-        obs = mem["obs"].to(device)
-        act = mem["actions"].to(device)
+        obs = mem["obs"].to(device)  # [T,N,flat] (or [T,N,1] if Discrete index)
+        act = mem["actions"].to(device)  # [T,N] or [T,N,Ad]
+        ret = mem["returns"].to(device)  # [T,N]
 
         T, N = obs.shape[:2]
         B = T * N
 
-        # ---------- Build latent with the *right* index shape ----------
-        # If encoder is an Embedding (discrete obs), we must feed [B] integer indices,
-        # NOT [B,1], otherwise the policy batch_shape becomes [B,1] and log_prob broadcasts.
+        # -------- states for BN + latent for policy dist --------
         if isinstance(self.encoder, nn.Embedding):
-            # obs: [T,N,1] -> [T,N] -> [B]
+            # Discrete observation index
             if obs.ndim == 3 and obs.shape[-1] == 1:
-                obs_idx = obs.squeeze(-1)
+                obs_idx = obs.squeeze(-1)  # [T,N]
             else:
-                # fallback: treat last dim as the index already
                 obs_idx = obs[..., 0]
-            obs_vec = obs_idx.reshape(B).long()  # [B]
-            latent = self._encode(obs_vec)  # -> [B, hidden]
+            states = obs_idx.reshape(B, 1).long()  # [B,1] for BN
+            latent = self._encode(obs_idx.reshape(B))  # [B, hid] for policy dist
         else:
-            # Box / Tuple / Dict: keep flattened features [B, feat]
-            obs_flat = obs if obs.ndim == 3 else obs.unsqueeze(-1)
-            latent = self._encode(obs_flat.view(B, -1))  # -> [B, hidden]
+            states = obs.view(B, -1).float()  # [B,feat] for BN
+            latent = self._encode(states)  # [B, hid] for policy dist
 
-        # ---------- Current policy distribution over actions ----------
-        dist = self._policy_dist_from_latent(latent)  # batch_shape == [B]
+        # current policy distribution
+        dist = self._policy_dist_from_latent(latent)
 
-        # ---------- Log-prob of the *executed* action ----------
+        # -------- V_causal(s) --------
+        Vc, q_enum = self._v_causal(states, dist)  # Vc: [B]
+        Vc = Vc.view(T, N).detach()
+
+        # advantages
+        mem["advantages"] = (ret - Vc).detach()
+
+        # -------- old_logp = log πθ(a|s) --------
         if self.is_discrete:
-            # [T,N] -> [B] Long
             act_vec = act.view(B).long()  # [B]
             logp_vec = dist.log_prob(act_vec)  # [B]
         else:
-            # [T,N,Ad] -> [B,Ad]
             act_dim = self.log_std.numel()
-            act_vec = act.view(B, act_dim)
+            act_vec = act.view(B, act_dim)  # [B,Ad]
             logp_vec = dist.log_prob(act_vec).sum(-1)  # [B]
-
-        old_logp = logp_vec.view(T, N).detach()  # [T,N]
-        mem["old_logp"] = old_logp
+        mem["old_logp"] = logp_vec.view(T, N).detach()
 
     # --- add this method in VBNCritic ---
     def _policy_dist_from_latent(self, latent):

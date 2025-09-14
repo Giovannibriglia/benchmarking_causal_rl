@@ -16,20 +16,38 @@ class PPO_CC(PPO, VBNCritic):
         PPO.__init__(self, *args, **ppo_kwargs)
         VBNCritic.__init__(self, **(cbn_kwargs or {}))
 
+    # ── hook: after rollout collection, fill advantages & old_logp via CBN ──
     def _post_update(self, mem):
-        self._post_update_fill_adv_and_logp(mem)  # fills mem["advantages"]
+        """
+        After a rollout, (1) fit/update the causal BN on this batch,
+        (2) compute V_c(s) and overwrite mem['advantages'] = returns - V_c,
+        (3) fill mem['old_logp'] for algorithms that need it (kept for consistency).
+        """
+        # 1) update/fit the BN on this rollout
+        self._causal_update(mem)
+
+        # 2) fill *both* advantages and old_logp in one shot
+        self._post_update_fill_adv_and_logp(mem)
+
+        # 3) (optional) log summary
         self._log_adv_summary(mem)
 
     def _algo_update(self, mem):
-        # (unchanged from the previous answer, but uses mem["advantages"] and no critic loss)
+        """
+        PPO with causal critic variant (current minimal fixes):
+          • Uses mem["logp"] (not "old_logp")
+          • Removes value loss entirely (no critic forward/MSE)
+        """
         T, N = mem["actions"].shape[:2]
+
         obs = self.flat(mem["obs"])
         act = self.flat(mem["actions"])
-        old_logp = self.flat(mem["old_logp"])
+        old_logp = self.flat(mem["logp"])  # ← FIX 1: consistent key
         adv = self.flat(mem["advantages"])
-        returns = self.flat(mem["returns"])
+        # returns = self.flat(mem["returns"])  # kept only for logging if you wish
         entropy_all = self.flat(mem["entropy"])
 
+        # advantage normalisation
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
 
         idxs = np.arange(T * N)
@@ -54,29 +72,19 @@ class PPO_CC(PPO, VBNCritic):
                     batch_entropy = dist.entropy().sum(-1).mean()
                     extra_a = self.extra_actor_loss(states, mu)
 
-                value = self.critic(states).squeeze(-1)
-                extra_c = self.extra_critic_loss(states, value)
-
                 ratio = torch.exp(new_logp - old_logp[b])
                 surr1 = ratio * adv[b]
                 surr2 = (
                     torch.clamp(ratio, 1 - self.clip_eps, 1 + self.clip_eps) * adv[b]
                 )
                 base_actor_loss = -torch.min(surr1, surr2).mean()
-                base_critic_loss = 0.5 * (returns[b] - value).pow(2).mean()
 
-                approx_kl = (
-                    (old_logp[b] - new_logp).mean().item()
-                )  # common PPO estimator
+                approx_kl = (old_logp[b] - new_logp).mean().item()
                 clip_frac = ((ratio - 1.0).abs() > self.clip_eps).float().mean().item()
 
+                # No critic forward / no value loss here  ← FIX 2
                 actor_loss = base_actor_loss + extra_a
-                critic_loss = base_critic_loss + extra_c
-                loss = (
-                    actor_loss
-                    + self.vf_coeff * critic_loss
-                    - self.ent_coeff * batch_entropy
-                )
+                loss = actor_loss - self.ent_coeff * batch_entropy
 
                 self.optim.zero_grad()
                 loss.backward()
@@ -86,24 +94,26 @@ class PPO_CC(PPO, VBNCritic):
                 self._log_update_metrics(
                     total_loss=loss.item(),
                     actor_loss=base_actor_loss.item(),
-                    critic_loss=0.0,
+                    critic_loss=0.0,  # logged as zero
                     entropy=batch_entropy.item(),
                     adv_var=adv[b].var(unbiased=False).item(),
                     value_mse=0.0,
                     extra_actor_loss=extra_a.item(),
-                    extra_critic_loss=extra_c.item(),
+                    extra_critic_loss=0.0,  # no extra critic terms
                     grad_norm=grad_norm,
                     ppo_clip_frac=clip_frac,
                     ppo_approx_kl=approx_kl,
                     uses_causal_critic=1.0,
                 )
 
+        # epoch-level logs
         self._log_ac_metrics(
             mse=0.0,
             adv_var=adv.var(unbiased=False).item(),
             entropy=entropy_all.mean().item(),
         )
 
+    # ---------- persistence ----------
     def save_policy(self, path: Union[str, Path]) -> None:
         torch.save(
             {
