@@ -234,16 +234,6 @@ class VBNCritic:
             self.lp = self.bn.fit(self.fit_method, df, **self.kwargs_fit)
             self.inf_obj = self.bn.setup_inference(self.inf_method)
 
-    def _post_update(self, mem):
-        # 1) update/fit the BN on this rollout
-        self._causal_update(mem)
-
-        # 2) fill *both* advantages and old_logp in one shot
-        self._fill_causal_adv_and_old_logp(mem)
-
-        # 3) (optional) log summary
-        self._log_adv_summary(mem)
-
     def _post_update_fill_adv_and_logp(self, mem):
         """
         Fills:
