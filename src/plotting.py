@@ -93,51 +93,90 @@ def _iqm_1d(arr_like) -> float:
 
 
 # Gymnasium environment grouping
-def _env_group(env_name: str) -> str:
+def _env_group(env_name: str, how_to_group: str = "default") -> str:
     name = env_name.lower()
-    # classic control
-    classic = ("cartpole", "mountaincar", "acrobot", "pendulum")
-    if any(k in name for k in classic):
-        return "classic_control"
-    # box2d
-    box2d = ("lunarlander", "bipedalwalker", "carracing")
-    if any(k in name for k in box2d):
-        return "box2d"
-    # toy text
-    toytext = ("frozenlake", "cliffwalking", "taxi", "blackjack")
-    if any(k in name for k in toytext):
-        return "toy_text"
-    # mujoco
-    mujoco = (
-        "ant",
-        "halfcheetah",
-        "hopper",
-        "humanoid",
-        "humanoidstandup",
-        "invertedpendulum",
-        "inverteddoublependulum",
-        "pusher",
-        "reacher",
-        "swimmer",
-        "walker2d",
-    )
-    if any(k in name for k in mujoco) or "mujoco" in name:
-        return "mujoco"
-    return "other"
+    if how_to_group == "default":
+        # classic control
+        classic = ("cartpole", "mountaincar", "acrobot", "pendulum")
+        if any(k in name for k in classic):
+            return "classic_control"
+        # box2d
+        box2d = ("lunarlander", "bipedalwalker", "carracing")
+        if any(k in name for k in box2d):
+            return "box2d"
+        # toy text
+        toytext = ("frozenlake", "cliffwalking", "taxi", "blackjack")
+        if any(k in name for k in toytext):
+            return "toy_text"
+        # mujoco
+        mujoco = (
+            "ant",
+            "halfcheetah",
+            "hopper",
+            "humanoid",
+            "humanoidstandup",
+            "invertedpendulum",
+            "inverteddoublependulum",
+            "pusher",
+            "reacher",
+            "swimmer",
+            "walker2d",
+        )
+        if any(k in name for k in mujoco) or "mujoco" in name:
+            return "mujoco"
+        return "other"
+    elif how_to_group == "hardness":
+        # classic control
+        easier = (
+            "cartpole",
+            "mountaincar-v0",
+            "acrobot",
+            "frozenlake",
+            "cliffwalking",
+            "taxi",
+            "blackjack",
+        )
+        if any(k in name for k in easier):
+            return "easier"
+        # box2d
+
+        medium = ("pendulum", "lunarlandercontinuous-v3", "reacher", "invertedpendulum")
+        if any(k in name for k in medium):
+            return "medium"
+        # toy text
+        medium_hard = ("lunarlander-v3",)
+        if any(k in name for k in medium_hard):
+            return "medium_hard"
+        # mujoco
+        hard = (
+            "bipedalwalker",
+            "mountaincarcontinuous",
+            "pusher",
+            "inverteddoublependulum",
+            "ant",
+            "halfcheetah",
+            "hopper",
+            "humanoid",
+            "humanoidstandup",
+            "pusher",
+            "swimmer",
+            "walker2d",
+            "carracing",
+        )
+        if any(k in name for k in hard) or "mujoco" in name:
+            return "hard"
+
+        raise ValueError(f"{name} not categorized")
+    else:
+        raise NotImplementedError(f"{how_to_group} not implemented")
 
 
 # ─────────────────── causal variant improvement helpers ──────────────────────
 
 # Auto-baseline detection (suffix stripping)
 _SUFFIXES = (
-    "_cc_cv",
-    "-cc-cv",
     "_cc",
     "-cc",
-    ".cc",
-    "_cv",
-    "-cv",
-    ".cv",
 )
 
 
@@ -399,7 +438,8 @@ def plot_and_save_results(
     n_episodes: int,
     pairs_arg: Optional[str] = None,
     pairs_file: Optional[str] = None,
-    agg_type: str = "iqm",
+    agg_type: str = "mean",
+    how_to_group: str = "default",
 ):
     """
     Original pipeline + env-wise % improvement, group IQM, and overall IQM.
@@ -435,7 +475,7 @@ def plot_and_save_results(
     pbar = tqdm(data.items())
     for env, algo_dict in pbar:
         pbar.set_description(f"Plotting: {env}...")
-        group_env = _env_group(env)
+        group_env = _env_group(env, how_to_group)
 
         # ─── evaluation_return & evaluation_length  (stats AND plots) ─────────
         for prefix in ("return", "length"):
@@ -699,7 +739,7 @@ def plot_and_save_results(
                     sub,
                     tables_dir / "plots" / f"{grp}_improvement_bar_IQM.pdf",
                     title=f"{grp}: IQM % improvement (IQM of evaluation_return)",
-                    agg="iqm",
+                    agg=agg_type,
                 )
 
             if agg_type == "mean":
@@ -724,7 +764,7 @@ def plot_and_save_results(
                 impr_per_env,
                 tables_dir / "plots" / "overall_improvement_bar_IQM.pdf",
                 title="Overall: IQM % improvement (IQM of evaluation_return)",
-                agg="iqm",
+                agg=agg_type,
             )
 
     # Done
