@@ -64,11 +64,13 @@ class VanillaAC_Ablation(VanillaAC, VBNCritic):
 
     def _post_update(self, mem):
         """
-        1) Fit/update VBN on this rollout (probe only).
-        2) Compute V^c(s), TD(0) target y_t, and probe metrics (NO changes to training).
+        1) Update VBN on this rollout (probe only).
+        2) Compute NN and causal TD(0) targets and log diagnostics.
         """
-        # 1) Update BN with this batch
-        self._causal_update(mem)
+
+        # Update BN (probe only, no grads)
+        with torch.no_grad():
+            self._causal_update(mem)
 
         device = self.device
         obs = self.flat(mem["obs"]).to(device)  # [B, feat]
@@ -77,7 +79,6 @@ class VanillaAC_Ablation(VanillaAC, VBNCritic):
         if "dones" in mem:
             dones = self.flat(mem["dones"]).to(device).float()
         else:
-            # robust fallback
             term = (
                 self.flat(mem.get("terminated", torch.zeros_like(rewards)))
                 .to(device)
@@ -90,74 +91,90 @@ class VanillaAC_Ablation(VanillaAC, VBNCritic):
             )
             dones = torch.clamp(term + trunc, 0, 1)
 
-        # Reconstruct next_obs by shifting obs (good enough for diagnostics)
+        # reconstruct next_obs (diagnostic only)
         nxt_obs = obs.clone()
         nxt_obs[:-1] = obs[1:]
         nxt_obs[-1] = obs[-1]
 
         gamma = getattr(self, "gamma", 0.99)
 
-        # ---- Vanilla AC targets (for fair comparison): y_t = r + γ(1-d)V_nn(s') ----
         with torch.no_grad():
+            # ---- NN critic and NN TD target y_t^nn ----
             lat = self._encode(obs)
-            v_nn = self.critic(lat).squeeze(-1)  # [B]
             lat_next = self._encode(nxt_obs)
-            v_nn_next = self.critic(lat_next).squeeze(-1)  # [B]
-            y_t = rewards + gamma * (1.0 - dones) * v_nn_next  # TD(0) target
+            v_nn = self.critic(lat).squeeze(-1)
+            v_nn_next = self.critic(lat_next).squeeze(-1)
+            y_t_nn = rewards + gamma * (1.0 - dones) * v_nn_next
+            delta_nn = y_t_nn - v_nn
 
-            # TD-residual under NN-critic (for side-by-side)
-            delta_nn = y_t - v_nn
+            # ---- Policy distributions ----
+            dist = self._policy_dist_from_latent(lat)
+            dist_next = self._policy_dist_from_latent(lat_next)
 
-        # ---- Probe: compute V^c, TD-like residuals, and diagnostics ----
-        with torch.no_grad():
-            states, dist = self._probe_states_and_dist(obs)
-            v_c, _ = self._v_causal(states, dist)  # [B]
+            # ---- Build BN states ----
+            if isinstance(self.encoder, nn.Embedding):
+                obs_idx = (
+                    obs.squeeze(-1)
+                    if (obs.ndim == 2 and obs.shape[1] == 1)
+                    else obs[..., 0]
+                )
+                nxt_obs_idx = (
+                    nxt_obs.squeeze(-1)
+                    if (nxt_obs.ndim == 2 and nxt_obs.shape[1] == 1)
+                    else nxt_obs[..., 0]
+                )
+                states = obs_idx.view(-1, 1).long()
+                states_next = nxt_obs_idx.view(-1, 1).long()
+            else:
+                states = obs.view(obs.shape[0], -1).float()
+                states_next = nxt_obs.view(nxt_obs.shape[0], -1).float()
+
+            # ---- Causal values and causal TD target y_t^c ----
+            v_c, _ = self._v_causal(states, dist)
+            v_c_next, _ = self._v_causal(states_next, dist_next)
             v_c = v_c.view(-1)
-
-            states_next, _ = self._probe_states_and_dist(nxt_obs)
-            v_c_next, _ = self._v_causal(states_next, dist)  # reuse current dist
             v_c_next = v_c_next.view(-1)
 
-            # Probe advantages: use the SAME target as Vanilla AC (y_t)
-            a_probe = y_t - v_c
-            delta_c = rewards + gamma * (1.0 - dones) * v_c_next - v_c
+            y_t_c = rewards + gamma * (1.0 - dones) * v_c_next
+            a_probe = y_t_c - v_c
+            delta_c = y_t_c - v_c  # same as a_probe
 
-        # ---- Log: NN critic (training one) ----
+        # ---- Log: NN critic ----
         self.train_metrics.add(
-            adv_var=float(delta_nn.detach().var(unbiased=False).item()),
-            value_mse=float(((y_t - v_nn) ** 2).mean().item()),
-            v_explained_variance=explained_variance(y_t, v_nn),
+            adv_var=float(delta_nn.var(unbiased=False).item()),
+            value_mse=float(((y_t_nn - v_nn) ** 2).mean().item()),
+            v_explained_variance=explained_variance(y_t_nn, v_nn),
             td_mean=float(delta_nn.mean().item()),
             td_std=float(delta_nn.std(unbiased=False).item()),
-            v_corr=pearson_corr(y_t, v_nn),
-            v_spearman=spearman_corr(y_t, v_nn),
+            v_corr=pearson_corr(y_t_nn, v_nn),
+            v_spearman=spearman_corr(y_t_nn, v_nn),
             v_mi=mutual_information(
-                y_t, v_nn, n_bins=20, strategy="quantile", normalized=True
+                y_t_nn, v_nn, n_bins=20, strategy="quantile", normalized=True
             ),
-            v_wass=wasserstein_1d(y_t, v_nn),
-            v_kl=kl_divergence_hist(y_t, v_nn, n_bins=20, strategy="quantile"),
-            v_js=js_divergence_hist(y_t, v_nn, n_bins=20, strategy="quantile"),
+            v_wass=wasserstein_1d(y_t_nn, v_nn),
+            v_kl=kl_divergence_hist(y_t_nn, v_nn, n_bins=20, strategy="quantile"),
+            v_js=js_divergence_hist(y_t_nn, v_nn, n_bins=20, strategy="quantile"),
         )
 
-        # ---- Log: VBN probe (prefixed) ----
+        # ---- Log: causal critic (causal-consistent) ----
         self.train_metrics.add(
             causal_adv_var=float(a_probe.var(unbiased=False).item()),
-            causal_value_mse=mse(y_t, v_c),
-            causal_v_explained_variance=explained_variance(y_t, v_c),
+            causal_value_mse=mse(y_t_c, v_c),
+            causal_v_explained_variance=explained_variance(y_t_c, v_c),
             causal_td_mean=float(delta_c.mean().item()),
             causal_td_std=float(delta_c.std(unbiased=False).item()),
-            causal_v_corr=pearson_corr(y_t, v_c),
-            causal_v_spearman=spearman_corr(y_t, v_c),
+            causal_v_corr=pearson_corr(y_t_c, v_c),
+            causal_v_spearman=spearman_corr(y_t_c, v_c),
             causal_adv_mean=float(a_probe.mean().item()),
             causal_adv_std=float(a_probe.std(unbiased=False).item()),
             causal_adv_min=float(a_probe.min().item()),
             causal_adv_max=float(a_probe.max().item()),
             causal_v_mi=mutual_information(
-                y_t, v_c, n_bins=20, strategy="quantile", normalized=True
+                y_t_c, v_c, n_bins=20, strategy="quantile", normalized=True
             ),
-            causal_v_wass=wasserstein_1d(y_t, v_c),
-            causal_v_kl=kl_divergence_hist(y_t, v_c, n_bins=20, strategy="quantile"),
-            causal_v_js=js_divergence_hist(y_t, v_c, n_bins=20, strategy="quantile"),
+            causal_v_wass=wasserstein_1d(y_t_c, v_c),
+            causal_v_kl=kl_divergence_hist(y_t_c, v_c, n_bins=20, strategy="quantile"),
+            causal_v_js=js_divergence_hist(y_t_c, v_c, n_bins=20, strategy="quantile"),
         )
 
     # ---------- persistence (same as VanillaAC; probe has no extra state here) ----------
