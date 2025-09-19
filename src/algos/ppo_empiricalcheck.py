@@ -17,7 +17,7 @@ from src.algos.utils import (
 from src.algos.vbn_critic import VBNCritic
 
 
-class PPO_Ablation(PPO, VBNCritic):
+class PPO_EmpiricalCheck(PPO, VBNCritic):
     """
     Train EXACTLY like PPO (clipped surrogate + NN value loss).
     In parallel, fit a VBN on the same rollout and log 'probe_*' diagnostics:
@@ -140,7 +140,7 @@ class PPO_Ablation(PPO, VBNCritic):
             causal_v_kl=kl_divergence_hist(
                 returns, v_c, n_bins=20, strategy="quantile"
             ),
-            causal_v_js_base=js_divergence_hist(
+            causal_v_js=js_divergence_hist(
                 returns, v_c, n_bins=20, strategy="quantile"
             ),
         )

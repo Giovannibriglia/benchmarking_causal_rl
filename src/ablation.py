@@ -13,7 +13,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
 import torch
 from tqdm import tqdm
 
-from src.algos import ABLATIONS
+from src.algos import EMPIRICAL_CHECKS
 from src.base import BasePolicy, DEFAULT_DEVICE
 from src.envs import ENV_CLASSES, ENV_NAMES
 
@@ -52,7 +52,7 @@ class Ablation:
         self.policy_path = self.dir_saving / "policies"
         self.policy_path.mkdir(parents=True, exist_ok=True)
 
-        self.algorithms: Dict[str, type[BasePolicy]] = ABLATIONS
+        self.algorithms: Dict[str, type[BasePolicy]] = EMPIRICAL_CHECKS
         self.results: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
 
         cp = np.linspace(0, n_episodes_train, n_checkpoints, dtype=np.int64)

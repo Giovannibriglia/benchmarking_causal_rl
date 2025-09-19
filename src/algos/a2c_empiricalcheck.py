@@ -17,7 +17,7 @@ from src.algos.utils import (
 from src.algos.vbn_critic import VBNCritic
 
 
-class A2C_Ablation(A2C, VBNCritic):
+class A2C_EmpiricalCheck(A2C, VBNCritic):
     """
     Train exactly like A2C (actor uses NN-critic advantages).
     In parallel, fit a VBN on the *same* rollout and log probe metrics:

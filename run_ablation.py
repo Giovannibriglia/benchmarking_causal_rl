@@ -1,7 +1,6 @@
 import argparse
 
 from src.ablation import Ablation
-from src.plotting import plot_and_save_results
 
 
 def get_args():
@@ -51,8 +50,8 @@ if __name__ == "__main__":
 
     bench = Ablation(
         env_suite=args.env_suite,
-        n_episodes_train=10,  # args.n_episodes_train,
-        n_checkpoints=3,  # args.n_checkpoints,
+        n_episodes_train=args.n_episodes_train,
+        n_checkpoints=args.n_checkpoints,
         rollout_len=args.rollout_len,
         n_train_envs=8,  # args.n_train_envs,
         n_eval_envs=8,  # args.n_eval_envs,
@@ -61,4 +60,4 @@ if __name__ == "__main__":
     )
 
     path_files = bench.run()
-    plot_and_save_results(path_files, bench.n_episodes_train)
+    # TODO: plot ablation

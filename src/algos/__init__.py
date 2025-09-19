@@ -1,15 +1,15 @@
 from .a2c import A2C
-from .a2c_ablation import A2C_Ablation
 from .a2c_cc import A2C_CC
+from .a2c_empiricalcheck import A2C_EmpiricalCheck
 from .ppo import PPO
-from .ppo_ablation import PPO_Ablation
 from .ppo_cc import PPO_CC
+from .ppo_empiricalcheck import PPO_EmpiricalCheck
 from .trpo import TRPO
-from .trpo_ablation import TRPO_Ablation
 from .trpo_cc import TRPO_CC
-from .vanilla_ablation import VanillaAC_Ablation
+from .trpo_empiricalcheck import TRPO_EmpiricalCheck
 from .vanilla_ac import VanillaAC
 from .vanilla_ac_cc import VanillaAC_CC
+from .vanilla_empiricalcheck import VanillaAC_EmpiricalCheck
 
 AGENTS = {
     "vanilla_cc": VanillaAC_CC,
@@ -22,9 +22,9 @@ AGENTS = {
     "trpo": TRPO,
 }
 
-ABLATIONS = {
-    "a2c": A2C_Ablation,
-    "vanilla": VanillaAC_Ablation,
-    "ppo": PPO_Ablation,
-    "trpo": TRPO_Ablation,
+EMPIRICAL_CHECKS = {
+    "a2c": A2C_EmpiricalCheck,
+    "vanilla": VanillaAC_EmpiricalCheck,
+    "ppo": PPO_EmpiricalCheck,
+    "trpo": TRPO_EmpiricalCheck,
 }

@@ -17,7 +17,7 @@ from src.algos.utils import (
 from src.algos.vbn_critic import VBNCritic
 
 
-class TRPO_Ablation(TRPO, VBNCritic):
+class TRPO_EmpiricalCheck(TRPO, VBNCritic):
     """
     Train EXACTLY like TRPO (policy via natgrad step, critic regresses to returns).
     In parallel, fit a VBN on the same rollout and log 'probe_*' diagnostics:
@@ -141,7 +141,7 @@ class TRPO_Ablation(TRPO, VBNCritic):
                 causal_v_kl=kl_divergence_hist(
                     returns, v_c, n_bins=20, strategy="quantile"
                 ),
-                causal_v_js_base=js_divergence_hist(
+                causal_v_js=js_divergence_hist(
                     returns, v_c, n_bins=20, strategy="quantile"
                 ),
             )
