@@ -59,6 +59,73 @@ def _combine_losses(
     return np.nansum(padded, axis=0)
 
 
+def _iqm_iqr_of_series(series: pd.Series) -> tuple[float, float]:
+    vals = np.asarray(series.dropna().values, dtype=float)
+    if vals.size == 0:
+        return float("nan"), float("nan")
+    q25, q75 = np.percentile(vals, [25, 75])
+    mid = vals[(vals >= q25) & (vals <= q75)]
+    if mid.size == 0:
+        return float("nan"), float("nan")
+    return float(np.mean(mid)), float(np.std(mid))
+
+
+def _build_pairs_by_group_matrix(
+    impr_per_env: pd.DataFrame,
+) -> tuple[list[str], list[str], list[list[str]]]:
+    """
+    Rows = algo pairs ("variant vs baseline"), Cols = group_env,
+    Cell = IQM(improvement_pct) ± IQR-std across envs in that group.
+    """
+    if impr_per_env.empty:
+        return [], [], []
+
+    pairs = sorted(impr_per_env["pair"].unique().tolist())
+    groups = sorted(impr_per_env["group_env"].unique().tolist())
+
+    matrix = []
+    for p in pairs:
+        row = []
+        any_val = False
+        for g in groups:
+            s = impr_per_env.loc[
+                (impr_per_env["pair"] == p) & (impr_per_env["group_env"] == g),
+                "improvement_pct",
+            ]
+            iqm, iqrstd = _iqm_iqr_of_series(s)
+            if np.isnan(iqm):
+                row.append("--")
+            else:
+                row.append(f"{iqm:.2f} $\\pm$ {iqrstd:.2f}")
+                any_val = True
+        if any_val:
+            matrix.append(row)
+        else:
+            # if a pair never appears in any group, skip it entirely
+            pairs.remove(p)
+    return pairs, groups, matrix
+
+
+def _build_pairs_overall_matrix(
+    impr_per_env: pd.DataFrame,
+) -> tuple[list[str], list[str], list[list[str]]]:
+    """
+    Rows = algo pairs, single column 'ALL',
+    Cell = IQM(improvement_pct) ± IQR-std across ALL envs.
+    """
+    if impr_per_env.empty:
+        return [], [], []
+    pairs = sorted(impr_per_env["pair"].unique().tolist())
+    row_names, matrix = [], []
+    for p in pairs:
+        s = impr_per_env.loc[impr_per_env["pair"] == p, "improvement_pct"]
+        iqm, iqrstd = _iqm_iqr_of_series(s)
+        if not np.isnan(iqm):
+            row_names.append(p)
+            matrix.append([f"{iqm:.2f} $\\pm$ {iqrstd:.2f}"])
+    return row_names, ["ALL"], matrix
+
+
 def _summarise(y: np.ndarray) -> tuple[float, float, float, float]:
     """mean, std, iqr25, iqr75 ignoring nans."""
     mean = float(np.nanmean(y))
@@ -1052,6 +1119,40 @@ def plot_and_save_results(
             title=f"Overall: {agg_type.upper()} % improvement (IQM of evaluation_return)",
             agg=("mean" if agg_type == "mean" else "iqm"),
         )
+
+        # (D) PAIRS × GROUP table
+        row_pairs, col_groups, mat_pairs = _build_pairs_by_group_matrix(impr_per_env)
+        if row_pairs:
+            tex_pairs_grp = _latex_table_from_matrix(
+                row_header="pair",
+                row_names=row_pairs,
+                col_names=col_groups,
+                matrix_vals=mat_pairs,
+                caption=(
+                    "IQM % improvement (± IQR-std) of each requested algorithm pair "
+                    "across environment groups. Each row is a 'variant vs baseline' pair."
+                ),
+                label="tab:pairs_by_group_improvement_iqm",
+            )
+            (latex_dir / "pairs_by_group_iqm_iqr_table.txt").write_text(tex_pairs_grp)
+
+        # (E) PAIRS OVERALL table
+        row_pairs_o, col_all, mat_pairs_o = _build_pairs_overall_matrix(impr_per_env)
+        if row_pairs_o:
+            tex_pairs_overall = _latex_table_from_matrix(
+                row_header="pair",
+                row_names=row_pairs_o,
+                col_names=col_all,
+                matrix_vals=mat_pairs_o,
+                caption=(
+                    "Overall IQM % improvement (± IQR-std) for each requested "
+                    "'variant vs baseline' pair across all environments."
+                ),
+                label="tab:pairs_overall_improvement_iqm",
+            )
+            (latex_dir / "pairs_overall_iqm_iqr_table.txt").write_text(
+                tex_pairs_overall
+            )
 
     # Done
 
