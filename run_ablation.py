@@ -1,6 +1,9 @@
 import argparse
 
-from src.ablation import Ablation
+from src.algos import EMPIRICAL_CHECKS
+
+from src.empiricalchecks import EmpiricalChecks
+from src.plot_empirical_check import plot_empirical_check
 
 
 def get_args():
@@ -48,16 +51,17 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
 
-    bench = Ablation(
+    bench = EmpiricalChecks(
         env_suite=args.env_suite,
         n_episodes_train=args.n_episodes_train,
         n_checkpoints=args.n_checkpoints,
         rollout_len=args.rollout_len,
-        n_train_envs=8,  # args.n_train_envs,
-        n_eval_envs=8,  # args.n_eval_envs,
+        n_train_envs=args.n_train_envs,
+        n_eval_envs=args.n_eval_envs,
         seed=args.seed,
         device=args.device,
     )
 
     path_files = bench.run()
-    # TODO: plot ablation
+
+    plot_empirical_check(path_files, EMPIRICAL_CHECKS, "iqm", "iqr")

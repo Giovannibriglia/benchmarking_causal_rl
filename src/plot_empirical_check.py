@@ -7,21 +7,9 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
-
-from src.algos import EMPIRICAL_CHECKS
 from tqdm import tqdm
 
-# ─────────── config ───────────
-# Aggregation across environments for "overall" curves and summary plots:
-#   AGG_MODE: "iqm" or "mean"
-#   ERROR_MODE: "iqr" (uses IQR/2) or "std"
-AGG_MODE = "iqm"  # "iqm" | "mean"
-ERROR_MODE = "iqr"  # "iqr" | "std"
-
-# Which algos and metrics to include
-ALGOS: List[str] = list(EMPIRICAL_CHECKS.keys())
-ALGOS.remove("ppo")
-ALGOS.remove("trpo")
+from src.algos import EMPIRICAL_CHECKS
 
 METRICS: List[str] = [
     "adv_var",
@@ -36,9 +24,6 @@ METRICS: List[str] = [
     "v_kl",
     "v_js",
 ]
-
-FOLDER_PATH = "runs/gymnasium_ablation_ok"
-OUT_DIR = Path(f"{FOLDER_PATH}/plots")
 
 
 # ─────────── utils ───────────
@@ -169,7 +154,7 @@ def savefig(path: Path):
 
 
 def plot_per_env(
-    out_dir: Path,
+    input_path: Path,
     envs: List[str],
     metrics: List[str],
     algos: List[str],
@@ -182,6 +167,10 @@ def plot_per_env(
     Per-environment %Δ curves (no shading).
     File name: {agg}_{env}_{metric}_None.pdf
     """
+
+    out_dir = input_path / "plots_per_env"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     steps = np.arange(n_checkpoints)
     for env in tqdm(envs, desc="Plotting per env metrics..."):
         for m in metrics:
@@ -202,7 +191,7 @@ def plot_per_env(
 
 
 def plot_overall_timeseries(
-    out_dir: Path,
+    input_path: Path,
     envs: List[str],
     metrics: List[str],
     algos: List[str],
@@ -216,6 +205,10 @@ def plot_overall_timeseries(
     Overall (across envs) time series with chosen aggregation + shaded error.
     File name: {agg}_{all}_{metric}_{error}.pdf
     """
+
+    out_dir = input_path / "plots_overall_series"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     steps = np.arange(n_checkpoints)
     for m in tqdm(metrics, desc="Plotting overall metrics..."):
         plt.figure(dpi=500, figsize=(5.2, 4.4))
@@ -252,7 +245,7 @@ def plot_overall_timeseries(
 
 
 def plot_overall_errorbars(
-    out_dir: Path,
+    input_path: Path,
     metrics: List[str],
     algos: List[str],
     n_checkpoints: int,
@@ -270,6 +263,7 @@ def plot_overall_errorbars(
     File name (plots): {agg}_all_{metric}_{error}_summary.pdf
     File name (latex): {agg}_all_{error}_summary_table.txt
     """
+    out_dir = input_path / "plots_overall_errorbars"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Collect rows for the LaTeX table (one row per metric)
@@ -376,62 +370,72 @@ def plot_overall_errorbars(
 
 
 # ─────────── run ───────────
-def main():
-    out_dir = OUT_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
+def plot_empirical_check(
+    input_path: Path, algos: List, agg_mode: str, err_mode: str
+) -> None:
 
     # discover envs
-    envs = list_envs_from_folder(FOLDER_PATH)
+    envs = list_envs_from_folder(input_path)
     if not envs:
-        raise RuntimeError(f"No *_metrics.json found in {FOLDER_PATH}")
+        raise RuntimeError(f"No *_metrics.json found in {input_path}")
 
     # build delta tensor
     n_checkpoints, deltas = build_delta_tensor(
-        folder=FOLDER_PATH,
+        folder=input_path,
         envs=envs,
-        algos=ALGOS,
+        algos=algos,
         metrics=METRICS,
     )
 
-    colors = make_colors(ALGOS)
+    colors = make_colors(algos)
 
     # 1) per-env curves (no shading)
     plot_per_env(
-        out_dir=out_dir,
+        input_path=input_path,
         envs=envs,
         metrics=METRICS,
-        algos=ALGOS,
+        algos=algos,
         n_checkpoints=n_checkpoints,
-        folder=FOLDER_PATH,
+        folder=input_path,
         colors=colors,
-        agg_mode=AGG_MODE,
+        agg_mode=agg_mode,
     )
 
     # 2) overall time series (across envs) with chosen aggregation + shading
     plot_overall_timeseries(
-        out_dir=out_dir,
+        input_path=input_path,
         envs=envs,
         metrics=METRICS,
-        algos=ALGOS,
+        algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
         colors=colors,
-        agg_mode=AGG_MODE,
-        err_mode=ERROR_MODE,
+        agg_mode=agg_mode,
+        err_mode=err_mode,
     )
 
     # 3) overall summary errorbar (one point per algo)
     plot_overall_errorbars(
-        out_dir=out_dir,
+        input_path=input_path,
         metrics=METRICS,
-        algos=ALGOS,
+        algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
         colors=colors,
-        agg_mode=AGG_MODE,
-        err_mode=ERROR_MODE,
+        agg_mode=agg_mode,
+        err_mode=err_mode,
     )
 
 
 if __name__ == "__main__":
-    main()
+    in_path = Path("runs/gymnasium_ablation_ok")
+
+    agg_mode = "iqm"  # "iqm" | "mean"
+    err_mode = "iqr"  # "iqr" | "std"
+
+    # Which algos and metrics to include
+    empirical_checks: List[str] = list(EMPIRICAL_CHECKS.keys())
+    empirical_checks.remove("ppo")
+    empirical_checks.remove("trpo")
+
+    plot_empirical_check(in_path, empirical_checks, agg_mode, err_mode)

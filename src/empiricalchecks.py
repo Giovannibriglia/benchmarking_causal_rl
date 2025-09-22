@@ -18,7 +18,7 @@ from src.base import BasePolicy, DEFAULT_DEVICE
 from src.envs import ENV_CLASSES, ENV_NAMES
 
 
-class Ablation:
+class EmpiricalChecks:
     def __init__(
         self,
         env_suite="gymnasium",
