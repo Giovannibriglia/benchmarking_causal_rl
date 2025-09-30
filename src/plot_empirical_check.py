@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+# grouped_empirical_checks.py
 from __future__ import annotations
 
 import json
@@ -26,6 +28,73 @@ METRICS: List[str] = [
 ]
 
 
+# ─────────── categorizations ───────────
+def _env_group(env_name: str, how_to_group: str = "default") -> str:
+    name = env_name.lower()
+    if how_to_group == "default":
+        classic = ("cartpole", "mountaincar", "acrobot", "pendulum")
+        if any(k in name for k in classic):
+            return "classic_control"
+        box2d = ("lunarlander", "bipedalwalker", "carracing")
+        if any(k in name for k in box2d):
+            return "box2d"
+        toytext = ("frozenlake", "cliffwalking", "taxi", "blackjack")
+        if any(k in name for k in toytext):
+            return "toy_text"
+        mujoco = (
+            "ant",
+            "halfcheetah",
+            "hopper",
+            "humanoid",
+            "humanoidstandup",
+            "invertedpendulum",
+            "inverteddoublependulum",
+            "pusher",
+            "reacher",
+            "swimmer",
+            "walker2d",
+        )
+        if any(k in name for k in mujoco) or "mujoco" in name:
+            return "mujoco"
+        return "other"
+    elif how_to_group == "hardness":
+        easier = (
+            "cartpole",
+            "mountaincar-v0",
+            "acrobot",
+            "frozenlake",
+            "cliffwalking",
+            "taxi",
+            "blackjack",
+        )
+        if any(k in name for k in easier):
+            return "easier"
+        medium = ("pendulum", "lunarlandercontinuous-v3", "reacher", "invertedpendulum")
+        if any(k in name for k in medium):
+            return "medium"
+        hard = (
+            "bipedalwalker",
+            "mountaincarcontinuous",
+            "pusher",
+            "inverteddoublependulum",
+            "ant",
+            "halfcheetah",
+            "hopper",
+            "humanoid",
+            "humanoidstandup",
+            "pusher",
+            "swimmer",
+            "walker2d",
+            "carracing",
+            "lunarlander-v3",
+        )
+        if any(k in name for k in hard) or "mujoco" in name:
+            return "hard"
+        raise ValueError(f"{name} not categorized")
+    else:
+        raise NotImplementedError(f"{how_to_group} not implemented")
+
+
 # ─────────── utils ───────────
 def percentage_improvement(baseline: np.ndarray, new: np.ndarray) -> np.ndarray:
     if baseline.shape != new.shape:
@@ -37,7 +106,6 @@ def percentage_improvement(baseline: np.ndarray, new: np.ndarray) -> np.ndarray:
 
 
 def iqm_and_iqr(values: np.ndarray) -> Tuple[float, float]:
-    """IQM (interquartile mean) and IQR/2 as robust std proxy."""
     vals = values[~np.isnan(values)]
     if vals.size == 0:
         return np.nan, np.nan
@@ -54,9 +122,6 @@ def mean_and_std(values: np.ndarray) -> Tuple[float, float]:
 
 
 def aggregate(values: np.ndarray, agg_mode: str, err_mode: str) -> Tuple[float, float]:
-    """
-    Aggregate a 1D array across environments.
-    """
     if agg_mode == "iqm":
         center, _ = iqm_and_iqr(values)
     elif agg_mode == "mean":
@@ -88,9 +153,6 @@ def list_envs_from_folder(folder: str | Path) -> List[str]:
 def load_metric_arrays(
     folder: str | Path, env: str, algo: str, metric: str
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Returns baseline and causal arrays for one env/algo/metric across checkpoints.
-    """
     p = Path(folder) / f"{env}_metrics.json"
     with p.open("r") as f:
         data = json.load(f)
@@ -109,26 +171,17 @@ def build_delta_tensor(
     algos: List[str],
     metrics: List[str],
 ) -> Tuple[int, Dict[str, Dict[str, np.ndarray]]]:
-    """
-    Returns:
-      n_checkpoints,
-      deltas[algo][metric] = np.ndarray of shape [n_checkpoints, n_envs]
-      where each entry is %Δ (causal vs base) for a given checkpoint/env.
-    """
-    # Infer n_checkpoints from first env/metric
     first_env = envs[0]
     first_algo = algos[0]
     first_metric = metrics[0]
     base0, causal0 = load_metric_arrays(folder, first_env, first_algo, first_metric)
     n_checkpoints = base0.shape[0]
 
-    # Prepare containers
     deltas: Dict[str, Dict[str, np.ndarray]] = {
         a: {m: np.full((n_checkpoints, len(envs)), np.nan) for m in metrics}
         for a in algos
     }
 
-    # Fill per env
     for e_idx, env in enumerate(envs):
         for algo in algos:
             for m in metrics:
@@ -139,6 +192,22 @@ def build_delta_tensor(
                 deltas[algo][m][:, e_idx] = delta
 
     return n_checkpoints, deltas
+
+
+# ─────────── grouping helpers (NEW) ───────────
+def env_indices_by_group(envs: List[str], how_to_group: str) -> Dict[str, List[int]]:
+    groups: Dict[str, List[int]] = {}
+    for i, e in enumerate(envs):
+        g = _env_group(e, how_to_group)
+        groups.setdefault(g, []).append(i)
+    return groups
+
+
+def subset_by_indices(mat: np.ndarray, idxs: List[int]) -> np.ndarray:
+    # mat shape [T, E] -> [T, |idxs|]
+    if len(idxs) == 0:
+        return np.full((mat.shape[0], 0), np.nan)
+    return mat[:, idxs]
 
 
 # ─────────── plotting ───────────
@@ -163,11 +232,6 @@ def plot_per_env(
     colors: Dict[str, tuple],
     agg_mode: str,
 ):
-    """
-    Per-environment %Δ curves (no shading).
-    File name: {agg}_{env}_{metric}_None.pdf
-    """
-
     out_dir = input_path / "plots_per_env"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -192,7 +256,6 @@ def plot_per_env(
 
 def plot_overall_timeseries(
     input_path: Path,
-    envs: List[str],
     metrics: List[str],
     algos: List[str],
     n_checkpoints: int,
@@ -200,20 +263,21 @@ def plot_overall_timeseries(
     colors: Dict[str, tuple],
     agg_mode: str,
     err_mode: str,
+    scope_label: str,  # NEW: "all" or group name
+    env_idxs: List[int] | None,  # NEW: which env columns to use (None => all)
 ):
-    """
-    Overall (across envs) time series with chosen aggregation + shaded error.
-    File name: {agg}_{all}_{metric}_{error}.pdf
-    """
-
     out_dir = input_path / "plots_overall_series"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     steps = np.arange(n_checkpoints)
-    for m in tqdm(metrics, desc="Plotting overall metrics..."):
+    for m in tqdm(metrics, desc=f"Plotting overall metrics ({scope_label})..."):
         plt.figure(dpi=500, figsize=(5.2, 4.4))
         for algo in algos:
-            mat = deltas[algo][m]  # [T, E]
+            mat_full = deltas[algo][m]  # [T, E]
+            mat = (
+                mat_full if env_idxs is None else subset_by_indices(mat_full, env_idxs)
+            )
+
             centers = np.full(n_checkpoints, np.nan)
             spreads = np.full(n_checkpoints, np.nan)
             for t in range(n_checkpoints):
@@ -230,17 +294,15 @@ def plot_overall_timeseries(
             )
 
         plt.axhline(0.0, linestyle="--", linewidth=1, alpha=0.6)
-        plt.title(f"Overall — {m} (%Δ causal vs base)")
-        plt.xlabel("Checkpoint")
-        ylabel = "% Δ ("
-        ylabel += "IQM" if agg_mode == "iqm" else "Mean"
-        ylabel += " ± "
+        plt.title(f"{scope_label} — {m} (%Δ causal vs base)")
+        ylabel = "% Δ (" + ("IQM" if agg_mode == "iqm" else "Mean") + " ± "
         ylabel += "IQR/2" if err_mode == "iqr" else "Std"
         ylabel += ")"
+        plt.xlabel("Checkpoint")
         plt.ylabel(ylabel)
         plt.grid(True, alpha=0.3)
         plt.legend(loc="best", fontsize=9)
-        fname = f"{agg_mode}_all_{m}_{err_mode}.pdf"
+        fname = f"{agg_mode}_{scope_label}_{m}_{err_mode}.pdf"
         savefig(out_dir / fname)
 
 
@@ -253,21 +315,13 @@ def plot_overall_errorbars(
     colors: Dict[str, tuple],
     agg_mode: str,
     err_mode: str,
+    scope_label: str,  # NEW
+    env_idxs: List[int] | None,  # NEW
 ):
-    """
-    Single summary errorbar per algo & metric:
-      y = mean over checkpoints of aggregated centers
-      err = mean over checkpoints of aggregated spreads
-    Also writes a LaTeX table with metrics as rows and algorithms as columns,
-    reporting "mean ± std" (or "IQM ± IQR/2" depending on flags).
-    File name (plots): {agg}_all_{metric}_{error}_summary.pdf
-    File name (latex): {agg}_all_{error}_summary_table.txt
-    """
     out_dir = input_path / "plots_overall_errorbars"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect rows for the LaTeX table (one row per metric)
-    latex_rows = []  # each row: [metric_label, cell_algo1, cell_algo2, ...]
+    latex_rows = []
     title_center = "IQM" if agg_mode == "iqm" else "Mean"
     title_error = "IQR/2" if err_mode == "iqr" else "Std"
 
@@ -277,7 +331,6 @@ def plot_overall_errorbars(
         return f"{x:.2f}"
 
     def _escape_latex(s: str) -> str:
-        # Minimal escaping for common LaTeX specials in metric names
         return (
             s.replace("\\", r"\textbackslash{}")
             .replace("_", r"\_")
@@ -289,15 +342,16 @@ def plot_overall_errorbars(
             .replace("$", r"\$")
         )
 
-    for m in tqdm(metrics, desc="Plotting error bars per metric..."):
+    for m in tqdm(metrics, desc=f"Error bars per metric ({scope_label})..."):
         plt.figure(dpi=500, figsize=(5.2, 4.4))
         xs = np.arange(len(algos))
-        centers_mean = []
-        spreads_mean = []
+        centers_mean, spreads_mean = [], []
 
         for algo in algos:
-            # mat shape: [T, E]  (T checkpoints, E environments)
-            mat = deltas[algo][m]
+            mat_full = deltas[algo][m]  # [T, E]
+            mat = (
+                mat_full if env_idxs is None else subset_by_indices(mat_full, env_idxs)
+            )
             centers = np.full(n_checkpoints, np.nan)
             spreads = np.full(n_checkpoints, np.nan)
             for t in range(n_checkpoints):
@@ -307,7 +361,6 @@ def plot_overall_errorbars(
             centers_mean.append(np.nanmean(centers))
             spreads_mean.append(np.nanmean(spreads))
 
-        # Plot
         for i, algo in enumerate(algos):
             plt.errorbar(
                 xs[i],
@@ -322,34 +375,31 @@ def plot_overall_errorbars(
             )
 
         plt.xticks(xs, algos)
-        plt.title(f"Overall — {m} ({title_center} ± {title_error} across envs)")
+        plt.title(f"{scope_label} — {m} ({title_center} ± {title_error} across envs)")
         plt.ylabel("% Δ")
         plt.grid(True, alpha=0.3, axis="y")
-        fname = f"{agg_mode}_all_{m}_{err_mode}_summary.pdf"
+        fname = f"{agg_mode}_{scope_label}_{m}_{err_mode}_summary.pdf"
         savefig(out_dir / fname)
 
-        # Build the LaTeX row for this metric
-        row_cells = []
-        for c_mean, s_mean in zip(centers_mean, spreads_mean):
-            cell = f"{_fmt(c_mean)} $\\pm$ {_fmt(s_mean)}"
-            row_cells.append(cell)
+        row_cells = [
+            f"{_fmt(c)} $\\pm$ {_fmt(s)}" for c, s in zip(centers_mean, spreads_mean)
+        ]
         latex_rows.append([_escape_latex(m), *row_cells])
 
-    # ------- Write LaTeX table -------
+    # LaTeX table per scope_label
     colspec = "l|" + "c" * len(algos)
-    header = " & ".join(["Metric"] + [_escape_latex(a) for a in algos]) + r" \\"
-
+    header = " & ".join(["Metric"] + [a.replace("_", r"\_") for a in algos]) + r" \\"
     caption = (
-        f"Overall per-metric summary (%$\\Delta$). "
+        f"{scope_label}: per-metric summary (%$\\Delta$). "
         f"Entries show {title_center} $\\pm$ {title_error} across environments, "
         f"averaged over checkpoints."
     )
-    label = f"tab:overall_{agg_mode}_{err_mode}"
+    label = f"tab:{scope_label}_{agg_mode}_{err_mode}"
 
     table_lines = [
         r"\begin{table}[!ht]",
         r"\centering",
-        f"\\begin{{tabular}}{{{colspec}}}",  # <-- fixed
+        f"\\begin{{tabular}}{{{colspec}}}",
         header,
         r"\hline",
     ]
@@ -363,15 +413,18 @@ def plot_overall_errorbars(
         r"\end{table}",
         "",
     ]
-
-    latex_path = out_dir / f"{agg_mode}_all_{err_mode}_summary_table.txt"
+    latex_path = out_dir / f"{agg_mode}_{scope_label}_{err_mode}_summary_table.txt"
     with open(latex_path, "w", encoding="utf-8") as f:
         f.write("\n".join(table_lines))
 
 
 # ─────────── run ───────────
 def plot_empirical_check(
-    input_path: Path, algos: List, agg_mode: str, err_mode: str
+    input_path: Path,
+    algos: List[str],
+    agg_mode: str,
+    err_mode: str,
+    how_to_group: str = "default",  # NEW
 ) -> None:
 
     # discover envs
@@ -379,17 +432,14 @@ def plot_empirical_check(
     if not envs:
         raise RuntimeError(f"No *_metrics.json found in {input_path}")
 
-    # build delta tensor
+    # build delta tensor (across all envs)
     n_checkpoints, deltas = build_delta_tensor(
-        folder=input_path,
-        envs=envs,
-        algos=algos,
-        metrics=METRICS,
+        folder=input_path, envs=envs, algos=algos, metrics=METRICS
     )
 
     colors = make_colors(algos)
 
-    # 1) per-env curves (no shading)
+    # 1) per-env curves (unchanged)
     plot_per_env(
         input_path=input_path,
         envs=envs,
@@ -401,10 +451,9 @@ def plot_empirical_check(
         agg_mode=agg_mode,
     )
 
-    # 2) overall time series (across envs) with chosen aggregation + shading
+    # 2) overall "all envs"
     plot_overall_timeseries(
         input_path=input_path,
-        envs=envs,
         metrics=METRICS,
         algos=algos,
         n_checkpoints=n_checkpoints,
@@ -412,9 +461,9 @@ def plot_empirical_check(
         colors=colors,
         agg_mode=agg_mode,
         err_mode=err_mode,
+        scope_label="all",
+        env_idxs=None,
     )
-
-    # 3) overall summary errorbar (one point per algo)
     plot_overall_errorbars(
         input_path=input_path,
         metrics=METRICS,
@@ -424,18 +473,53 @@ def plot_empirical_check(
         colors=colors,
         agg_mode=agg_mode,
         err_mode=err_mode,
+        scope_label="all",
+        env_idxs=None,
     )
+
+    # 3) per-group overall plots + tables (NEW)
+    groups = env_indices_by_group(envs, how_to_group)
+    for g, idxs in groups.items():
+        if len(idxs) == 0:
+            continue
+        # Timeseries per group
+        plot_overall_timeseries(
+            input_path=input_path,
+            metrics=METRICS,
+            algos=algos,
+            n_checkpoints=n_checkpoints,
+            deltas=deltas,
+            colors=colors,
+            agg_mode=agg_mode,
+            err_mode=err_mode,
+            scope_label=g,
+            env_idxs=idxs,
+        )
+        # Errorbars + LaTeX table per group
+        plot_overall_errorbars(
+            input_path=input_path,
+            metrics=METRICS,
+            algos=algos,
+            n_checkpoints=n_checkpoints,
+            deltas=deltas,
+            colors=colors,
+            agg_mode=agg_mode,
+            err_mode=err_mode,
+            scope_label=g,
+            env_idxs=idxs,
+        )
 
 
 if __name__ == "__main__":
-    in_path = Path("runs/gymnasium_ablation_ok")
+    in_path = Path("../runs/gymnasium_ablation_ok")
 
     agg_mode = "iqm"  # "iqm" | "mean"
     err_mode = "iqr"  # "iqr" | "std"
+    how_to_group = "hardness"  # "default" | "hardness"
 
-    # Which algos and metrics to include
     empirical_checks: List[str] = list(EMPIRICAL_CHECKS.keys())
+    # (keep removing ppo/trpo as you had)
     empirical_checks.remove("ppo")
     empirical_checks.remove("trpo")
 
-    plot_empirical_check(in_path, empirical_checks, agg_mode, err_mode)
+    plot_empirical_check(in_path, empirical_checks, agg_mode, err_mode, how_to_group)
