@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import torch
 from torch import nn
@@ -106,25 +106,64 @@ class VanillaAC_CC(VanillaAC, VBNCritic):
 
     # ---------- persistence ----------
     def save_policy(self, path: Union[str, Path]) -> None:
-        torch.save(
-            {
-                "state_dict": self.state_dict(),
-                "is_discrete": self.is_discrete,
-                "ent_coeff": self.ent_coeff,
-                "pi_samples": getattr(self, "pi_samples", 32),
-                "kl_coeff": getattr(self, "kl_coeff", 0.0),
-                "kl_beta": getattr(self, "kl_beta", 5.0),
-            },
-            self._ensure_pt_path(path),
-        )
-        self.save_bn_params(path)  # persist BN params next to policy
+        path = self._ensure_pt_path(path)
+        ckpt = {
+            "state_dict": self.state_dict(),
+            "is_discrete": self.is_discrete,
+            "ent_coeff": self.ent_coeff,
+            "pi_samples": getattr(self, "pi_samples", 32),
+            "kl_coeff": getattr(self, "kl_coeff", 0.0),
+            "kl_beta": getattr(self, "kl_beta", 5.0),
+            # NEW: causal bundle packed inline (or None if BN not initialized)
+            "causal": self._bn_to_bundle(),
+            "_schema_version": 1,
+        }
+        torch.save(ckpt, path)
 
-    def load_policy(self, path: Union[str, Path]) -> None:
-        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
-        self.load_state_dict(ckpt["state_dict"])
-        self.is_discrete = ckpt.get("is_discrete", self.is_discrete)
-        self.ent_coeff = ckpt.get("ent_coeff", self.ent_coeff)
+    def load_policy(
+        self,
+        path: Union[str, Path],
+        *,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+        ensure_vbn: bool = True,
+        warm_start: bool = False,
+        warm_steps: int = 1024,
+        mem: Optional[dict] = None,
+    ):
+        """
+        Load actor/encoder + causal BN (bundle first, legacy fallback).
+        Matches A2C_CC semantics for consistency.
+        """
+        path = self._ensure_pt_path(path)
+        map_location = map_location or self.device
+
+        ckpt = torch.load(path, map_location=map_location)
+        if isinstance(ckpt, dict) and "state_dict" in ckpt:
+            state = ckpt["state_dict"]
+        else:
+            state = ckpt
+
+        self.load_state_dict(state, strict=strict)
+
+        self.is_discrete = ckpt.get("is_discrete", getattr(self, "is_discrete", True))
+        self.ent_coeff = ckpt.get("ent_coeff", getattr(self, "ent_coeff", 0.01))
         self.pi_samples = ckpt.get("pi_samples", getattr(self, "pi_samples", 32))
         self.kl_coeff = ckpt.get("kl_coeff", getattr(self, "kl_coeff", 0.0))
         self.kl_beta = ckpt.get("kl_beta", getattr(self, "kl_beta", 5.0))
-        self.load_bn_params(path)  # restore BN + inference
+
+        causal_bundle = ckpt.get("causal", None) if isinstance(ckpt, dict) else None
+        if causal_bundle is not None:
+            self._bn_from_bundle(causal_bundle)
+        else:
+            try:
+                self.load_bn_params(path)
+            except Exception:
+                pass
+
+        if ensure_vbn:
+            self.ensure_bn(env=getattr(self, "env", None))
+            if warm_start and getattr(self, "lp", None) is None:
+                self.fit_bn_from_rollout(mem=mem, steps=warm_steps)
+
+        return self

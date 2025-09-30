@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import torch
 from torch import nn
@@ -96,8 +96,24 @@ class A2C(BaseActorCritic):
             self._ensure_pt_path(path),
         )
 
-    def load_policy(self, path: Union[str, Path]) -> None:
-        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
-        self.load_state_dict(ckpt["state_dict"])
-        self.vf_coeff = ckpt.get("vf_coeff", 0.5)
-        self.ent_coeff = ckpt.get("ent_coeff", 0.01)
+    def load_policy(
+        self,
+        path: Union[str, Path],
+        *,
+        map_location: Optional[torch.device] = None,
+        strict: bool = True,
+    ):
+        path = self._ensure_pt_path(path)
+        map_location = map_location or self.device
+
+        ckpt = torch.load(path, map_location=map_location)
+        if isinstance(ckpt, dict) and "state_dict" in ckpt:
+            state = ckpt["state_dict"]
+        else:
+            state = ckpt
+
+        self.load_state_dict(state, strict=strict)
+        self.vf_coeff = ckpt.get("vf_coeff", getattr(self, "vf_coeff", 0.5))
+        self.ent_coeff = ckpt.get("ent_coeff", getattr(self, "ent_coeff", 0.01))
+        self.is_discrete = ckpt.get("is_discrete", getattr(self, "is_discrete", True))
+        return self
