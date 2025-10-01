@@ -348,6 +348,7 @@ def _build_envwise_delta_matrix(
 
 def _build_group_and_overall_delta_matrix(
     impr_per_env: pd.DataFrame,
+    agg_type: str = "mean",  # "iqm" or "mean"
 ) -> tuple[
     tuple[list[str], list[str], list[list[str]]],
     tuple[list[str], list[str], list[list[str]]],
@@ -355,16 +356,18 @@ def _build_group_and_overall_delta_matrix(
     """
     From impr_per_env (columns: env, group_env, variant_algo, baseline_algo, pair, improvement_pct),
     compute:
-      • group-wise: row = group_env, col = variant algo; cell = IQM(improvement_pct) ± IQR-std
-      • overall: single row 'ALL', same columns; computed over ALL envs
+      • group-wise: row = group_env, col = variant algo
+      • overall: single row 'ALL', same columns
+    Aggregation depends on agg_type:
+      - "iqm": IQM(improvement_pct) ± IQR-std
+      - "mean": mean(improvement_pct) ± std
     """
     if impr_per_env.empty:
         return ([], [], []), ([], [], [])
 
-    # derive variant list (columns)
     col_names = sorted(impr_per_env["variant_algo"].unique().tolist())
 
-    # helper to compute IQM ± IQR-std for one subset
+    # ---- helpers ----
     def _iqm_iqr_of_series(s: pd.Series) -> tuple[float, float]:
         vals = np.asarray(s.dropna().values, dtype=float)
         if vals.size == 0:
@@ -375,7 +378,15 @@ def _build_group_and_overall_delta_matrix(
             return float("nan"), float("nan")
         return float(np.mean(mid)), float(np.std(mid))
 
-    # group-wise
+    def _mean_std_of_series(s: pd.Series) -> tuple[float, float]:
+        vals = np.asarray(s.dropna().values, dtype=float)
+        if vals.size == 0:
+            return float("nan"), float("nan")
+        return float(np.mean(vals)), float(np.std(vals))
+
+    agg_func = _iqm_iqr_of_series if agg_type == "iqm" else _mean_std_of_series
+
+    # ---- group-wise ----
     row_names_g = []
     matrix_g = []
     for grp, sub in sorted(impr_per_env.groupby("group_env"), key=lambda x: x[0]):
@@ -383,30 +394,29 @@ def _build_group_and_overall_delta_matrix(
         have_any = False
         for var in col_names:
             series = sub.loc[sub["variant_algo"] == var, "improvement_pct"]
-            iqm, iqrstd = _iqm_iqr_of_series(series)
-            if np.isnan(iqm):
+            mean_val, spread_val = agg_func(series)
+            if np.isnan(mean_val):
                 row.append("--")
             else:
-                row.append(f"{iqm:.2f} $\\pm$ {iqrstd:.2f}")
+                row.append(f"{mean_val:.2f} $\\pm$ {spread_val:.2f}")
                 have_any = True
         if have_any:
             row_names_g.append(grp)
             matrix_g.append(row)
 
-    # overall
+    # ---- overall ----
     row_names_o = []
     matrix_o = []
-    # use all rows
     sub_all = impr_per_env
     row = []
     have_any = False
     for var in col_names:
         series = sub_all.loc[sub_all["variant_algo"] == var, "improvement_pct"]
-        iqm, iqrstd = _iqm_iqr_of_series(series)
-        if np.isnan(iqm):
+        mean_val, spread_val = agg_func(series)
+        if np.isnan(mean_val):
             row.append("--")
         else:
-            row.append(f"{iqm:.2f} $\\pm$ {iqrstd:.2f}")
+            row.append(f"{mean_val:.2f} $\\pm$ {spread_val:.2f}")
             have_any = True
     if have_any:
         row_names_o.append("ALL")
