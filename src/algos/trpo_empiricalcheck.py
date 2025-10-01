@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Union
+
 import torch
 from torch import nn
 
@@ -145,3 +148,36 @@ class TRPO_EmpiricalCheck(TRPO, VBNCritic):
                     returns, v_c, n_bins=20, strategy="quantile"
                 ),
             )
+
+    def save_policy(self, path: Union[str, Path]) -> None:
+        """
+        Empirical check:
+          (1) save base TRPO policy to `path`
+          (2) save VBN critic-only bundle as `<same_dir>/causal_critic.pt`
+        """
+        base_path = self._ensure_pt_path(path)
+        critic_path = self._ensure_pt_path(
+            str(path).replace("episode", "causal_critic_episode")
+        )
+        # (1) base TRPO payload
+        torch.save(
+            {
+                "state_dict": self.state_dict(),
+                "max_kl": float(self.max_kl),
+                "cg_iters": int(self.cg_iters),
+                "backtrack_iters": int(self.backtrack_iters),
+                "backtrack_coeff": float(self.backtrack_coeff),
+                "damping": float(self.damping),
+                "vf_lr": float(self.vf_lr),
+                "ent_coeff": float(self.ent_coeff),
+                "adv_norm": bool(self.adv_norm),
+                "is_discrete": bool(self.is_discrete),
+                "format": "trpo_empirical@1",
+            },
+            base_path,
+        )
+
+        # (2) critic-only bundle
+        bundle = self._bn_to_bundle()
+        assert bundle is not None, "VBN critic not initialized/fitted; nothing to save."
+        torch.save(bundle, critic_path)

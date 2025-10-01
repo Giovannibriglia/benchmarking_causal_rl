@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Union
+
 import torch
 from torch import nn
 
@@ -157,3 +160,34 @@ class VanillaAC_EmpiricalCheck(VanillaAC, VBNCritic):
             causal_adv_min=float(A_probe.min().item()),
             causal_adv_max=float(A_probe.max().item()),
         )
+
+    def save_policy(self, path: Union[str, Path]) -> None:
+        """
+        Save two artifacts:
+          1) VanillaAC policy weights at `path`
+          2) Causal critic (VBN) as a single-file bundle named `causal_critic.pt`
+             in the same directory.
+
+        The critic bundle contains DAG/types/cards, learned params, and backend
+        config produced by `_bn_to_bundle()`; it can be restored via `_bn_from_bundle`.
+        """
+        base_path = self._ensure_pt_path(path)
+        critic_path = self._ensure_pt_path(
+            str(path).replace("episode", "causal_critic_episode")
+        )
+
+        # --- (1) save the VanillaAC policy (unchanged format) ---
+        torch.save(
+            {
+                "state_dict": self.state_dict(),
+                "vf_coeff": self.vf_coeff,
+                "ent_coeff": self.ent_coeff,
+                "is_discrete": self.is_discrete,
+            },
+            base_path,
+        )
+
+        # --- (2) save the causal critic as a single-file bundle ---
+        bundle = self._bn_to_bundle()
+        assert bundle is not None, "VBN critic not initialized/fitted; nothing to save."
+        torch.save(bundle, critic_path)

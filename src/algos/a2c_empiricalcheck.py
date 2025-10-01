@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Union
+
 import torch
 from torch import nn
 
@@ -149,3 +152,31 @@ class A2C_EmpiricalCheck(A2C, VBNCritic):
             causal_adv_min=float(A_probe.min().item()),
             causal_adv_max=float(A_probe.max().item()),
         )
+
+    def save_policy(self, path: Union[str, Path]) -> None:
+        """
+        Empirical check:
+          (1) save base A2C policy to `path`
+          (2) save VBN critic-only bundle as `<same_dir>/causal_critic.pt`
+        """
+        critic_path = self._ensure_pt_path(
+            str(path).replace("episode", "causal_critic_episode")
+        )
+        base_path = self._ensure_pt_path(path)
+
+        # (1) base A2C payload
+        torch.save(
+            {
+                "state_dict": self.state_dict(),
+                "vf_coeff": float(self.vf_coeff),
+                "ent_coeff": float(self.ent_coeff),
+                "is_discrete": bool(self.is_discrete),
+                "format": "a2c_empirical@1",
+            },
+            base_path,
+        )
+
+        # (2) critic-only bundle
+        bundle = self._bn_to_bundle()
+        assert bundle is not None, "VBN critic not initialized/fitted; nothing to save."
+        torch.save(bundle, critic_path)
