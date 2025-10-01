@@ -55,9 +55,11 @@ class EmpiricalChecks:
         self.algorithms: Dict[str, type[BasePolicy]] = EMPIRICAL_CHECKS
         self.results: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
 
-        cp = np.linspace(0, n_episodes_train, n_checkpoints, dtype=np.int64)
+        cp = np.linspace(0, n_episodes_train - 1, n_checkpoints, dtype=np.int64)
         cp = np.unique(cp)  # drop duplicates from rounding
         self.checkpoints = [int(x) for x in cp.tolist()]  # cast to plain ints
+        assert 0 in self.checkpoints, "first has to be in"
+        assert n_episodes_train - 1 in self.checkpoints, "last has to be in"
 
         info_dict = {
             "env_suite": self.env_suite,  # str
