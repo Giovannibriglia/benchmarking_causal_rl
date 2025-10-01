@@ -120,34 +120,60 @@ class TRPO_CC(TRPO, VBNCritic):
         )
 
     # ---------- persistence (include BN params) ----------
+    # ---------- persistence (single-file bundle: policy + VBN) ----------
     def save_policy(self, path: Union[str, Path]) -> None:
-        torch.save(
-            {
-                "state_dict": self.state_dict(),
-                # TRPO hypers
-                "max_kl": self.max_kl,
-                "cg_iters": self.cg_iters,
-                "backtrack_iters": self.backtrack_iters,
-                "backtrack_coeff": self.backtrack_coeff,
-                "damping": self.damping,
-                "vf_lr": self.vf_lr,
-                "ent_coeff": self.ent_coeff,
-                "adv_norm": self.adv_norm,
-                "is_discrete": self.is_discrete,
-                # CBN knobs
-                "pi_samples": getattr(self, "pi_samples", 32),
-                "kl_coeff": getattr(self, "kl_coeff", 0.0),
-                "kl_beta": getattr(self, "kl_beta", 5.0),
-            },
+        """
+        Save everything needed to restore TRPO_CC in one file:
+          • torch state_dict (encoder/actor[/log_std]/critic, etc.)
+          • TRPO hyperparams (max_kl, cg/backtrack, damping, vf_lr, ent_coeff, adv_norm)
+          • discrete/continuous flag + causal knobs (pi_samples, kl_coeff, kl_beta)
+          • VBN bundle (DAG/types/cards + learned params + backend choices)
+        """
+        payload = {
+            "state_dict": self.state_dict(),
+            # ---- TRPO hyperparams ----
+            "max_kl": float(self.max_kl),
+            "cg_iters": int(self.cg_iters),
+            "backtrack_iters": int(self.backtrack_iters),
+            "backtrack_coeff": float(self.backtrack_coeff),
+            "damping": float(self.damping),
+            "vf_lr": float(self.vf_lr),
+            "ent_coeff": float(self.ent_coeff),
+            "adv_norm": bool(self.adv_norm),
+            # ---- policy / causal flags ----
+            "is_discrete": bool(self.is_discrete),
+            "pi_samples": int(getattr(self, "pi_samples", 32)),
+            "kl_coeff": float(getattr(self, "kl_coeff", 0.0)),
+            "kl_beta": float(getattr(self, "kl_beta", 5.0)),
+            # ---- pack the whole causal BN into the same file ----
+            "vbn_bundle": self._bn_to_bundle(),
+            "format": "trpo_cc+vbn@1",  # simple version tag
+        }
+        torch.save(payload, self._ensure_pt_path(path))
+
+    def load_policy(
+        self,
+        path: Union[str, Path],
+        *,
+        ensure_vbn: bool = True,
+        warm_start: bool = False,
+    ) -> None:
+        """
+        Load from a single-file checkpoint created by save_policy().
+        - Restores weights (strict by default; set warm_start=True to allow missing keys).
+        - Restores TRPO hyperparameters and the full causal BN (if present).
+        - If no VBN bundle is present, falls back to legacy sidecars next to the .pt.
+        """
+        ckpt = torch.load(
             self._ensure_pt_path(path),
+            map_location=self.device,
+            weights_only=False,  # required for custom VBN objects on PyTorch 2.6+
         )
-        self.save_bn_params(path)  # writes <checkpoint>.td next to .pt
 
-    def load_policy(self, path: Union[str, Path]) -> None:
-        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
-        self.load_state_dict(ckpt["state_dict"])
+        # 1) weights
+        self.load_state_dict(ckpt["state_dict"], strict=not warm_start)
 
-        # restore TRPO hypers (match your current TRPO class)
+        # 2) TRPO hyperparams
         self.max_kl = ckpt.get("max_kl", self.max_kl)
         self.cg_iters = ckpt.get("cg_iters", self.cg_iters)
         self.backtrack_iters = ckpt.get("backtrack_iters", self.backtrack_iters)
@@ -156,12 +182,20 @@ class TRPO_CC(TRPO, VBNCritic):
         self.vf_lr = ckpt.get("vf_lr", self.vf_lr)
         self.ent_coeff = ckpt.get("ent_coeff", self.ent_coeff)
         self.adv_norm = ckpt.get("adv_norm", self.adv_norm)
-        self.is_discrete = ckpt.get("is_discrete", self.is_discrete)
 
-        # restore CBN knobs
+        # 3) policy/causal flags
+        self.is_discrete = ckpt.get("is_discrete", self.is_discrete)
         self.pi_samples = ckpt.get("pi_samples", getattr(self, "pi_samples", 32))
         self.kl_coeff = ckpt.get("kl_coeff", getattr(self, "kl_coeff", 0.0))
         self.kl_beta = ckpt.get("kl_beta", getattr(self, "kl_beta", 5.0))
 
-        # load BN params (.td) and reinit inference
-        self.load_bn_params(path)
+        # 4) VBN restore
+        bundle = ckpt.get("vbn_bundle", None)
+        if bundle is not None:
+            self._bn_from_bundle(bundle)
+        else:
+            # legacy fallback: <checkpoint>.td + <checkpoint>.bnmeta.json
+            self.load_bn_params(path)
+
+        if ensure_vbn:
+            self._ensure_vbn_ready()

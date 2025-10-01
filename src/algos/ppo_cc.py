@@ -114,30 +114,72 @@ class PPO_CC(PPO, VBNCritic):
         )
 
     # ---------- persistence ----------
+    # ---------- persistence (single-file bundle: policy + VBN) ----------
     def save_policy(self, path: Union[str, Path]) -> None:
-        torch.save(
-            {
-                "state_dict": self.state_dict(),
-                "clip_eps": self.clip_eps,
-                "vf_coeff": self.vf_coeff,
-                "ent_coeff": self.ent_coeff,
-                "is_discrete": self.is_discrete,
-                "pi_samples": getattr(self, "pi_samples", 32),
-                "kl_coeff": getattr(self, "kl_coeff", 0.0),
-                "kl_beta": getattr(self, "kl_beta", 5.0),
-            },
-            self._ensure_pt_path(path),
-        )
-        self.save_bn_params(path)
+        """
+        Save everything needed to restore PPO_CC in one file:
+          • torch state_dict (actor/critic/encoder/etc.)
+          • PPO hyperparams (clip_eps, vf_coeff, ent_coeff, n_epochs, batch_size)
+          • discrete/continuous flags + causal knobs (pi_samples, kl_coeff, kl_beta)
+          • VBN bundle (DAG/types/cards + learned params + backend choices)
+        """
+        payload = {
+            "state_dict": self.state_dict(),
+            "clip_eps": float(self.clip_eps),
+            "vf_coeff": float(self.vf_coeff),
+            "ent_coeff": float(self.ent_coeff),
+            "n_epochs": int(self.n_epochs),
+            "batch_size": int(self.batch_size),
+            "is_discrete": bool(self.is_discrete),
+            "pi_samples": int(getattr(self, "pi_samples", 32)),
+            "kl_coeff": float(getattr(self, "kl_coeff", 0.0)),
+            "kl_beta": float(getattr(self, "kl_beta", 5.0)),
+            # pack the whole causal BN into the same file
+            "vbn_bundle": self._bn_to_bundle(),
+            "format": "ppo_cc+vbn@1",  # simple version tag
+        }
+        torch.save(payload, self._ensure_pt_path(path))
 
-    def load_policy(self, path: Union[str, Path]) -> None:
-        ckpt = torch.load(self._ensure_pt_path(path), map_location=self.device)
-        self.load_state_dict(ckpt["state_dict"])
+    def load_policy(
+        self,
+        path: Union[str, Path],
+        *,
+        ensure_vbn: bool = True,
+        warm_start: bool = False,
+    ) -> None:
+        """
+        Load from a single-file checkpoint created by save_policy().
+        - By default, strictly restores weights; set warm_start=True to allow missing keys.
+        - Restores PPO hparams and the full causal BN (if present).
+        - If no VBN bundle is present, falls back to legacy sidecars next to the .pt.
+        """
+        ckpt = torch.load(
+            self._ensure_pt_path(path),
+            map_location=self.device,
+            weights_only=False,  # needed for custom VBN objects (PyTorch 2.6+)
+        )
+
+        # 1) weights
+        self.load_state_dict(ckpt["state_dict"], strict=not warm_start)
+
+        # 2) hparams
         self.clip_eps = ckpt.get("clip_eps", self.clip_eps)
         self.vf_coeff = ckpt.get("vf_coeff", self.vf_coeff)
         self.ent_coeff = ckpt.get("ent_coeff", self.ent_coeff)
+        self.n_epochs = ckpt.get("n_epochs", getattr(self, "n_epochs", 4))
+        self.batch_size = ckpt.get("batch_size", getattr(self, "batch_size", 64))
         self.is_discrete = ckpt.get("is_discrete", self.is_discrete)
         self.pi_samples = ckpt.get("pi_samples", getattr(self, "pi_samples", 32))
         self.kl_coeff = ckpt.get("kl_coeff", getattr(self, "kl_coeff", 0.0))
         self.kl_beta = ckpt.get("kl_beta", getattr(self, "kl_beta", 5.0))
-        self.load_bn_params(path)
+
+        # 3) VBN
+        bundle = ckpt.get("vbn_bundle", None)
+        if bundle is not None:
+            self._bn_from_bundle(bundle)
+        else:
+            # legacy fallback: .td + .bnmeta.json next to .pt (if you still have them)
+            self.load_bn_params(path)
+
+        if ensure_vbn:
+            self._ensure_vbn_ready()
