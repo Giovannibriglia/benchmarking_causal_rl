@@ -35,6 +35,10 @@ class NObsCfg:
     trpo_L: int = 10
 
 
+# TODO: trova dove hai trovato formula e indaga --> che unità di misura è: guarda se è "numero di aggiornamenti a parametri individuali",
+# vado più veloce? a far cosa? poi scrivi su papero.
+
+
 # ---------- Costs vs n_obs (up to proportional constants) ----------
 def cost_vanilla_ac_vs_nobs(n_obs: int, cfg: NObsCfg) -> float:
     d_pi = mlp_param_count(n_obs, cfg.actor_hidden, cfg.actor_layers, cfg.act_dim)
@@ -124,7 +128,7 @@ def plot_all(
         "a2c_cc": 3.0 * deoverlap_eps,  # tiny upward nudge
     }
 
-    plt.figure(dpi=500, figsize=(4, 3))
+    plt.figure(dpi=500, figsize=(3, 3))
     for name, ys in series.items():
         ys_plot = ys * (1.0 + eps_map.get(name, 0.0))  # plotting-only adjustment
         st = styles.get(name, {})
@@ -133,8 +137,8 @@ def plot_all(
     plt.xscale("log")
     plt.yscale("log")
     plt.xlabel("#obs features")
-    plt.ylabel("per-step computational complexity")
-    plt.title(title)
+    plt.ylabel("complexity")
+    # plt.title(title)
     plt.legend(loc="upper left")
     plt.tight_layout()
     plt.grid(True)
@@ -206,8 +210,8 @@ def main():
             [cost_vanilla_ac_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float
         ),
         "a2c": np.array([cost_a2c_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float),
-        "ppo": np.array([cost_ppo_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float),
-        "trpo": np.array([cost_trpo_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float),
+        # "ppo": np.array([cost_ppo_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float),
+        # "trpo": np.array([cost_trpo_vs_nobs(n, cfg) for n in n_obs_vals], dtype=float),
         "vanilla_cc": np.array(
             [cost_causal_ac_vs_nobs_inference(n, cfg) for n in n_obs_vals], dtype=float
         ),
@@ -229,8 +233,8 @@ def main():
         series_refit = {
             "vanilla": series_inf["vanilla"],
             "a2c": series_inf["a2c"],
-            "ppo": series_inf["ppo"],
-            "trpo": series_inf["trpo"],
+            # "ppo": series_inf["ppo"],
+            # "trpo": series_inf["trpo"],
             "vanilla_cc": np.array(
                 [cost_causal_ac_vs_nobs_refit(n, cfg) for n in n_obs_vals], dtype=float
             ),
