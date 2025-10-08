@@ -870,15 +870,15 @@ def plot_and_save_results(
             # raw plots (mean ± std)
             if stats:
                 x = np.linspace(0, n_episodes, next(iter(stats.values()))[0].size)
-                plt.figure(figsize=(9, 6), dpi=500)
+                plt.figure(figsize=(5, 3), dpi=500)
                 for algo, (m, (lq, uq), sd) in stats.items():
                     c = get_algo_color(algo)
                     plt.plot(x, m, label=algo, linewidth=3, color=c)
                     plt.fill_between(x, m - sd, m + sd, color=c, alpha=0.2)
                 plt.title(f"{env}", fontsize=fontsize + 3)
                 plt.xlabel("episodes", fontsize=fontsize)
-                plt.ylabel(f"evaluation {prefix}", fontsize=fontsize)
-                plt.legend(loc="best", fontsize=fontsize - 3)
+                plt.ylabel(f"eval {prefix}", fontsize=fontsize)
+                plt.legend(loc="best")
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(plot_dir / f"{env}_evaluation_{prefix}.pdf")
@@ -902,7 +902,7 @@ def plot_and_save_results(
                 if not EVAL_RE.match(m) and m not in handled_loss_tags
             }
         ):
-            plt.figure(figsize=(9, 6), dpi=500)
+            plt.figure(figsize=(5, 3), dpi=500)
             drew = False
             for algo, mdict in algo_dict.items():
                 y = mdict.get(metric)
@@ -942,8 +942,8 @@ def plot_and_save_results(
             if drew:
                 plt.title(f"{env}", fontsize=fontsize + 3)
                 plt.xlabel("episodes", fontsize=fontsize)
-                plt.ylabel(f"{metric}", fontsize=fontsize)
-                plt.legend(loc="best", fontsize=fontsize - 3)
+                plt.ylabel(f"{metric.replace("_", " ")}", fontsize=fontsize)
+                plt.legend(loc="best")
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(plot_dir / f"{env}_{metric}.pdf")
