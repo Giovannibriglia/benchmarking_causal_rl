@@ -35,10 +35,6 @@ class NObsCfg:
     trpo_L: int = 10
 
 
-# TODO: trova dove hai trovato formula e indaga --> che unità di misura è: guarda se è "numero di aggiornamenti a parametri individuali",
-# vado più veloce? a far cosa? poi scrivi su papero.
-
-
 # ---------- Costs vs n_obs (up to proportional constants) ----------
 def cost_vanilla_ac_vs_nobs(n_obs: int, cfg: NObsCfg) -> float:
     d_pi = mlp_param_count(n_obs, cfg.actor_hidden, cfg.actor_layers, cfg.act_dim)
