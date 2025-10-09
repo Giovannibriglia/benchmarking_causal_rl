@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-# grouped_empirical_checks.py
 from __future__ import annotations
 
 import json
@@ -8,10 +7,10 @@ from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib import cm
 from tqdm import tqdm
 
 from src.algos import EMPIRICAL_CHECKS
+from src.plotting import get_algo_color
 
 METRICS: List[str] = [
     "adv_var",
@@ -211,9 +210,6 @@ def subset_by_indices(mat: np.ndarray, idxs: List[int]) -> np.ndarray:
 
 
 # ─────────── plotting ───────────
-def make_colors(algos: List[str]) -> Dict[str, tuple]:
-    cmap = cm.get_cmap("Set1", len(algos))
-    return {algo: cmap(i) for i, algo in enumerate(algos)}
 
 
 def savefig(path: Path):
@@ -229,7 +225,6 @@ def plot_per_env(
     algos: List[str],
     n_checkpoints: int,
     folder: str | Path,
-    colors: Dict[str, tuple],
     agg_mode: str,
 ):
     out_dir = input_path / "plots_per_env"
@@ -242,7 +237,9 @@ def plot_per_env(
             for algo in algos:
                 base, causal = load_metric_arrays(folder, env, algo, m)
                 y = percentage_improvement(base, causal)
-                plt.plot(steps, y, label=algo, color=colors[algo], linewidth=1.7)
+                plt.plot(
+                    steps, y, label=algo, color=get_algo_color(algo), linewidth=1.7
+                )
 
             plt.axhline(0.0, linestyle="--", linewidth=1, alpha=0.6)
             plt.title(f"{env} — {m} (%Δ causal vs base)")
@@ -260,7 +257,6 @@ def plot_overall_timeseries(
     algos: List[str],
     n_checkpoints: int,
     deltas: Dict[str, Dict[str, np.ndarray]],
-    colors: Dict[str, tuple],
     agg_mode: str,
     err_mode: str,
     scope_label: str,  # NEW: "all" or group name
@@ -284,13 +280,15 @@ def plot_overall_timeseries(
                 c, s = aggregate(mat[t, :], agg_mode, err_mode)
                 centers[t], spreads[t] = c, s
 
-            plt.plot(steps, centers, label=algo, color=colors[algo], linewidth=1.8)
+            plt.plot(
+                steps, centers, label=algo, color=get_algo_color(algo), linewidth=1.8
+            )
             plt.fill_between(
                 steps,
                 centers - spreads,
                 centers + spreads,
                 alpha=0.2,
-                color=colors[algo],
+                color=get_algo_color(algo),
             )
 
         plt.axhline(0.0, linestyle="--", linewidth=1, alpha=0.6)
@@ -312,7 +310,6 @@ def plot_overall_errorbars(
     algos: List[str],
     n_checkpoints: int,
     deltas: Dict[str, Dict[str, np.ndarray]],
-    colors: Dict[str, tuple],
     agg_mode: str,
     err_mode: str,
     scope_label: str,  # NEW
@@ -370,7 +367,7 @@ def plot_overall_errorbars(
                 capsize=8,
                 elinewidth=2,
                 markersize=6,
-                color=colors[algo],
+                color=get_algo_color(algo),
                 label=algo,
             )
 
@@ -418,28 +415,152 @@ def plot_overall_errorbars(
         f.write("\n".join(table_lines))
 
 
+def build_raw_tensors(
+    folder: str | Path,
+    envs: List[str],
+    algos: List[str],
+    metrics: List[str],
+) -> Dict[str, Dict[str, Dict[str, np.ndarray]]]:
+    # shape: raw[algo][metric]["base"|"causal"] -> [T, E]
+    first_env, first_algo, first_metric = envs[0], algos[0], metrics[0]
+    base0, causal0 = load_metric_arrays(folder, first_env, first_algo, first_metric)
+    n_checkpoints = base0.shape[0]
+
+    raw: Dict[str, Dict[str, Dict[str, np.ndarray]]] = {
+        a: {
+            m: {
+                "base": np.full((n_checkpoints, len(envs)), np.nan),
+                "causal": np.full((n_checkpoints, len(envs)), np.nan),
+            }
+            for m in metrics
+        }
+        for a in algos
+    }
+
+    for e_idx, env in enumerate(envs):
+        for algo in algos:
+            for m in metrics:
+                base, causal = load_metric_arrays(folder, env, algo, m)
+                if base.shape[0] != n_checkpoints:
+                    raise ValueError(f"Inconsistent checkpoints for {env}/{algo}/{m}")
+                raw[algo][m]["base"][:, e_idx] = base
+                raw[algo][m]["causal"][:, e_idx] = causal
+
+    return raw
+
+
+def plot_per_env_trends(
+    input_path: Path,
+    envs: List[str],
+    metrics: List[str],
+    algos: List[str],
+    folder: str | Path,
+):
+    out_dir = input_path / "plots_per_env_trends"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for env in tqdm(envs, desc="Plotting per env trends..."):
+        for m in metrics:
+            plt.figure(dpi=500, figsize=(5.2, 4.4))
+            for algo in algos:
+                base, causal = load_metric_arrays(folder, env, algo, m)
+                c = get_algo_color(algo)
+                plt.plot(
+                    base, label=f"{algo} (base)", color=c, linewidth=1.6, linestyle="-"
+                )
+                plt.plot(
+                    causal,
+                    label=f"{algo} (causal)",
+                    color=c,
+                    linewidth=1.6,
+                    linestyle="--",
+                )
+
+            plt.title(f"{env} — {m} (raw)")
+            plt.xlabel("Checkpoint")
+            plt.ylabel(m)
+            plt.grid(True, alpha=0.3)
+            plt.legend(loc="best", fontsize=9, ncols=2)
+            savefig(out_dir / f"{env}_{m}_trends.pdf")
+
+
+def plot_overall_timeseries_trends(
+    input_path: Path,
+    metrics: List[str],
+    algos: List[str],
+    raw: Dict[str, Dict[str, Dict[str, np.ndarray]]],
+    agg_mode: str,
+    err_mode: str,
+    scope_label: str,  # "all" or group name
+    env_idxs: List[int] | None,  # which env columns to aggregate (None => all)
+):
+    out_dir = input_path / "plots_overall_series_trends"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # infer T
+    any_algo, any_metric = algos[0], metrics[0]
+    T = raw[any_algo][any_metric]["base"].shape[0]
+    steps = np.arange(T)
+
+    for m in tqdm(metrics, desc=f"Plotting overall trends ({scope_label})..."):
+        plt.figure(dpi=500, figsize=(5.6, 4.6))
+        for algo in algos:
+            for kind, style in (("base", "-"), ("causal", "--")):
+                mat_full = raw[algo][m][kind]  # [T, E]
+                mat = (
+                    mat_full
+                    if env_idxs is None
+                    else subset_by_indices(mat_full, env_idxs)
+                )
+
+                centers = np.full(T, np.nan)
+                spreads = np.full(T, np.nan)
+                for t in range(T):
+                    c, s = aggregate(mat[t, :], agg_mode, err_mode)
+                    centers[t], spreads[t] = c, s
+
+                c = get_algo_color(algo)
+                plt.plot(
+                    steps,
+                    centers,
+                    label=f"{algo} ({kind})",
+                    color=c,
+                    linestyle=style,
+                    linewidth=1.8,
+                )
+                plt.fill_between(
+                    steps, centers - spreads, centers + spreads, alpha=0.15, color=c
+                )
+
+        title_center = "IQM" if agg_mode == "iqm" else "Mean"
+        title_error = "IQR/2" if err_mode == "iqr" else "Std"
+        plt.title(f"{scope_label} — {m} ({title_center} ± {title_error})")
+        plt.xlabel("Checkpoint")
+        plt.ylabel(m)
+        plt.grid(True, alpha=0.3)
+        plt.legend(loc="best", fontsize=9, ncols=2)
+        savefig(out_dir / f"{agg_mode}_{scope_label}_{m}_{err_mode}_trends.pdf")
+
+
 # ─────────── run ───────────
 def plot_empirical_check(
     input_path: Path,
     algos: List[str],
     agg_mode: str,
     err_mode: str,
-    how_to_group: str = "default",  # NEW
+    how_to_group: str = "default",
+    plot_trends: bool = True,  # <— new flag
 ) -> None:
-
-    # discover envs
     envs = list_envs_from_folder(input_path)
     if not envs:
         raise RuntimeError(f"No *_metrics.json found in {input_path}")
 
-    # build delta tensor (across all envs)
+    # deltas (existing)
     n_checkpoints, deltas = build_delta_tensor(
         folder=input_path, envs=envs, algos=algos, metrics=METRICS
     )
 
-    colors = make_colors(algos)
-
-    # 1) per-env curves (unchanged)
+    # per-env delta curves
     plot_per_env(
         input_path=input_path,
         envs=envs,
@@ -447,18 +568,16 @@ def plot_empirical_check(
         algos=algos,
         n_checkpoints=n_checkpoints,
         folder=input_path,
-        colors=colors,
         agg_mode=agg_mode,
     )
 
-    # 2) overall "all envs"
+    # overall delta series + errorbars
     plot_overall_timeseries(
         input_path=input_path,
         metrics=METRICS,
         algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
-        colors=colors,
         agg_mode=agg_mode,
         err_mode=err_mode,
         scope_label="all",
@@ -470,48 +589,85 @@ def plot_empirical_check(
         algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
-        colors=colors,
         agg_mode=agg_mode,
         err_mode=err_mode,
         scope_label="all",
         env_idxs=None,
     )
 
-    # 3) per-group overall plots + tables (NEW)
+    # group-wise delta summaries
     groups = env_indices_by_group(envs, how_to_group)
     for g, idxs in groups.items():
-        if len(idxs) == 0:
+        if not idxs:
             continue
-        # Timeseries per group
         plot_overall_timeseries(
             input_path=input_path,
             metrics=METRICS,
             algos=algos,
             n_checkpoints=n_checkpoints,
             deltas=deltas,
-            colors=colors,
             agg_mode=agg_mode,
             err_mode=err_mode,
             scope_label=g,
             env_idxs=idxs,
         )
-        # Errorbars + LaTeX table per group
         plot_overall_errorbars(
             input_path=input_path,
             metrics=METRICS,
             algos=algos,
             n_checkpoints=n_checkpoints,
             deltas=deltas,
-            colors=colors,
             agg_mode=agg_mode,
             err_mode=err_mode,
             scope_label=g,
             env_idxs=idxs,
         )
 
+    # ---- NEW: trends (raw base vs causal) ----
+    if plot_trends:
+        raw = build_raw_tensors(
+            folder=input_path, envs=envs, algos=algos, metrics=METRICS
+        )
+
+        # per-env raw trends
+        plot_per_env_trends(
+            input_path=input_path,
+            envs=envs,
+            metrics=METRICS,
+            algos=algos,
+            folder=input_path,
+        )
+
+        # overall raw trends (all envs)
+        plot_overall_timeseries_trends(
+            input_path=input_path,
+            metrics=METRICS,
+            algos=algos,
+            raw=raw,
+            agg_mode=agg_mode,
+            err_mode=err_mode,
+            scope_label="all",
+            env_idxs=None,
+        )
+
+        # per-group raw trends
+        for g, idxs in groups.items():
+            if not idxs:
+                continue
+            plot_overall_timeseries_trends(
+                input_path=input_path,
+                metrics=METRICS,
+                algos=algos,
+                raw=raw,
+                agg_mode=agg_mode,
+                err_mode=err_mode,
+                scope_label=g,
+                env_idxs=idxs,
+            )
+
 
 if __name__ == "__main__":
-    in_path = Path("../runs/gymnasium_ablation_ok")
+    in_path = Path("../runs/gymnasium_ablation_ok_250")
 
     agg_mode = "iqm"  # "iqm" | "mean"
     err_mode = "iqr"  # "iqr" | "std"
