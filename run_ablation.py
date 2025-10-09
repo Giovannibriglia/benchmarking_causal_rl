@@ -17,12 +17,12 @@ def get_args():
         help="Environment suite to benchmark (e.g. gymnasium, vmas, pettingzoo)",
     )
     parser.add_argument(
-        "--n_episodes_train", type=int, default=250, help="Number of training episodes"
+        "--n_episodes_train", type=int, default=2500, help="Number of training episodes"
     )
     parser.add_argument(
         "--n_checkpoints",
         type=int,
-        default=25,
+        default=50,
         help="Number of checkpoints to save during training",
     )
     parser.add_argument(
@@ -64,4 +64,4 @@ if __name__ == "__main__":
 
     path_files = bench.run()
 
-    plot_empirical_check(path_files, EMPIRICAL_CHECKS, "iqm", "iqr")
+    plot_empirical_check(path_files, list(EMPIRICAL_CHECKS.keys()), "iqm", "iqr")

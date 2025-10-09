@@ -30,10 +30,10 @@ def get_args():
         help="Rollout length per environment per update",
     )
     parser.add_argument(
-        "--n_train_envs", type=int, default=12, help="Number of training environments"
+        "--n_train_envs", type=int, default=16, help="Number of training environments"
     )
     parser.add_argument(
-        "--n_eval_envs", type=int, default=12, help="Number of evaluation environments"
+        "--n_eval_envs", type=int, default=16, help="Number of evaluation environments"
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument(
