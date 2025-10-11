@@ -12,3 +12,6 @@ openpyxl
 networkx
 tensordict>=0.4.0
 gymnasium[all]
+imageio[pyav]
+imageio
+imageio-ffmpeg

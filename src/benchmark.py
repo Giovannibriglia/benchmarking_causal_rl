@@ -164,8 +164,8 @@ class Benchmark:
                             self.seed + self.n_train_envs + 1,
                             algo_name,
                             record_video=True,
-                            record_indices=[0],  # only env 0 records
-                            video_name_prefix=ckpt_prefix,  # << checkpoint label
+                            record_indices=[0],  # record only env 0
+                            video_name_prefix=ckpt_prefix,  # -> <algo>_ckpt0003.mp4
                         )
                         old_eval_env = agent.eval_env
                         agent.eval_env = video_env
