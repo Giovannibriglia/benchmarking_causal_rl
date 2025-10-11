@@ -53,19 +53,13 @@ class BaseEnv(ABC):
         self._setup_env()
 
     def _to_tensor(self, x, *, dtype=None):
-        """Return x as torch.Tensor on self.device with sensible default dtypes.
-        Floats -> float32, ints -> long, bools -> bool (unless dtype is given)."""
-
-        # --- NEW: keep structured obs as structured; recurse into leaves ---
+        # Keep containers as-is; recurse
         if isinstance(x, (tuple, list)):
-            # preserve container type and order
             return type(x)(self._to_tensor(xx, dtype=dtype) for xx in x)
         if isinstance(x, dict):
             return {k: self._to_tensor(v, dtype=dtype) for k, v in x.items()}
-        # numpy "object" arrays often come from tuples-of-arrays; keep as list
         if isinstance(x, np.ndarray) and x.dtype == object:
             return [self._to_tensor(xx, dtype=dtype) for xx in x.tolist()]
-        # --- END NEW ---
 
         if isinstance(x, torch.Tensor):
             if (
@@ -76,7 +70,6 @@ class BaseEnv(ABC):
                 x = x.to(dtype=torch.float32)
             return x.to(device=self.device, dtype=dtype or x.dtype)
 
-        # numpy/array-likes: pick good defaults if dtype not forced
         if hasattr(x, "dtype") and dtype is None:
             npdt = x.dtype
             if np.issubdtype(npdt, np.floating):
@@ -123,7 +116,8 @@ class BaseEnv(ABC):
         raise NotImplementedError
 
     def close(self):
-        self.vec_env.close()
+        if self.vec_env is not None:
+            self.vec_env.close()
 
 
 class BasePolicy(ABC):

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import random
@@ -97,6 +99,9 @@ class Benchmark:
         seed: int,
         algo_name: str,
         record_video: bool = False,
+        *,
+        record_indices: list[int] | None = None,
+        video_name_prefix: str | None = None,
     ):
         return self.EnvClass(
             env_id,
@@ -105,6 +110,8 @@ class Benchmark:
             device=self.device,
             record_video=record_video,
             video_dir=self.dir_saving / "videos" / env_id / algo_name,
+            record_indices=record_indices,
+            video_name_prefix=video_name_prefix,  # <- pass through
         )
 
     def _update_json(self, env_id: str, algo_name: str, metrics: Dict[str, float]):
@@ -116,13 +123,10 @@ class Benchmark:
         path.write_text(json.dumps(data, indent=2))
 
     def run(self):
-        """Main training/evaluation loop."""
         for env_id in self.env_names:
             self.results.setdefault(env_id, {})
 
             for algo_name, AlgoCls in self.algorithms.items():
-
-                # Build training/evaluation envs once per environment
                 train_env = self.make_env(
                     env_id, self.n_train_envs, self.seed, algo_name, record_video=False
                 )
@@ -131,17 +135,14 @@ class Benchmark:
                     self.n_eval_envs,
                     self.seed + self.n_train_envs + 1,
                     algo_name,
-                    record_video=True,
+                    record_video=False,
                 )
-
-                kwargs_agent = {}
 
                 agent = AlgoCls(
                     train_env,
                     eval_env,
                     rollout_len=self.rollout_len,
                     device=self.device,
-                    **kwargs_agent,
                 )
                 self.results[env_id].setdefault(algo_name, {})
 
@@ -150,34 +151,48 @@ class Benchmark:
                 ):
                     agent.train()
 
-                    # Checkpoint handling
                     if ep in self.checkpoints:
-
+                        # 1) normal metrics pass (fast, no video)
                         agent.evaluate()
 
-                        # flush metrics
-                        for buff_name, buff in [
+                        # 2) checkpoint video pass: ONLY env index 0 recorded,
+                        #    filenames carry the checkpoint number (not the env idx)
+                        ckpt_prefix = f"{env_id}_{algo_name}_ckpt{ep}"
+                        video_env = self.make_env(
+                            env_id,
+                            self.n_eval_envs,
+                            self.seed + self.n_train_envs + 1,
+                            algo_name,
+                            record_video=True,
+                            record_indices=[0],  # only env 0 records
+                            video_name_prefix=ckpt_prefix,  # << checkpoint label
+                        )
+                        old_eval_env = agent.eval_env
+                        agent.eval_env = video_env
+                        try:
+                            agent.evaluate()
+                        finally:
+                            agent.eval_env = old_eval_env
+                            video_env.close()  # flush mp4
+
+                        # flush metrics and save policy as before...
+                        for _, buff in [
                             ("train", agent.train_metrics),
                             ("eval", agent.eval_metrics),
                         ]:
                             metrics = buff.pop(divisor=1)
-                            if not metrics:
-                                continue
-                            self._update_json(env_id, algo_name, metrics)
-                            # Store in‑memory cache for plotting later
-                            for k, v in metrics.items():
-                                self.results[env_id][algo_name].setdefault(
-                                    k, []
-                                ).append(v)
+                            if metrics:
+                                self._update_json(env_id, algo_name, metrics)
+                                for k, v in metrics.items():
+                                    self.results[env_id][algo_name].setdefault(
+                                        k, []
+                                    ).append(v)
 
-                        # policy storing
                         policy_path = self.policy_path / env_id / algo_name
                         os.makedirs(policy_path, exist_ok=True)
                         agent.save_policy(policy_path / f"episode_{ep}")
 
                 del agent
-
-                # Close the envs (important for RecordVideo flush)
                 train_env.close()
                 eval_env.close()
 
