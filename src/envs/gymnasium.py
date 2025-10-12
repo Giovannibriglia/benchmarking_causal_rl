@@ -1,6 +1,10 @@
 # gymnasium_env.py
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("MUJOCO_GL", "egl")  # or "osmesa" if EGL isn’t available
+
 from pathlib import Path
 from typing import Optional
 

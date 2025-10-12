@@ -16,7 +16,7 @@ class PPO(BaseActorCritic):
         vf_coeff=0.5,
         ent_coeff=0.01,
         n_epochs=4,
-        batch_size=64,
+        batch_size=1024,
         **kw,
     ):
         super().__init__(*args, **kw)

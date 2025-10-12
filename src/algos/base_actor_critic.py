@@ -20,7 +20,7 @@ class BaseActorCritic(BasePolicy, nn.Module):
         self,
         env: BaseEnv,
         eval_env: BaseEnv,
-        rollout_len: int = 2048,
+        rollout_len: int = 1024,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         lr: float = 3e-4,

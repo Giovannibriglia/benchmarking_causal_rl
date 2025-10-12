@@ -62,3 +62,8 @@ if __name__ == "__main__":
 
     path_files = bench.run()
     plot_and_save_results(path_files, bench.n_episodes_train)
+
+    """
+    (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export MUJOCO_GL=egl
+    (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+    """
