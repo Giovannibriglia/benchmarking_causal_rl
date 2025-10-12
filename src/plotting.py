@@ -942,7 +942,7 @@ def plot_and_save_results(
             if drew:
                 plt.title(f"{env}", fontsize=fontsize + 3)
                 plt.xlabel("episodes", fontsize=fontsize)
-                plt.ylabel(f"{metric.replace("_", " ")}", fontsize=fontsize)
+                plt.ylabel(f"{metric.replace('_', ' ')}", fontsize=fontsize)
                 plt.legend(loc="best")
                 plt.grid(True)
                 plt.tight_layout()
@@ -1001,7 +1001,7 @@ def plot_and_save_results(
             if drew:
                 plt.title(f"{env}", fontsize=fontsize + 3)
                 plt.xlabel("episodes", fontsize=fontsize)
-                plt.ylabel(f"{fig_tag}", fontsize=fontsize)
+                plt.ylabel(fig_tag, fontsize=fontsize)
                 plt.legend(loc="best", fontsize=fontsize - 3)
                 plt.grid(True)
                 plt.tight_layout()
