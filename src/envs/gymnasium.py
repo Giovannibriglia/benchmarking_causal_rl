@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Optional
 
 import gymnasium as gym
+import gymnasium_robotics as gr
+
+gym.register_envs(gr)  # makes Fetch*/Hand*/*Maze*, etc. visible to gym.make(...)
 
 import imageio
 import numpy as np

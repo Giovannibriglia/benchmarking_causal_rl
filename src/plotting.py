@@ -202,6 +202,15 @@ def _env_group(env_name: str, how_to_group: str = "default") -> str:
             "cliffwalking",
             "taxi",
             "blackjack",
+            # robotics
+            "fetchreach-v4",
+            "fetchpush-v4",
+            "fetchslide-v4",
+            "fetchpickandplace-v4",
+            "handreach-v3",
+            "handmanipulateblock-v1",
+            "handmanipulateegg-v1",
+            "handmanipulatepen-v1",
         )
         if any(k in name for k in easier):
             return "easier"

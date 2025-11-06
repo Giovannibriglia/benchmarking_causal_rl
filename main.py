@@ -11,11 +11,11 @@ def get_args():
         "--env_suite",
         type=str,
         default="gymnasium",
-        choices=["gymnasium"],
-        help="Environment suite to benchmark (e.g. gymnasium, vmas, pettingzoo)",
+        choices=["gymnasium", "gymnasium-robotics"],
+        help="Environment suite to benchmark (e.g. gymnasium, gymnasium-robotics, pettingzoo)",
     )
     parser.add_argument(
-        "--n_episodes_train", type=int, default=2500, help="Number of training episodes"
+        "--n_episodes_train", type=int, default=1000, help="Number of training episodes"
     )
     parser.add_argument(
         "--n_checkpoints",
@@ -66,4 +66,21 @@ if __name__ == "__main__":
     """
     (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export MUJOCO_GL=egl
     (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+    """
+
+    """
+        (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export MUJOCO_GL=egl
+        (MyEnv) gbriglia@pascal:~/benchmarking_causal_rl$ export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+        """
+
+    """
+    pip uninstall -y mujoco-py
+    pip uninstall -y gymnasium-robotics  # we’ll reinstall right after
+
+    pip install --upgrade "mujoco==3.3.6" gymnasium "gymnasium-robotics>=1.4"
+
+    sudo apt-get update
+    sudo apt-get install -y libgl1 libglfw3 libosmesa6 patchelf
+
+    export MUJOCO_GL=egl
     """
