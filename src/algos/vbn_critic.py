@@ -25,6 +25,14 @@ class VBNCritic:
       • optional causal prior π_c ∝ exp(β Q_c)
       • single-file checkpoint bundle for BN state (+ back-compat sidecars)
 
+    Temporal extension:
+      - time_size == 0: static BN (obs_* -> return; action_* -> return)
+      - time_size == K>0: K-slice temporal BN with nodes:
+            obs_t0..obs_tK, action_t0..action_t{K-1}, reward_t0..reward_t{K-1}
+        and edges for k=0..K-1:
+            obs_tk → reward_tk, action_tk → reward_tk,
+            obs_tk → obs_t{k+1}, action_tk → obs_t{k+1}
+
     Expected to be mixed into a BaseActorCritic-like class exposing:
       - self.device (torch.device)
       - self.env (optional, for auto-warmup)
@@ -40,6 +48,7 @@ class VBNCritic:
         pi_samples: int = 32,
         kl_coeff: float = 0.0,
         kl_beta: float = 5.0,
+        time_size: int = 0,  # K-slice temporal when > 0
     ):
         cfg = causality_init or {}
 
@@ -47,6 +56,7 @@ class VBNCritic:
         self.pi_samples = pi_samples
         self.kl_coeff = kl_coeff
         self.kl_beta = kl_beta
+        self.time_size = int(time_size)
 
         # BN config / metadata
         self.num_samples = cfg.get("num_samples", 32)
@@ -92,6 +102,71 @@ class VBNCritic:
             )
             self.fit_method, self.inf_method = fm, im
 
+    # ────────────────────────── schema builders ──────────────────────────
+    def _expand_space(
+        self, space: Optional[gym.Space], base_name: str, types: dict, cards: dict
+    ):
+        nodes: list[str] = []
+        if space is None:
+            return nodes
+        if isinstance(space, gym.spaces.Discrete):
+            name = f"{base_name}_0"
+            nodes = [name]
+            types[name] = "discrete"
+            cards[name] = int(space.n)
+        else:
+            k = gym.spaces.utils.flatdim(space)
+            nodes = [f"{base_name}_{i}" for i in range(k)]
+            for n in nodes:
+                types[n] = "continuous"
+        return nodes
+
+    def _build_temporal_schema(
+        self, obs_space: gym.Space, act_space: Optional[gym.Space], K: int
+    ) -> Tuple[nx.DiGraph, dict, dict]:
+        """
+        Unroll K instants: k=0..K-1 have (obs_tk, action_tk, reward_tk); terminal obs_tK.
+        Edges:
+          obs_tk -> reward_tk, action_tk -> reward_tk
+          obs_tk -> obs_t{k+1}, action_tk -> obs_t{k+1}
+        """
+        assert K > 0, "K must be > 0 for temporal schema"
+        G = nx.DiGraph()
+        types, cards = {}, {}
+
+        obs_slices = []
+        act_slices = []
+        reward_nodes = []
+
+        for k in range(K):
+            obs_k = self._expand_space(obs_space, f"obs_t{k}", types, cards)
+            act_k = self._expand_space(act_space, f"action_t{k}", types, cards)
+            r_k = f"reward_t{k}"
+            types[r_k] = "continuous"
+
+            obs_slices.append(obs_k)
+            act_slices.append(act_k)
+            reward_nodes.append(r_k)
+
+            # obs_tk, action_tk → reward_tk
+            for n in obs_k + act_k:
+                G.add_edge(n, r_k)
+
+        # terminal obs_tK
+        obs_K = self._expand_space(obs_space, f"obs_t{K}", types, cards)
+        obs_slices.append(obs_K)  # length K+1
+
+        # transitions obs_tk, action_tk → obs_t{k+1}
+        for k in range(K):
+            for a in act_slices[k]:
+                for n1 in obs_slices[k + 1]:
+                    G.add_edge(a, n1)
+            for n0 in obs_slices[k]:
+                for n1 in obs_slices[k + 1]:
+                    G.add_edge(n0, n1)
+
+        return G, types, cards
+
     def schema_from_spaces(
         self,
         obs_space: gym.Space,
@@ -99,41 +174,25 @@ class VBNCritic:
         target: str = "return",
     ) -> Tuple[nx.DiGraph, dict, dict]:
         """
-        Minimal schema: obs_* -> target; action_* -> target.
-        Discrete spaces => type='discrete' (+cards); others => 'continuous'.
+        If self.time_size == 0:
+            Minimal static schema: obs_* -> target; action_* -> target.
+        Else:
+            K-slice temporal schema with obs_t0..obs_tK, action_t0..action_t{K-1}, reward_t0..reward_t{K-1}.
         """
-        G = nx.DiGraph()
-        types, cards = {}, {}
+        if self.time_size == 0:
+            G = nx.DiGraph()
+            types, cards = {}, {}
+            # observation nodes
+            obs_nodes = self._expand_space(obs_space, "obs", types, cards)
+            # action nodes
+            act_nodes = self._expand_space(act_space, "action", types, cards)
+            for n in obs_nodes + act_nodes:
+                G.add_edge(n, target)
+            types[target] = "continuous"
+            return G, types, cards
 
-        # observation nodes
-        if isinstance(obs_space, gym.spaces.Discrete):
-            types["obs_0"] = "discrete"
-            cards["obs_0"] = int(obs_space.n)
-            obs_nodes = ["obs_0"]
-        else:
-            k = gym.spaces.utils.flatdim(obs_space)
-            obs_nodes = [f"obs_{i}" for i in range(k)]
-            for n in obs_nodes:
-                types[n] = "continuous"
-
-        # action nodes
-        act_nodes = []
-        if act_space is not None:
-            if isinstance(act_space, gym.spaces.Discrete):
-                types["action_0"] = "discrete"
-                cards["action_0"] = int(act_space.n)
-                act_nodes = ["action_0"]
-            else:
-                k = gym.spaces.utils.flatdim(act_space)
-                act_nodes = [f"action_{i}" for i in range(k)]
-                for n in act_nodes:
-                    types[n] = "continuous"
-
-        for n in obs_nodes + act_nodes:
-            G.add_edge(n, target)
-
-        types[target] = "continuous"
-        return G, types, cards
+        # Temporal K-slice
+        return self._build_temporal_schema(obs_space, act_space, self.time_size)
 
     def ensure_bn(
         self, *, env=None, schema: Optional[Tuple[nx.DiGraph, dict, dict]] = None
@@ -156,6 +215,7 @@ class VBNCritic:
         if self.inf_obj is None and self.inf_method is not None:
             self.inf_obj = self.bn.setup_inference(self.inf_method)
 
+    # ────────────────────────── fitting ──────────────────────────
     def fit_bn_from_dataframe(
         self,
         df: pd.DataFrame,
@@ -163,16 +223,42 @@ class VBNCritic:
         schema: Optional[Tuple[nx.DiGraph, dict, dict]] = None,
     ) -> None:
         """
-        Fit (or update) BN from a DataFrame with columns obs_* , action_* , return.
+        Fit (or update) BN from a DataFrame:
+          - static mode: columns obs_* , action_* , return
+          - temporal mode: obs_t{k}_*, action_t{k}_*, reward_t{k} (k=0..K-1), obs_t{K}_*
         """
         self._ensure_backends()
         if self.bn is None:
             if schema is None:
-                G = self._get_dag(df, target_feature="return", do_key="action")
-                if self.types is None or self.cards is None:
-                    self.types = {str(n): "continuous" for n in G.nodes()}
-                    self.cards = {}
-                self.dag = G
+                if self.time_size == 0:
+                    G = self._get_dag(df, target_feature="return", do_key="action")
+                    if self.types is None or self.cards is None:
+                        self.types = {str(n): "continuous" for n in G.nodes()}
+                        self.cards = {}
+                    self.dag = G
+                else:
+                    # Infer a dense temporal schema from df headers (fallback)
+                    K = self.time_size
+                    G = nx.DiGraph()
+                    types = {c: "continuous" for c in df.columns}
+                    cards = {}
+                    for k in range(K):
+                        r_k = f"reward_t{k}"
+                        obs_k_cols = [
+                            c for c in df.columns if c.startswith(f"obs_t{k}_")
+                        ]
+                        act_k_cols = [
+                            c for c in df.columns if c.startswith(f"action_t{k}_")
+                        ]
+                        for c in obs_k_cols + act_k_cols:
+                            G.add_edge(c, r_k)
+                        obs_k1_cols = [
+                            c for c in df.columns if c.startswith(f"obs_t{k+1}_")
+                        ]
+                        for c in obs_k_cols + act_k_cols:
+                            for d in obs_k1_cols:
+                                G.add_edge(c, d)
+                    self.dag, self.types, self.cards = G, types, cards
                 self.bn = CausalBayesNet(self.dag, self.types, self.cards)
             else:
                 G, types, cards = schema
@@ -221,15 +307,25 @@ class VBNCritic:
 
     def _build_evidence(self, states: torch.Tensor) -> Dict[str, torch.Tensor]:
         states = self._ensure_2d(states)
+        if self.time_size == 0:
+            if states.shape[1] == 1:
+                return {"obs_0": states.view(-1)}
+            return {f"obs_{i}": states[:, i] for i in range(states.shape[1])}
+        # temporal: evidence at t0 only
         if states.shape[1] == 1:
-            return {"obs_0": states.view(-1)}
-        return {f"obs_{i}": states[:, i] for i in range(states.shape[1])}
+            return {"obs_t0_0": states.view(-1)}
+        return {f"obs_t0_{i}": states[:, i] for i in range(states.shape[1])}
 
     def _build_do(self, actions: torch.Tensor) -> Dict[str, torch.Tensor]:
         actions = self._ensure_2d(actions)
+        if self.time_size == 0:
+            if actions.shape[1] == 1:
+                return {"action_0": actions.view(-1)}
+            return {f"action_{i}": actions[:, i] for i in range(actions.shape[1])}
+        # temporal: do at t0
         if actions.shape[1] == 1:
-            return {"action_0": actions.view(-1)}
-        return {f"action_{i}": actions[:, i] for i in range(actions.shape[1])}
+            return {"action_t0_0": actions.view(-1)}
+        return {f"action_t0_{i}": actions[:, i] for i in range(actions.shape[1])}
 
     @staticmethod
     def _replace_infs(t: torch.Tensor) -> torch.Tensor:
@@ -267,21 +363,24 @@ class VBNCritic:
             if hasattr(self, "env") and self.env is not None:
                 self.ensure_vbn_initialized(env=self.env, steps=1024)
         assert self.bn is not None and self.inf_obj is not None, "VBN not initialized."
+
         evidence = self._build_evidence(states)
         do = self._build_do(actions)
+        query_name = "return" if self.time_size == 0 else "reward_t0"
+
         posterior_pdfs, posterior_samples, _ = self.bn.infer(
             self.inf_obj,
             lp=self.lp,
             evidence=evidence,
-            query=["return"],
+            query=[query_name],
             do=do,
             return_samples=True,
             **self.kwargs_inf,
         )
         if isinstance(posterior_pdfs, dict):
-            posterior_pdfs = posterior_pdfs.get("return", None)
+            posterior_pdfs = posterior_pdfs.get(query_name, None)
         if isinstance(posterior_samples, dict):
-            posterior_samples = posterior_samples.get("return", None)
+            posterior_samples = posterior_samples.get(query_name, None)
         q = (
             self._posterior_expectation(posterior_pdfs, posterior_samples)
             .to(self.device)
@@ -341,6 +440,10 @@ class VBNCritic:
     def _get_dag(
         self, data: pd.DataFrame, target_feature: str = "return", do_key: str = "action"
     ):
+        if self.time_size > 0:
+            raise RuntimeError(
+                "_get_dag() is only used in static mode; temporal mode uses K-slice schema."
+            )
         if do_key is not None:
             obs_feats = [
                 s for s in data.columns if do_key not in s and s != target_feature
@@ -356,37 +459,136 @@ class VBNCritic:
         return G
 
     def _causal_update(self, mem):
-        obs = mem["obs"].reshape(-1, *mem["obs"].shape[2:])
-        acts = mem["actions"].reshape(-1, *mem["actions"].shape[2:])
-        rets = mem["returns"].reshape(-1)
-        df = pd.DataFrame(
-            {
-                **(
-                    {f"obs_{i}": obs[:, i].cpu().numpy() for i in range(obs.shape[1])}
-                    if obs.ndim == 2
-                    else {"obs_0": obs.view(-1).cpu().numpy()}
-                ),
-                **(
-                    {
-                        f"action_{i}": acts[:, i].cpu().numpy()
-                        for i in range(acts.shape[1])
-                    }
-                    if acts.ndim == 2
-                    else {"action_0": acts.view(-1).cpu().numpy()}
-                ),
-                "return": rets.cpu().numpy(),
-            }
-        )
-        if self.bn is not None:
-            self.lp = self.bn.add_data(df, update_params=True, return_lp=True)
+        """
+        Static mode: as before (obs, action -> return).
+        Temporal mode: build sliding windows of length K:
+           obs_tk_*, action_tk_*, reward_tk (k=0..K-1), and terminal obs_tK_*.
+        """
+        if self.time_size == 0:
+            # === original behavior ===
+            obs = mem["obs"].reshape(-1, *mem["obs"].shape[2:])
+            acts = mem["actions"].reshape(-1, *mem["actions"].shape[2:])
+            rets = mem["returns"].reshape(-1)
+            df = pd.DataFrame(
+                {
+                    **(
+                        {
+                            f"obs_{i}": obs[:, i].cpu().numpy()
+                            for i in range(obs.shape[1])
+                        }
+                        if obs.ndim == 2
+                        else {"obs_0": obs.view(-1).cpu().numpy()}
+                    ),
+                    **(
+                        {
+                            f"action_{i}": acts[:, i].cpu().numpy()
+                            for i in range(acts.shape[1])
+                        }
+                        if acts.ndim == 2
+                        else {"action_0": acts.view(-1).cpu().numpy()}
+                    ),
+                    "return": rets.cpu().numpy(),
+                }
+            )
+            if self.bn is not None:
+                self.lp = self.bn.add_data(df, update_params=True, return_lp=True)
+            else:
+                G = self._get_dag(df)
+                if self.types is None or self.cards is None:
+                    self.types = {str(n): "continuous" for n in G.nodes()}
+                    self.cards = {}
+                self.bn = CausalBayesNet(G, self.types, self.cards)
+                self.lp = self.bn.fit(self.fit_method, df, **self.kwargs_fit)
+                self.inf_obj = self.bn.setup_inference(self.inf_method)
+            return
+
+        # === temporal K-slice ===
+        K = self.time_size
+        obs = mem["obs"]  # [T, N, D] or [T, N, 1]
+        acts = mem["actions"]  # [T, N, A] or [T, N, 1]
+
+        if "rewards" in mem:
+            rew = mem["rewards"].float()  # [T, N]
         else:
-            G = self._get_dag(df)
-            if self.types is None or self.cards is None:
-                self.types = {str(n): "continuous" for n in G.nodes()}
-                self.cards = {}
-            self.bn = CausalBayesNet(G, self.types, self.cards)
+            # Fallback: use returns as proxy (prefer immediate rewards if available).
+            rew = mem.get("returns", None)
+            if rew is None:
+                raise RuntimeError(
+                    "Temporal mode requires mem['rewards'] or mem['returns']."
+                )
+            rew = rew.float()
+
+        T, N = obs.shape[:2]
+        W = T - K
+        if W <= 0:
+            return  # not enough steps yet
+
+        rows = []
+        for n in range(N):
+            for t in range(W):
+                row = {}
+                # obs_tk_*, action_tk_*, reward_tk for k=0..K-1
+                for k in range(K):
+                    o = obs[t + k, n]  # [D] or [1]
+                    a = acts[t + k, n]  # [A] or [1]
+                    r = rew[t + k, n]  # scalar
+                    if o.ndim == 1:
+                        for i in range(o.shape[0]):
+                            row[f"obs_t{k}_{i}"] = float(o[i].item())
+                    else:
+                        row[f"obs_t{k}_0"] = float(o.view(-1).item())
+                    if a.ndim == 1:
+                        for j in range(a.shape[0]):
+                            row[f"action_t{k}_{j}"] = float(a[j].item())
+                    else:
+                        row[f"action_t{k}_0"] = float(a.view(-1).item())
+                    row[f"reward_t{k}"] = float(r.item())
+                # terminal obs_tK
+                oK = obs[t + K, n]
+                if oK.ndim == 1:
+                    for i in range(oK.shape[0]):
+                        row[f"obs_t{K}_{i}"] = float(oK[i].item())
+                else:
+                    row[f"obs_t{K}_0"] = float(oK.view(-1).item())
+                rows.append(row)
+
+        df = pd.DataFrame(rows)
+
+        # ensure K-slice BN exists
+        if self.bn is None:
+            if hasattr(self, "env") and self.env is not None:
+                G, types, cards = self.schema_from_spaces(
+                    self.env.observation_space,
+                    getattr(
+                        self, "action_space", getattr(self.env, "action_space", None)
+                    ),
+                    target="return",
+                )
+            else:
+                # infer dense temporal connectivity from headers (fallback)
+                G = nx.DiGraph()
+                types = {c: "continuous" for c in df.columns}
+                cards = {}
+                for k in range(K):
+                    r_k = f"reward_t{k}"
+                    obs_k_cols = [c for c in df.columns if c.startswith(f"obs_t{k}_")]
+                    act_k_cols = [
+                        c for c in df.columns if c.startswith(f"action_t{k}_")
+                    ]
+                    for c in obs_k_cols + act_k_cols:
+                        G.add_edge(c, r_k)
+                    obs_k1_cols = [
+                        c for c in df.columns if c.startswith(f"obs_t{k+1}_")
+                    ]
+                    for c in obs_k_cols + act_k_cols:
+                        for d in obs_k1_cols:
+                            G.add_edge(c, d)
+            self.dag, self.types, self.cards = G, types, cards
+            self.bn = CausalBayesNet(self.dag, self.types, self.cards)
             self.lp = self.bn.fit(self.fit_method, df, **self.kwargs_fit)
             self.inf_obj = self.bn.setup_inference(self.inf_method)
+        else:
+            self.lp = self.bn.add_data(df, update_params=True, return_lp=True)
 
     def _post_update_fill_adv_and_logp(self, mem):
         """
@@ -417,7 +619,7 @@ class VBNCritic:
 
         dist = self._policy_dist_from_latent(latent)
 
-        # V_causal(s)
+        # V_causal(s): uses immediate causal reward (reward_t0 in temporal mode)
         Vc, _ = self._v_causal(states, dist)
         Vc = Vc.view(T, N).detach()
 
@@ -460,30 +662,32 @@ class VBNCritic:
         evidence = self._build_evidence(self._ensure_2d(states))
         do = None if actions is None else self._build_do(self._ensure_2d(actions))
 
+        qname = query
+        if self.time_size > 0 and query == "return":
+            qname = "reward_t0"
+
         posterior_pdfs, posterior_samples, support = self.bn.infer(
             self.inf_obj,
             lp=self.lp,
             evidence=evidence,
-            query=[query],
+            query=[qname],
             do=do,
             return_samples=return_samples,
             num_samples=num_samples,
         )
 
         if isinstance(posterior_pdfs, dict):
-            posterior_pdfs = posterior_pdfs.get(query, None)
+            posterior_pdfs = posterior_pdfs.get(qname, None)
         if isinstance(posterior_samples, dict):
-            posterior_samples = posterior_samples.get(query, None)
+            posterior_samples = posterior_samples.get(qname, None)
         if isinstance(support, dict):
-            support = support.get(query, None)
+            support = support.get(qname, None)
 
         posterior_pdfs = _squeeze_first(posterior_pdfs)
         posterior_samples = _squeeze_first(posterior_samples)
         support = _squeeze_first(support)
 
         return {"pdf": posterior_pdfs, "samples": posterior_samples, "support": support}
-
-    # (plot_* helpers unchanged from your version; keep if you use them)
 
     # ────────────────────────── single-file BN bundle ──────────────────────────
     def _bn_to_bundle(self) -> dict | None:
@@ -511,6 +715,7 @@ class VBNCritic:
             "approximate": bool(getattr(self, "approximate", True)),
             "inf_method": self.inf_method,
             "fit_method": self.fit_method,
+            "time_size": int(self.time_size),
             "bn_blob": bn_blob,
         }
 
@@ -531,6 +736,7 @@ class VBNCritic:
         self.approximate = bundle.get("approximate", self.approximate)
         self.inf_method = bundle.get("inf_method", self.inf_method)
         self.fit_method = bundle.get("fit_method", self.fit_method)
+        self.time_size = int(bundle.get("time_size", self.time_size))
 
         if self.bn is None:
             self.bn = CausalBayesNet(self.dag, self.types, self.cards or {})
@@ -578,6 +784,7 @@ class VBNCritic:
             "dag_edges": [(str(u), str(v)) for (u, v) in dag_edges],
             "types": self.types or {},
             "cards": self.cards or {},
+            "time_size": int(self.time_size),
         }
         with open(meta_path, "w") as f:
             json.dump(meta, f)
@@ -597,6 +804,7 @@ class VBNCritic:
             self.dag = G
             self.types = meta.get("types", None)
             self.cards = meta.get("cards", None)
+            self.time_size = int(meta.get("time_size", self.time_size))
 
         if self.bn is None:
             assert (
