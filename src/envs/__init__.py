@@ -31,7 +31,7 @@ ENV_NAMES: Dict[str, List[str]] = {
         "LunarLanderContinuous-v3",
         "FrozenLake-v1",
         "FrozenLake8x8-v1",
-        "CliffWalking-v0",
+        "CliffWalking-v1",
         "Taxi-v3",
         "BipedalWalker-v3",
         "BipedalWalkerHardcore-v3",
