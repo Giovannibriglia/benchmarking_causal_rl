@@ -20,7 +20,7 @@ class MDNCPD(DifferentiableCPD):
         hidden: int = 64,
         lr: float = 1e-3,
         epochs: int = 10,
-        batch_size: int | None = 1024,
+        batch_size: int | None = 8192,
         weight_decay: float = 0.0,
         eps: float = 1e-6,
     ):

@@ -36,7 +36,7 @@ class VBNCritic:
         *,
         causality_init: Optional[dict] = None,
         time_size: int = 0,
-        learning_method: str = "flow_rnvp",
+        learning_method: str = "mdn",
         inference_method: str = "montecarlo.lw",
         num_samples: int = 32,
         pi_samples: int = 32,
