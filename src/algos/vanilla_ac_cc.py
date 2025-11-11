@@ -6,8 +6,9 @@ from typing import Optional, Union
 import torch
 from torch import nn
 
+from src.algos.new_vbn_critic import VBNCritic
+
 from src.algos.vanilla_ac import VanillaAC  # <- the class we just wrote
-from src.algos.vbn_critic import VBNCritic
 
 
 class VanillaAC_CC(VanillaAC, VBNCritic):

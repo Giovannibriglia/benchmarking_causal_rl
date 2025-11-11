@@ -12,19 +12,20 @@ from .vanilla_ac_cc import VanillaAC_CC
 from .vanilla_empiricalcheck import VanillaAC_EmpiricalCheck
 
 AGENTS = {
-    "vanilla_cc": VanillaAC_CC,
     "vanilla": VanillaAC,
+    "vanilla_cc": VanillaAC_CC,
     "a2c_cc": A2C_CC,
     "a2c": A2C,
-    "ppo_cc": PPO_CC,
-    "ppo": PPO,
-    "trpo_cc": TRPO_CC,
-    "trpo": TRPO,
+    # "ppo_cc": PPO_CC,
+    # "ppo": PPO,
+    # "trpo_cc": TRPO_CC,
+    # "trpo": TRPO,
 }
+
 
 EMPIRICAL_CHECKS = {
     "a2c": A2C_EmpiricalCheck,
     "vanilla": VanillaAC_EmpiricalCheck,
-    "ppo": PPO_EmpiricalCheck,
-    "trpo": TRPO_EmpiricalCheck,
+    # "ppo": PPO_EmpiricalCheck,
+    # "trpo": TRPO_EmpiricalCheck,
 }

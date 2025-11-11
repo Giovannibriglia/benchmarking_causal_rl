@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from src.algos.a2c import A2C
-from src.algos.vbn_critic import VBNCritic
+from src.algos.new_vbn_critic import VBNCritic
 
 
 class A2C_CC(A2C, VBNCritic):

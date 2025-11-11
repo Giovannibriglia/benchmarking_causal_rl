@@ -7,6 +7,7 @@ import torch
 from torch import nn
 
 from src.algos.a2c import A2C
+from src.algos.new_vbn_critic import VBNCritic
 from src.algos.utils import (
     explained_variance,
     js_divergence_hist,
@@ -17,7 +18,6 @@ from src.algos.utils import (
     spearman_corr,
     wasserstein_1d,
 )
-from src.algos.vbn_critic import VBNCritic
 
 
 class A2C_EmpiricalCheck(A2C, VBNCritic):

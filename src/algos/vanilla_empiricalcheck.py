@@ -6,6 +6,8 @@ from typing import Union
 import torch
 from torch import nn
 
+from src.algos.new_vbn_critic import VBNCritic
+
 from src.algos.utils import (
     explained_variance,
     js_divergence_hist,
@@ -18,7 +20,6 @@ from src.algos.utils import (
 )
 
 from src.algos.vanilla_ac import VanillaAC
-from src.algos.vbn_critic import VBNCritic
 
 
 class VanillaAC_EmpiricalCheck(VanillaAC, VBNCritic):

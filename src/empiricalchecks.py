@@ -131,7 +131,7 @@ class EmpiricalChecks:
                     self.n_eval_envs,
                     self.seed + self.n_train_envs + 1,
                     algo_name,
-                    record_video=True,
+                    record_video=False,
                 )
 
                 kwargs_agent = {}

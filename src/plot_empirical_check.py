@@ -546,7 +546,7 @@ def plot_overall_timeseries_trends(
 def plot_empirical_check(
     input_path: Path,
     algos: List[str],
-    agg_mode: str,
+    agg_type: str,
     err_mode: str,
     how_to_group: str = "default",
     plot_trends: bool = True,  # <— new flag
@@ -568,7 +568,7 @@ def plot_empirical_check(
         algos=algos,
         n_checkpoints=n_checkpoints,
         folder=input_path,
-        agg_mode=agg_mode,
+        agg_mode=agg_type,
     )
 
     # overall delta series + errorbars
@@ -578,7 +578,7 @@ def plot_empirical_check(
         algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
-        agg_mode=agg_mode,
+        agg_mode=agg_type,
         err_mode=err_mode,
         scope_label="all",
         env_idxs=None,
@@ -589,7 +589,7 @@ def plot_empirical_check(
         algos=algos,
         n_checkpoints=n_checkpoints,
         deltas=deltas,
-        agg_mode=agg_mode,
+        agg_mode=agg_type,
         err_mode=err_mode,
         scope_label="all",
         env_idxs=None,
@@ -606,7 +606,7 @@ def plot_empirical_check(
             algos=algos,
             n_checkpoints=n_checkpoints,
             deltas=deltas,
-            agg_mode=agg_mode,
+            agg_mode=agg_type,
             err_mode=err_mode,
             scope_label=g,
             env_idxs=idxs,
@@ -617,7 +617,7 @@ def plot_empirical_check(
             algos=algos,
             n_checkpoints=n_checkpoints,
             deltas=deltas,
-            agg_mode=agg_mode,
+            agg_mode=agg_type,
             err_mode=err_mode,
             scope_label=g,
             env_idxs=idxs,
@@ -644,7 +644,7 @@ def plot_empirical_check(
             metrics=METRICS,
             algos=algos,
             raw=raw,
-            agg_mode=agg_mode,
+            agg_mode=agg_type,
             err_mode=err_mode,
             scope_label="all",
             env_idxs=None,
@@ -659,7 +659,7 @@ def plot_empirical_check(
                 metrics=METRICS,
                 algos=algos,
                 raw=raw,
-                agg_mode=agg_mode,
+                agg_mode=agg_type,
                 err_mode=err_mode,
                 scope_label=g,
                 env_idxs=idxs,
@@ -667,7 +667,7 @@ def plot_empirical_check(
 
 
 if __name__ == "__main__":
-    in_path = Path("../runs/gymnasium_ablation_ok_250")
+    in_path = Path("../runs/gymnasium_ablation_ok_250_paper1")
 
     agg_mode = "iqm"  # "iqm" | "mean"
     err_mode = "iqr"  # "iqr" | "std"
