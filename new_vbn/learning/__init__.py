@@ -3,8 +3,6 @@ from .differentiable_cpds.gaussian_nn import GaussianNNCPD
 from .differentiable_cpds.kde import KDEGaussianLearnBW
 from .differentiable_cpds.mdn import MDNCPD
 from .differentiable_cpds.softmax_nn import SoftmaxNNCPD
-from .implicit_generators.c_mmd import CondMMDGenerator
-from .implicit_generators.c_wgan import CondWGANGenerator
 from .parametric_cpds.kde import KDEGaussianCPD
 from .parametric_cpds.linear_gaussian import ParametricLinearGaussianCPD
 from .parametric_cpds.mle import MLESoftmaxCPD
@@ -38,12 +36,6 @@ LEARNING_METHODS = {
         **kw,
     ),
     "flow_rnvp": lambda name, in_dim, out_dim, **kw: CondRealNVPFlowCPD(
-        name=name, in_dim=in_dim, out_dim=out_dim, **kw
-    ),
-    "implicit_c_mmd": lambda name, in_dim, out_dim, **kw: CondMMDGenerator(
-        name=name, in_dim=in_dim, out_dim=out_dim, **kw
-    ),
-    "implicit_c_wgan": lambda name, in_dim, out_dim, **kw: CondWGANGenerator(
         name=name, in_dim=in_dim, out_dim=out_dim, **kw
     ),
 }
