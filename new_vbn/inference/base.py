@@ -7,7 +7,7 @@ import torch
 
 
 class IncompatibilityError(RuntimeError):
-    raise RuntimeError
+    pass
 
 
 def _as_B1(x: torch.Tensor, device, dtype=None) -> torch.Tensor:
