@@ -9,16 +9,6 @@ ENV_CLASSES: Dict[str, type[BaseEnv]] = {
 }
 ENV_NAMES: Dict[str, List[str]] = {
     "gymnasium": [
-        "Ant-v5",
-        "Reacher-v5",
-        "Pusher-v5",
-        "InvertedPendulum-v5",
-        "InvertedDoublePendulum-v5",
-        "HalfCheetah-v5",
-        "Hopper-v5",
-        "Swimmer-v5",
-        "Walker2d-v5",
-        "Blackjack-v1",
         "Humanoid-v5",
         "HumanoidStandup-v5",
         "CarRacing-v3",
@@ -52,3 +42,17 @@ ENV_NAMES: Dict[str, List[str]] = {
         # "HandManipulateEgg_ContinuousTouchSensors-v1",
     ],
 }
+"""
+"Ant-v5",
+        "Reacher-v5",
+        "Pusher-v5",
+        "InvertedPendulum-v5",
+        "InvertedDoublePendulum-v5",
+        "HalfCheetah-v5",
+        "Hopper-v5",
+        "Swimmer-v5",
+        "Walker2d-v5",
+        "Blackjack-v1",
+
+
+"""
