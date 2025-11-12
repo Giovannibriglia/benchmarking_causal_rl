@@ -52,8 +52,8 @@ class VBNCritic:
         self.pi_samples = int(cfg.get("pi_samples", pi_samples))
         self.kl_coeff = float(cfg.get("kl_coeff", kl_coeff))
         self.kl_beta = float(cfg.get("kl_beta", kl_beta))
-        self.kwargs_fit = cfg.get("kwargs_fit", {"epochs": 30, "batch_size": 10240})
-        self.kwargs_inf = cfg.get("kwargs_inf", {"num_samples": 24})
+        self.kwargs_fit = cfg.get("kwargs_fit", {"epochs": 30, "batch_size": 8192})
+        self.kwargs_inf = cfg.get("kwargs_inf", {"num_samples": 16})
 
         # runtime holders
         self.vbn: Optional[VBN] = None
