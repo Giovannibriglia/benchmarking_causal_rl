@@ -9,9 +9,6 @@ ENV_CLASSES: Dict[str, type[BaseEnv]] = {
 }
 ENV_NAMES: Dict[str, List[str]] = {
     "gymnasium": [
-        "Humanoid-v5",
-        "HumanoidStandup-v5",
-        "CarRacing-v3",
         "CartPole-v1",
         "MountainCar-v0",
         "MountainCarContinuous-v0",
@@ -53,6 +50,8 @@ ENV_NAMES: Dict[str, List[str]] = {
         "Swimmer-v5",
         "Walker2d-v5",
         "Blackjack-v1",
-
+            "Humanoid-v5",
+        "HumanoidStandup-v5",
+        "CarRacing-v3",
 
 """
