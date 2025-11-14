@@ -12,10 +12,10 @@ from .vanilla_ac_cc import VanillaAC_CC
 from .vanilla_empiricalcheck import VanillaAC_EmpiricalCheck
 
 AGENTS = {
-    # "vanilla": VanillaAC,
-    "vanilla_cc": VanillaAC_CC,
-    "a2c_cc": A2C_CC,
-    # "a2c": A2C,
+    "vanilla": VanillaAC,
+    # "vanilla_cc": VanillaAC_CC,
+    # "a2c_cc": A2C_CC,
+    "a2c": A2C,
     # "ppo_cc": PPO_CC,
     # "ppo": PPO,
     # "trpo_cc": TRPO_CC,
