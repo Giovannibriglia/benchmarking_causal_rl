@@ -13,8 +13,8 @@ from .vanilla_empiricalcheck import VanillaAC_EmpiricalCheck
 
 AGENTS = {
     "vanilla": VanillaAC,
-    # "vanilla_cc": VanillaAC_CC,
-    # "a2c_cc": A2C_CC,
+    "vanilla_cc": VanillaAC_CC,
+    "a2c_cc": A2C_CC,
     "a2c": A2C,
     # "ppo_cc": PPO_CC,
     # "ppo": PPO,

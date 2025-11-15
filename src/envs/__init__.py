@@ -9,7 +9,28 @@ ENV_CLASSES: Dict[str, type[BaseEnv]] = {
 }
 ENV_NAMES: Dict[str, List[str]] = {
     "gymnasium": [
-        "Ant-v5",
+        "LunarLanderContinuous-v3",
+        "Blackjack-v1",
+        "FrozenLake-v1",
+    ],
+    "gymnasium-robotics": [
+        # Fetch (multi-goal, Dict obs)
+        "FetchReach-v4",
+        "FetchPush-v4",
+        "FetchSlide-v4",
+        "FetchPickAndPlace-v4",
+        # Shadow Dexterous Hand (multi-goal, Dict obs)
+        "HandReach-v3",
+        "HandManipulateBlock-v1",
+        "HandManipulateEgg-v1",
+        "HandManipulatePen-v1",
+        # Touch-sensor variants (optional; only if you want the bigger obs)
+        # "HandManipulateEgg_BooleanTouchSensors-v1",
+        # "HandManipulateEgg_ContinuousTouchSensors-v1",
+    ],
+}
+"""
+"Ant-v5",
         "Reacher-v5",
         "Pusher-v5",
         "InvertedPendulum-v5",
@@ -35,24 +56,5 @@ ENV_NAMES: Dict[str, List[str]] = {
         "Taxi-v3",
         "BipedalWalker-v3",
         "BipedalWalkerHardcore-v3",
-    ],
-    "gymnasium-robotics": [
-        # Fetch (multi-goal, Dict obs)
-        "FetchReach-v4",
-        "FetchPush-v4",
-        "FetchSlide-v4",
-        "FetchPickAndPlace-v4",
-        # Shadow Dexterous Hand (multi-goal, Dict obs)
-        "HandReach-v3",
-        "HandManipulateBlock-v1",
-        "HandManipulateEgg-v1",
-        "HandManipulatePen-v1",
-        # Touch-sensor variants (optional; only if you want the bigger obs)
-        # "HandManipulateEgg_BooleanTouchSensors-v1",
-        # "HandManipulateEgg_ContinuousTouchSensors-v1",
-    ],
-}
-"""
-
 
 """

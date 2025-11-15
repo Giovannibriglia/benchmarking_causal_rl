@@ -38,7 +38,7 @@ class VBNCritic:
         time_size: int = 0,
         learning_method: str = "mdn",
         inference_method: str = "montecarlo.lw",
-        num_samples: int = 32,
+        num_samples: int = 64,
         pi_samples: int = 32,
         kl_coeff: float = 0.0,
         kl_beta: float = 5.0,
@@ -52,8 +52,8 @@ class VBNCritic:
         self.pi_samples = int(cfg.get("pi_samples", pi_samples))
         self.kl_coeff = float(cfg.get("kl_coeff", kl_coeff))
         self.kl_beta = float(cfg.get("kl_beta", kl_beta))
-        self.kwargs_fit = cfg.get("kwargs_fit", {"epochs": 30, "batch_size": 8192})
-        self.kwargs_inf = cfg.get("kwargs_inf", {"num_samples": 16})
+        self.kwargs_fit = cfg.get("kwargs_fit", {"epochs": 50, "batch_size": 4096})
+        self.kwargs_inf = cfg.get("kwargs_inf", {"num_samples": 64})
 
         # runtime holders
         self.vbn: Optional[VBN] = None
