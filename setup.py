@@ -27,6 +27,8 @@ setup(
     author="Giovanni Briglia",
     author_email="giovanni.briglia@phd.unipi.it",
     packages=find_packages(),
-    install_requires=["torch"],
+    install_requires=[
+        "torch>=2.0.0",
+    ],
     include_package_data=True,
 )

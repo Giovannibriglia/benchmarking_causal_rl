@@ -2,3 +2,4 @@
 .idea
 BenchmarkingCausalRL.egg-info
 build
+runs
