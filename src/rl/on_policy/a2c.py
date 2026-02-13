@@ -25,20 +25,21 @@ class A2C(BaseActorCritic):
         self.value_coef = value_coef
 
     def update(self, batch: RolloutBatch) -> Dict[str, float]:
-        advantages, returns = self.compute_gae(
-            batch.rewards, batch.dones, batch.values, batch.next_values
-        )
-        policy_loss = -(batch.log_probs * advantages.detach()).mean()
-        value_loss = F.mse_loss(batch.values, returns.detach())
-        entropy = batch.log_probs.exp() * batch.log_probs
-        entropy_loss = entropy.mean()
-        loss = (
-            policy_loss
-            + self.value_coef * value_loss
-            + self.entropy_coef * entropy_loss
-        )
+        # Recompute forward pass so each update has its own graph; stored buffers stay detached.
+        distribution = self.policy.distribution(batch.obs)
+        logp = self.policy.log_prob(distribution, batch.actions)
+        values = self.policy.value(batch.obs)
+        advantages = batch.advantages
+        returns = batch.returns
+        policy_loss = -(logp * advantages).mean()
+        value_loss = F.mse_loss(values, returns)
+        entropy_term = distribution.entropy()
+        if entropy_term.ndim > 1:
+            entropy_term = entropy_term.sum(-1)
+        entropy = entropy_term.mean()
+        loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         self.optimizer.step()
 
@@ -46,7 +47,7 @@ class A2C(BaseActorCritic):
             "loss": loss.item(),
             "policy_loss": policy_loss.item(),
             "value_loss": value_loss.item(),
-            "entropy": (-entropy_loss).item(),
+            "entropy": entropy.item(),
             "actor_loss": policy_loss.item(),
             "critic_loss": value_loss.item(),
         }

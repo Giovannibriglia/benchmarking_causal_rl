@@ -50,6 +50,10 @@ class PPO(BaseActorCritic):
 
     def update(self, batch: RolloutBatch) -> Dict[str, float]:
         metrics = {}
+        # Safety: old tensors must be constants.
+        assert not batch.log_probs.requires_grad
+        assert not batch.advantages.requires_grad
+        assert not batch.returns.requires_grad
         for _ in range(self.train_iters):
             for mini in self._mini_batches(batch):
                 distribution = self.policy.distribution(mini.obs)
@@ -75,7 +79,7 @@ class PPO(BaseActorCritic):
                     - self.entropy_coef * entropy
                 )
 
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
                 self.optimizer.step()

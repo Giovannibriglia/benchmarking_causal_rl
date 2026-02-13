@@ -126,21 +126,23 @@ class BenchmarkRunner:
         obs, _ = self.train_env.reset()
         ep_returns = torch.zeros(N, device=self.device)
         for t in range(T):
-            # Keep value/log-prob tensors attached to the graph so actor/critic losses retain gradients.
-            val = self.policy.value(obs)
-            action, logp = self.policy.act(obs)
+            # Collect rollout with detached storage: learning steps will recompute fresh graphs.
+            with torch.no_grad():
+                val = self.policy.value(obs)
+                action, logp = self.policy.act(obs)
             next_obs, reward, terminated, truncated, _ = self.train_env.step(action)
             done = torch.logical_or(terminated, truncated).float()
             ep_returns += reward
 
             obs_buf.append(obs)
             act_buf.append(action.detach())
-            logp_buf.append(logp)
+            logp_buf.append(logp.detach())
             rew_buf[t] = reward
             done_buf[t] = done
-            val_buf[t] = val
+            val_buf[t] = val.detach()
             # estimate next value
-            next_val_buf[t] = self.policy.value(next_obs).detach()
+            with torch.no_grad():
+                next_val_buf[t] = self.policy.value(next_obs).detach()
 
             obs = next_obs
 

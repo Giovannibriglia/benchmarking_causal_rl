@@ -36,15 +36,13 @@ class TRPO(BaseActorCritic):
         return (ratio * (new_logp - old_logp)).mean()
 
     def update(self, batch: RolloutBatch) -> Dict[str, float]:
-        advantages, returns = self.compute_gae(
-            batch.rewards, batch.dones, batch.values, batch.next_values
-        )
         distribution = self.policy.distribution(batch.obs)
         new_logp = self.policy.log_prob(distribution, batch.actions)
         ratio = torch.exp(new_logp - batch.log_probs)
-        surrogate = -(ratio * advantages.detach()).mean()
+        advantages = batch.advantages
+        surrogate = -(ratio * advantages).mean()
         values = self.policy.value(batch.obs)
-        value_loss = nn.functional.mse_loss(values, returns.detach())
+        value_loss = nn.functional.mse_loss(values, batch.returns)
         entropy_term = distribution.entropy()
         if entropy_term.ndim > 1:
             entropy_term = entropy_term.sum(-1)
@@ -59,7 +57,7 @@ class TRPO(BaseActorCritic):
             + (-self.entropy_coef * entropy)
         )
 
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
         self.optimizer.step()
