@@ -1,0 +1,11 @@
+env:
+  env_set: mujoco
+  n_train_envs: 12
+  n_eval_envs: 12
+  rollout_len: 1024
+  seed: 42
+training:
+  n_episodes: 250
+  n_checkpoints: 25
+  deterministic: true
+  algos: a2c vanilla a2c_cc vanilla_cc
