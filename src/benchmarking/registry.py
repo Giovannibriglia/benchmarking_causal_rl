@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Callable, Dict, List
 
 import torch
 import torch.nn as nn
@@ -32,6 +32,72 @@ class Registry:
 
 
 registry = Registry()
+
+
+# Central env set registry. Values can be static lists or callables returning a list.
+ENV_SETS: Dict[str, List[str] | Callable[[], List[str]]] = {
+    # Dynamically enumerates all installed Gymnasium env ids.
+    "gymnasium": [
+        "Blackjack-v1",
+        # "CarRacing-v3",
+        "CartPole-v1",
+        "MountainCar-v0",
+        "MountainCarContinuous-v0",
+        "Pendulum-v1",
+        "Acrobot-v1",
+        "LunarLander-v3",
+        "LunarLanderContinuous-v3",
+        "FrozenLake-v1",
+        "FrozenLake8x8-v1",
+        "CliffWalking-v1",
+        "Taxi-v3",
+        "BipedalWalker-v3",
+        "BipedalWalkerHardcore-v3",
+    ],
+    "mujoco": [
+        "Ant-v5",
+        "Reacher-v5",
+        "Pusher-v5",
+        "InvertedPendulum-v5",
+        "InvertedDoublePendulum-v5",
+        "HalfCheetah-v5",
+        "Hopper-v5",
+        "Swimmer-v5",
+        "Walker2d-v5",
+        "Humanoid-v5",
+        "HumanoidStandup-v5",
+    ],
+    "gymnasium-robotics": [
+        # Fetch (multi-goal, Dict obs)
+        "FetchReach-v4",
+        "FetchPush-v4",
+        "FetchSlide-v4",
+        "FetchPickAndPlace-v4",
+        # Shadow Dexterous Hand (multi-goal, Dict obs)
+        "HandReach-v3",
+        "HandManipulateBlock-v1",
+        "HandManipulateEgg-v1",
+        "HandManipulatePen-v1",
+        # Touch-sensor variants (optional; only if you want the bigger obs)
+        # "HandManipulateEgg_BooleanTouchSensors-v1",
+        # "HandManipulateEgg_ContinuousTouchSensors-v1",
+    ],
+}
+
+
+def expand_env_set(name: str) -> List[str]:
+    key = name.lower()
+    if key not in ENV_SETS:
+        raise KeyError(
+            f"Unknown env_set '{name}'. Add it to ENV_SETS in src/benchmarking/registry.py."
+        )
+    entries = ENV_SETS[key]
+    envs = entries() if callable(entries) else list(entries)
+    if len(envs) == 0:
+        raise ValueError(
+            f"Environment set '{name}' is defined but empty. Populate ENV_SETS or install the provider."
+        )
+    return envs
 
 
 def register_default_algorithms() -> None:
