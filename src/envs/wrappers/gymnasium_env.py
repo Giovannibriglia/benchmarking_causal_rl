@@ -185,7 +185,12 @@ class GymnasiumEnv(BaseEnv):
     def close(self) -> None:
         if self.video_recorder is not None:
             self.video_recorder.close()
-        self.env.close()
+        try:
+            self.env.close()
+        except Exception as exc:
+            # Mujoco EGL contexts can raise EGL_NOT_INITIALIZED during interpreter teardown; ignore to avoid noisy exit.
+            if "EGL_NOT_INITIALIZED" not in str(exc):
+                raise
 
     def start_video(self, path: str) -> None:
         if self.video_recorder is not None:

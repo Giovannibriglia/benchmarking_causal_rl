@@ -126,7 +126,8 @@ class BenchmarkRunner:
         obs, _ = self.train_env.reset()
         ep_returns = torch.zeros(N, device=self.device)
         for t in range(T):
-            val = self.policy.value(obs).detach()
+            # Keep value/log-prob tensors attached to the graph so actor/critic losses retain gradients.
+            val = self.policy.value(obs)
             action, logp = self.policy.act(obs)
             next_obs, reward, terminated, truncated, _ = self.train_env.step(action)
             done = torch.logical_or(terminated, truncated).float()
@@ -134,7 +135,7 @@ class BenchmarkRunner:
 
             obs_buf.append(obs)
             act_buf.append(action.detach())
-            logp_buf.append(logp.detach())
+            logp_buf.append(logp)
             rew_buf[t] = reward
             done_buf[t] = done
             val_buf[t] = val
@@ -275,15 +276,21 @@ class BenchmarkRunner:
 
     def run(self) -> None:
         set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
-        with CSVLogger(
-            os.path.join(self.run_dir, "train_metrics.csv"), fieldnames=TRAIN_COLUMNS
-        ) as train_log, CSVLogger(
-            os.path.join(self.run_dir, "eval_metrics.csv"), fieldnames=EVAL_COLUMNS
-        ) as eval_log:
-            if self.algo_spec.kind == "on_policy":
-                self._train_on_policy(train_log, eval_log)
-            else:
-                self._train_off_policy(train_log, eval_log)
+        try:
+            with CSVLogger(
+                os.path.join(self.run_dir, "train_metrics.csv"),
+                fieldnames=TRAIN_COLUMNS,
+            ) as train_log, CSVLogger(
+                os.path.join(self.run_dir, "eval_metrics.csv"), fieldnames=EVAL_COLUMNS
+            ) as eval_log:
+                if self.algo_spec.kind == "on_policy":
+                    self._train_on_policy(train_log, eval_log)
+                else:
+                    self._train_off_policy(train_log, eval_log)
+        finally:
+            # Explicitly close vector envs to release EGL/GL contexts before interpreter shutdown.
+            self.train_env.close()
+            self.eval_env.close()
 
     def _train_off_policy(
         self, train_logger: CSVLogger, eval_logger: CSVLogger
