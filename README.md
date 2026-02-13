@@ -88,11 +88,7 @@ python main.py --env-set gymnasium --algos ppo a2c
 
 ## Reproducibility
 
-Reproducibility configs are stored in:
-
-```
-reproducibility/
-```
+Reproducibility configs are stored in: ```reproducibility/```
 
 To reproduce a published experiment:
 
@@ -113,6 +109,18 @@ This will:
 1. `--reproduce`
 2. `--env-set`
 3. `--envs`
+
+---
+
+## Plotting and Tables
+
+Generate publication-ready plots and LaTeX tables from a completed run:
+
+```bash
+python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
+```
+
+Outputs are written to `outputs/<run_name>/` with per-env and overall plots (PNG/PDF) and per-metric LaTeX tables.
 
 ---
 
@@ -217,8 +225,6 @@ This framework supports experiments presented in:
 }
 ```
 
-Reproduce with:
+Reproduce with: ```python main.py --reproduce comoreai26 ```
 
-```bash
-python main.py --reproduce comoreai26
-```
+---
