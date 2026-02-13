@@ -1,84 +1,111 @@
+
 # Benchmarking Causal Reinforcement Learning
 
-A modular, PyTorch-first benchmarking framework for single-agent reinforcement learning — designed for reproducibility, extensibility, and future causal augmentation.
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.x-ee4c2c.svg)](https://pytorch.org/)
+[![Gymnasium](https://img.shields.io/badge/Gymnasium-Compatible-green.svg)](https://gymnasium.farama.org/)
+[![MuJoCo](https://img.shields.io/badge/MuJoCo-Supported-orange.svg)](https://mujoco.org/)
+[![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen.svg)](https://pre-commit.com/)
 
-This repository provides a clean architectural scaffold to evaluate standard RL algorithms under a unified, vectorized, and research-oriented pipeline, with built-in support for reproducible experiments and structured evaluation.
+A modular, PyTorch-first benchmarking framework for single- and multi-agent reinforcement learning — designed for reproducibility, extensibility, and causal augmentation.
+
+This repository provides a clean architectural scaffold to evaluate standard (MA)RL algorithms under a unified, vectorized, and research-oriented pipeline, with built-in support for reproducible experiments and structured evaluation.
 
 ---
 
-## Why This Framework?
+# Why This Framework?
 
 Most RL benchmarking codebases grow organically and become difficult to extend, reproduce, or adapt for research-level experimentation.
 
 This project enforces:
 
-* Strict actor–critic separation
-* Single-device propagation (CUDA-first, CPU fallback)
-* Vectorized environments as a first-class abstraction
-* Deterministic experiment reproducibility
-* Structured checkpointing and evaluation
-* Clean modular extension for causal components
+- Strict actor–critic separation
+- Single-device propagation (CUDA-first, CPU fallback)
+- Vectorized environments as a first-class abstraction
+- Deterministic experiment reproducibility
+- Structured checkpointing and evaluation
+- Clean modular extension for causal components
 
-The goal is not just to run RL — but to *benchmark it rigorously*.
-
----
-
-## Core Features
-
-### Architecture
-
-* PyTorch-first implementation (all tensors, buffers, and networks live on a single detected device).
-* Vectorized Gymnasium environments.
-* Automatic flattening of arbitrary observation spaces (Box, Dict, Tuple, MultiDiscrete, nested).
-* Modular environment wrapper system.
-* Clear separation between:
-
-  * `rl/` (single-agent)
-  * `marl/` (future multi-agent)
-  * `benchmarking/` (runner, evaluation, registry)
-
-### Algorithms (v0)
-
-* PPO
-* TRPO (KL-penalized trust region variant)
-* A2C
-* Vanilla Policy Gradient
-* DQN (discrete only)
-* DDPG (continuous only)
-
-### Benchmarking Capabilities
-
-* Multi-algorithm runs via `--algos`
-* Multi-environment runs via `--envs`
-* Named environment groups via `--env-set`
-* Checkpoint-based logging (not per episode)
-* Evaluation video recording (first eval seed only, one per checkpoint)
-* CSV-only structured logging
-* Unified run folder per benchmark execution
-
-### Device & Reproducibility
-
-* Auto CUDA detection
-* Deterministic mode optional
-* Fully reproducible runs via YAML configuration
+The goal is not just to run (MA)RL — but to **benchmark it rigorously**.
 
 ---
 
-## Usage
+# Core Features
 
-### Single algorithm
+## Architecture
+
+- PyTorch-first implementation (all tensors live on one detected device).
+- Vectorized Gymnasium environments.
+- Automatic flattening of arbitrary observation spaces (Box, Dict, Tuple, MultiDiscrete, nested).
+- Modular environment wrapper system.
+- Clear separation between:
+  - `rl/` (single-agent)
+  - `marl/` (future multi-agent)
+  - `benchmarking/` (runner, evaluation, registry)
+
+---
+
+## Implemented Algorithms (v0)
+
+### On-Policy
+
+- **Vanilla Policy Gradient**
+- **A2C**
+- **PPO**
+- **TRPO** (KL-penalized trust-region variant)
+
+### Off-Policy
+
+- **DQN** — supports **discrete action spaces only**
+- **DDPG** — supports **continuous action spaces only**
+
+All implementations maintain strict separation between actor and critic modules.
+
+---
+
+# Supported Environments
+
+The framework currently supports **Gymnasium environments** through a unified vectorized wrapper.
+
+### Observation Spaces Supported
+
+- `Box`
+- `Discrete`
+- `MultiDiscrete`
+- `Tuple`
+- `Dict`
+- Nested combinations
+
+Observations are automatically flattened into a tensor representation.
+
+### Environment Sets (`--env-set`)
+
+Named environment groups, defined in `registry.py` and easily extendable, can be used:
+
+- `gymnasium`
+- `mujoco`
+- `gymnasium-robotics`
+
+---
+
+# Main Training Script (`main.py`)
+
+## Basic Usage
+
+Single algorithm:
 
 ```bash
 python main.py --envs CartPole-v1 --algos ppo
-```
+````
 
-### Multiple algorithms and environments
+Multiple algorithms and environments:
 
 ```bash
 python main.py --envs CartPole-v1 HalfCheetah-v5 --algos ppo trpo
 ```
 
-### Named environment sets (overrides `--envs`)
+Named environment set (overrides `--envs`):
 
 ```bash
 python main.py --env-set gymnasium --algos ppo a2c
@@ -86,25 +113,79 @@ python main.py --env-set gymnasium --algos ppo a2c
 
 ---
 
+## CLI Parameters
+
+### Environment Selection
+
+| Flag        | Description                                      |
+| ----------- | ------------------------------------------------ |
+| `--envs`    | List of environment IDs                          |
+| `--env-set` | Named group of environments (overrides `--envs`) |
+
+Precedence:
+`--reproduce` > `--env-set` > `--envs`
+
+---
+
+### Algorithm Selection
+
+| Flag      | Description                     |
+| --------- | ------------------------------- |
+| `--algos` | List of algorithms to benchmark |
+
+Each `(algorithm, environment, seed)` combination runs independently.
+
+---
+
+### Training Configuration
+
+| Flag              | Description                                              |Default|
+| ----------------- | -------------------------------------------------------- |-------|
+| `--n-episodes`    | Number of training episodes                              |250    |
+| `--rollout-len`   | Steps per episode                                        |1024   |
+| `--n-train-envs`  | Parallel training environments                           |16     |
+| `--n-eval-envs`   | Parallel evaluation environments                         |16     |
+| `--n-checkpoints` | Number of checkpoint evaluations (min=2, max=n_episodes) |25     |
+
+Checkpoints are:
+
+* Uniformly distributed
+* Include episode 0 and final episode
+* The only points where metrics, models, and videos are saved
+
+---
+
+### Device & Determinism
+
+| Flag              | Description                           |
+| ----------------- | ------------------------------------- |
+| `--device`        | `auto`, `cpu`, or `cuda`              |
+| `--deterministic` | Enable deterministic PyTorch behavior |
+
+Default:
+
+* Auto-detect CUDA
+* Determinism disabled unless specified
+
+---
+
 ## Reproducibility
 
-Reproducibility configs are stored in: ```reproducibility/```
+Reproducibility configs live in: ```reproducibility/```
 
-To reproduce a published experiment:
+Run:
 
 ```bash
-python main.py --reproduce <filename>
+python main.py --reproduce <config_name>
 ```
 
 This will:
 
-* Load `reproducibility/<filename>.yaml`
+* Load `reproducibility/<config_name>.yaml`
 * Override CLI parameters
-* Run the benchmark exactly as specified
-* Store the effective configuration in the run folder
-* Respect deterministic settings if enabled
+* Save the effective configuration in the run folder
 
-### Precedence Order
+Precedence:
 
 1. `--reproduce`
 2. `--env-set`
@@ -112,50 +193,92 @@ This will:
 
 ---
 
-## Plotting and Tables
+# Plotting and Tables (`plot.py`)
 
-Generate publication-ready plots and LaTeX tables from a completed run:
+Generate publication-ready plots and LaTeX tables:
 
 ```bash
 python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
 ```
 
-Outputs are written to `outputs/<run_name>/` with per-env and overall plots (PNG/PDF) and per-metric LaTeX tables.
+---
+
+## Plot Parameters
+
+| Flag            | Description                    |
+| --------------- | ------------------------------ |
+| `--run`         | Run folder name inside `runs/` |
+| `--split`       | `train`, `eval`, or `both`     |
+| `--x-axis`      | `episodes` or `frames`         |
+| `--aggregation` | `mean` or `iqm`                |
+| `--formats`     | Output formats (e.g. png pdf)  |
 
 ---
 
-## Run Artifacts
+## Aggregation Modes
 
-Each benchmark execution creates:
+### Mean Mode
+
+* Center: Mean
+* Spread: Standard deviation
+
+### IQM Mode (default)
+
+* Center: Interquartile Mean
+* Spread: IQR-STD
+
+---
+
+## Generated Outputs
 
 ```
-runs/benchmark_<datetime>/
+outputs/<run_name>/
+    plots/
+    tables/
 ```
 
-Contents:
+Each metric produces:
+
+* Per-environment plots
+* Overall aggregated plot
+* One LaTeX table per metric
+
+Figures:
+
+* High-resolution PNG (≥300 dpi)
+* Vector PDF
+* Consistent algorithm color mapping
+
+---
+
+# Run Artifacts
+
+Each execution creates:```runs/benchmark_<datetime>/```
+
+Contains:
 
 * `config.yaml`
 * `metadata.json`
-* `train_metrics.csv` (checkpoint-only rows)
-* `eval_metrics.csv` (checkpoint-only rows)
+* `train_metrics.csv`
+* `eval_metrics.csv`
 * `checkpoints/<env>_<algo>_seed<seed>/`
 * `videos/<env>_<algo>_seed<seed>_ckptXXXX.mp4`
 
-All CSV files include explicit `algorithm` and `environment` columns.
+CSV files include explicit `algorithm` and `environment` columns.
 
 ---
 
-## Design Philosophy
+# Design Philosophy
 
-This framework pursues:
+This framework prioritizes:
 
-* Strong modularity
-* Minimal code duplication
+* Research reproducibility
+* Modular structure
 * Clean abstraction boundaries
-* Strict separation of concerns
+* Minimal code duplication
 * Extensibility toward causal RL
 
-Future work integrates structured causal critics (e.g., VBN-based modules) seamlessly into the actor–critic pipeline.
+It is designed as long-term research infrastructure, not a one-off script.
 
 ---
 
@@ -163,48 +286,31 @@ Future work integrates structured causal critics (e.g., VBN-based modules) seaml
 
 Contributions are welcome.
 
-We encourage improvements in:
+You can extend:
 
-* Algorithm implementations
+* Algorithms (inherit from base classes in `rl/`)
 * Environment wrappers
+* Environment sets
 * Evaluation metrics
-* MARL extensions
-* Performance optimization
-* Causal module integration
+* MARL components
+* Causal critic modules
 
-### Development Setup
+---
+
+## Development Setup
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
----
-
-## Code Quality & Pre-commit
-
-We enforce consistent formatting and linting.
-
-Install pre-commit:
-
-```bash
-pip install pre-commit
 pre-commit install
 ```
 
-Run manually:
+Run formatting checks:
 
 ```bash
 pre-commit run --all-files
 ```
-
-The configuration ensures:
-
-* Code formatting
-* Import sorting
-* Style consistency
-* Prevention of accidental large commits
 
 All pull requests should pass pre-commit checks before merging.
 
@@ -225,6 +331,4 @@ This framework supports experiments presented in:
 }
 ```
 
-Reproduce with: ```python main.py --reproduce comoreai26 ```
-
----
+Reproduce with:```bash python main.py --reproduce comoreai26```
