@@ -12,8 +12,8 @@ from .device import detect_device
 @dataclass
 class EnvConfig:
     env_id: str = "CartPole-v1"
-    n_train_envs: int = 32
-    n_eval_envs: int = 32
+    n_train_envs: int = 16
+    n_eval_envs: int = 16
     rollout_len: int = 1024
     seed: int = 42
 

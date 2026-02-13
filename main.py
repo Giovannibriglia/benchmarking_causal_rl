@@ -29,8 +29,8 @@ def parse_args():
         default=None,
         help="Named environment set to expand into env ids (overrides --envs).",
     )
-    p.add_argument("--n-train-envs", type=int, default=8)
-    p.add_argument("--n-eval-envs", type=int, default=8)
+    p.add_argument("--n-train-envs", type=int, default=16)
+    p.add_argument("--n-eval-envs", type=int, default=16)
     p.add_argument("--rollout-len", type=int, default=1024)
     p.add_argument("--n-episodes", type=int, default=250)
     p.add_argument("--n-checkpoints", type=int, default=25)
