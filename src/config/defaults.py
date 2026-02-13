@@ -12,16 +12,16 @@ from .device import detect_device
 @dataclass
 class EnvConfig:
     env_id: str = "CartPole-v1"
-    n_train_envs: int = 8
-    n_eval_envs: int = 8
+    n_train_envs: int = 32
+    n_eval_envs: int = 32
     rollout_len: int = 1024
     seed: int = 42
 
 
 @dataclass
 class TrainingConfig:
-    n_episodes: int = 100
-    n_checkpoints: int = 5
+    n_episodes: int = 250
+    n_checkpoints: int = 25
     eval_interval: Optional[int] = None  # derived from n_episodes / n_checkpoints
     deterministic: bool = False
     device: str = field(default_factory=lambda: str(detect_device()))

@@ -14,6 +14,29 @@ except ImportError:
 Please install it with:
     pip install gymnasium[all]""")
 
+
+def _maybe_import_robotics(env_id: str) -> None:
+    """Import gymnasium-robotics when a robotics env is requested.
+
+    Gymnasium only registers robotics environments when the package is imported.
+    This helper avoids NameNotFound errors for env ids like Fetch*, Hand*, Adroit*,
+    and Franka* by loading the plugin on demand and surfacing a clear message if it
+    isn't installed.
+    """
+
+    prefixes = ("fetch", "hand", "adroit", "franka", "kitchen")
+    if not any(env_id.lower().startswith(p) for p in prefixes):
+        return
+
+    try:
+        import gymnasium_robotics  # noqa: F401
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise ImportError(
+            "gymnasium-robotics is required for robotics environments like "
+            f"'{env_id}'. Install via `pip install gymnasium-robotics`."
+        ) from exc
+
+
 import numpy as np
 import torch
 from gymnasium.spaces import Space
@@ -73,6 +96,7 @@ class GymnasiumEnv(BaseEnv):
 
         def make_env(rank: int) -> Callable[[], gym.Env]:
             def _thunk():
+                _maybe_import_robotics(self.env_id)
                 env = gym.make(
                     self.env_id, render_mode="rgb_array" if self.render else None
                 )
@@ -159,7 +183,12 @@ class GymnasiumEnv(BaseEnv):
             else:
                 reset_obs, reset_info = self.env.reset()
             # replace obs for done envs
-            obs[done] = reset_obs[done] if reset_obs is not None else obs[done]
+            if isinstance(obs, dict):
+                for k, v in obs.items():
+                    src = reset_obs[k] if reset_obs is not None else v
+                    v[done] = src[done]
+            else:
+                obs[done] = reset_obs[done] if reset_obs is not None else obs[done]
             # merge infos
             for i, d in enumerate(done):
                 if d:
