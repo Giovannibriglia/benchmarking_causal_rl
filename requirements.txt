@@ -1,5 +1,4 @@
-numpy
-PyYAML
+pyyaml
 tqdm
 setuptools
 black>24.3.0

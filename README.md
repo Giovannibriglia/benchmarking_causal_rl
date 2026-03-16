@@ -29,6 +29,11 @@ This project enforces:
 
 The goal is not just to run (MA)RL — but to **benchmark it rigorously**.
 
+### Planned features:
+- insert *Neural Bayesian Network"
+- train and load baselines
+
+
 ---
 
 # Core Features
