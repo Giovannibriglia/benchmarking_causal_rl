@@ -72,6 +72,7 @@ All implementations maintain strict separation between actor and critic modules.
 # Supported Environments
 
 The framework currently supports **Gymnasium environments** through a unified vectorized wrapper.
+It also supports **custom user environments** via a dedicated wrapper.
 
 ### Observation Spaces Supported
 
@@ -93,6 +94,24 @@ Named environment groups, defined in `registry.py` and easily extendable, can be
 - `gymnasium-robotics`
 
 ---
+
+### Custom Environments
+
+You can plug in a custom environment by providing a Python entry point that builds a single env.
+The custom env must expose `observation_space` and `action_space` (Gymnasium spaces) and implement
+`reset()` and `step()` following the Gymnasium API.
+
+Use one of the following patterns:
+
+```bash
+# Use custom wrapper for all envs in the run
+python main.py --env-wrapper custom --env-entry-point my_pkg.envs:make_env --envs CustomEnv-v0 --algos ppo
+
+# Mixed envs: prefix only the custom ones
+python main.py --envs CartPole-v1 custom:my_pkg.envs:make_env --algos ppo
+```
+
+You can pass JSON kwargs to the entry point with `--env-kwargs`.
 
 # Main Training Script (`main.py`)
 
@@ -126,6 +145,9 @@ python main.py --env-set gymnasium --algos ppo a2c
 | ----------- | ------------------------------------------------ |
 | `--envs`    | List of environment IDs                          |
 | `--env-set` | Named group of environments (overrides `--envs`) |
+| `--env-wrapper` | Env wrapper to use (`auto`, `gymnasium`, `custom`, or a registered name) |
+| `--env-entry-point` | Python entry point for custom envs (`module:callable`) |
+| `--env-kwargs` | JSON dict of kwargs for the env entry point |
 
 Precedence:
 `--reproduce` > `--env-set` > `--envs`

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from src.benchmarking.registry import (
 from src.benchmarking.runner import BenchmarkRunner
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.device import detect_device
+from src.envs.registry import register_default_env_wrappers
 
 
 def parse_args():
@@ -28,6 +30,24 @@ def parse_args():
         type=str,
         default=None,
         help="Named environment set to expand into env ids (overrides --envs).",
+    )
+    p.add_argument(
+        "--env-wrapper",
+        type=str,
+        default="auto",
+        help="Env wrapper to use (auto selects by env name or entry point).",
+    )
+    p.add_argument(
+        "--env-entry-point",
+        type=str,
+        default=None,
+        help="Python entry point for custom envs, e.g. my_pkg.envs:make_env.",
+    )
+    p.add_argument(
+        "--env-kwargs",
+        type=str,
+        default=None,
+        help="JSON dict of kwargs for the env entry point.",
     )
     p.add_argument("--n-train-envs", type=int, default=16)
     p.add_argument("--n-eval-envs", type=int, default=16)
@@ -60,6 +80,7 @@ def parse_args():
 def main():
     args = parse_args()
     register_default_algorithms()
+    register_default_env_wrappers()
 
     cfg_from_file: dict = {}
     if args.reproduce:
@@ -86,6 +107,19 @@ def main():
     env_set = env_cfg_src.get(
         "env_set", cfg_from_file.get("env_set", args.env_set if args.env_set else None)
     )
+    env_wrapper = env_cfg_src.get(
+        "env_wrapper",
+        cfg_from_file.get(
+            "env_wrapper", args.env_wrapper if args.env_wrapper else None
+        ),
+    )
+    env_entry_point = env_cfg_src.get(
+        "env_entry_point",
+        cfg_from_file.get(
+            "env_entry_point",
+            args.env_entry_point if args.env_entry_point else None,
+        ),
+    )
     envs_from_cfg = _maybe_list(env_cfg_src.get("envs")) or _maybe_list(
         cfg_from_file.get("envs") if isinstance(cfg_from_file, dict) else None
     )
@@ -109,6 +143,15 @@ def main():
     rollout_len = env_cfg_src.get(
         "rollout_len", cfg_from_file.get("rollout_len", args.rollout_len)
     )
+    env_kwargs = env_cfg_src.get("env_kwargs", cfg_from_file.get("env_kwargs", None))
+    if env_kwargs is None and args.env_kwargs:
+        env_kwargs = json.loads(args.env_kwargs)
+    if isinstance(env_kwargs, str):
+        env_kwargs = json.loads(env_kwargs)
+    if env_kwargs is None:
+        env_kwargs = {}
+    if not isinstance(env_kwargs, dict):
+        raise ValueError("env_kwargs must be a dict or JSON object.")
 
     n_episodes = train_cfg_src.get(
         "n_episodes", cfg_from_file.get("n_episodes", args.n_episodes)
@@ -153,6 +196,9 @@ def main():
         "env": {
             "envs": envs,
             "env_set": env_set,
+            "env_wrapper": env_wrapper,
+            "env_entry_point": env_entry_point,
+            "env_kwargs": env_kwargs,
             "n_train_envs": n_train_envs,
             "n_eval_envs": n_eval_envs,
             "rollout_len": rollout_len,
@@ -171,8 +217,6 @@ def main():
     with (run_dir / "config.yaml").open("w") as f:
         yaml.safe_dump(config_snapshot, f)
     with (run_dir / "metadata.json").open("w") as f:
-        import json
-
         json.dump({"timestamp": base_timestamp}, f, indent=2)
 
     run_cfg = RunConfig(run_dir=str(run_dir), timestamp=base_timestamp)
@@ -185,6 +229,9 @@ def main():
                 n_eval_envs=n_eval_envs,
                 rollout_len=rollout_len,
                 seed=seed,
+                env_wrapper=env_wrapper or "auto",
+                env_entry_point=env_entry_point,
+                env_kwargs=env_kwargs,
             )
             train_cfg = TrainingConfig(
                 n_episodes=n_episodes,

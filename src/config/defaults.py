@@ -16,6 +16,9 @@ class EnvConfig:
     n_eval_envs: int = 16
     rollout_len: int = 1024
     seed: int = 42
+    env_wrapper: str = "auto"
+    env_entry_point: Optional[str] = None
+    env_kwargs: dict = field(default_factory=dict)
 
 
 @dataclass

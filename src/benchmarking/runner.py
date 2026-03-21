@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.seeding import set_seed
-from src.envs.wrappers.gymnasium_env import GymnasiumEnv
+from src.envs.registry import build_env
 from src.logging.logger import CSVLogger
 from src.rl.on_policy.base_actor_critic import RolloutBatch
 
@@ -69,21 +69,27 @@ class BenchmarkRunner:
         os.makedirs(os.path.join(self.run_dir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(self.run_dir, "videos"), exist_ok=True)
 
-        self.train_env = GymnasiumEnv(
+        self.train_env = build_env(
             env_id=env_cfg.env_id,
             n_envs=env_cfg.n_train_envs,
             device=self.device,
             seed=env_cfg.seed,
             render=False,
             record_video=False,
+            env_wrapper=env_cfg.env_wrapper,
+            env_entry_point=env_cfg.env_entry_point,
+            env_kwargs=env_cfg.env_kwargs,
         )
-        self.eval_env = GymnasiumEnv(
+        self.eval_env = build_env(
             env_id=env_cfg.env_id,
             n_envs=env_cfg.n_eval_envs,
             device=self.device,
             seed=env_cfg.seed + env_cfg.n_train_envs,
             render=True,
             record_video=False,
+            env_wrapper=env_cfg.env_wrapper,
+            env_entry_point=env_cfg.env_entry_point,
+            env_kwargs=env_cfg.env_kwargs,
         )
         if len(self.train_env.obs_space.shape) == 0:
             self.obs_dim = 1
