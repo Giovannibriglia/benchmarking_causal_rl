@@ -10,6 +10,7 @@ import torch
 @dataclass
 class RolloutBatch:
     obs: torch.Tensor
+    next_obs: torch.Tensor
     actions: torch.Tensor
     log_probs: torch.Tensor
     rewards: torch.Tensor

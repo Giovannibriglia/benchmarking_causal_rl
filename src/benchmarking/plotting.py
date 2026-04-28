@@ -26,6 +26,7 @@ def get_algo_color(algo: str, palette: str = "Set1"):
 NON_METRIC_COLS = {
     "algorithm",
     "environment",
+    "critic",
     "seed",
     "episode",
     "episode_idx",
@@ -38,17 +39,18 @@ NON_METRIC_COLS = {
 }
 
 
-def load_run(run_name: str) -> Tuple[dict, pd.DataFrame, pd.DataFrame]:
+def load_run(run_name: str) -> Tuple[dict, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     run_dir = Path("runs") / run_name
     cfg_path = run_dir / "config.yaml"
     train_path = run_dir / "train_metrics.csv"
     eval_path = run_dir / "eval_metrics.csv"
+    critic_path = run_dir / "critic_ablation_metrics.csv"
 
     if not cfg_path.exists():
         raise FileNotFoundError(f"config.yaml not found in {run_dir}")
-    if not train_path.exists() and not eval_path.exists():
+    if not train_path.exists() and not eval_path.exists() and not critic_path.exists():
         raise FileNotFoundError(
-            "No metrics CSVs found (train_metrics.csv or eval_metrics.csv)"
+            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
         )
 
     with cfg_path.open("r") as f:
@@ -56,7 +58,8 @@ def load_run(run_name: str) -> Tuple[dict, pd.DataFrame, pd.DataFrame]:
 
     train_df = pd.read_csv(train_path) if train_path.exists() else pd.DataFrame()
     eval_df = pd.read_csv(eval_path) if eval_path.exists() else pd.DataFrame()
-    return config, train_df, eval_df
+    critic_df = pd.read_csv(critic_path) if critic_path.exists() else pd.DataFrame()
+    return config, train_df, eval_df, critic_df
 
 
 def _get_rollout_len(cfg: dict) -> int:
@@ -100,6 +103,18 @@ def discover_metrics(df: pd.DataFrame) -> List[Tuple[str, str, Optional[str]]]:
                 continue  # handled when mean encountered
         if col not in paired:
             metrics.append((col, col, None))
+    return metrics
+
+
+def discover_critic_metrics(df: pd.DataFrame) -> List[str]:
+    if df.empty:
+        return []
+    metrics: List[str] = []
+    for col in df.columns:
+        if col in NON_METRIC_COLS:
+            continue
+        if pd.api.types.is_numeric_dtype(df[col]):
+            metrics.append(col)
     return metrics
 
 
@@ -178,6 +193,51 @@ def compute_aggregates(
     return grouped
 
 
+def compute_critic_aggregates(
+    df: pd.DataFrame,
+    metric_name: str,
+    x_axis: str,
+    aggregation: str,
+    rollout_len: int,
+) -> pd.DataFrame:
+    if df.empty or metric_name not in df.columns:
+        return pd.DataFrame()
+    use_cols = [metric_name, "algorithm", "environment", "critic"]
+    df = df.dropna(subset=use_cols)
+    if df.empty:
+        return pd.DataFrame()
+
+    if x_axis == "frames":
+        x_col = "frames"
+        if x_col not in df.columns:
+            ep_col = "episode" if "episode" in df.columns else "episode_idx"
+            df[x_col] = df[ep_col] * rollout_len
+    else:
+        x_col = "episode" if "episode" in df.columns else "episode_idx"
+
+    def agg_func(group: pd.DataFrame):
+        vals = group[metric_name].dropna().to_numpy()
+        if vals.size == 0:
+            return pd.Series({"center": np.nan, "spread": np.nan})
+        if aggregation == "mean":
+            center = float(np.mean(vals))
+            spread = float(np.std(vals)) if vals.size > 1 else 0.0
+        else:
+            center = _iqm(vals)
+            spread = _iqr_std(vals) if vals.size > 1 else 0.0
+        return pd.Series({"center": center, "spread": spread})
+
+    grouped = (
+        df.groupby(["environment", "algorithm", "critic", x_col])
+        .apply(agg_func)
+        .reset_index()
+        .rename(columns={x_col: "x"})
+        .sort_values(by=["environment", "algorithm", "critic", "x"])
+    )
+    grouped["metric"] = metric_name
+    return grouped
+
+
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -223,6 +283,71 @@ def plot_metric(
         subdir = split_dir / ("overall" if overall else "per_env") / metric
         _ensure_dir(subdir)
         fname = subdir / ("overall" if overall else env)
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+
+
+def plot_critic_metric(
+    aggregated: pd.DataFrame,
+    metric: str,
+    outdir: Path,
+    formats: Iterable[str],
+    x_label: str,
+    overall: bool = False,
+):
+    if aggregated.empty:
+        print(
+            f"[warn] no critic data to plot for {metric} ({'overall' if overall else 'per-env'})"
+        )
+        return
+
+    if overall:
+        keys = [("overall", algo) for algo in sorted(aggregated["algorithm"].unique())]
+    else:
+        keys = sorted(
+            {
+                (env, algo)
+                for env, algo in aggregated[["environment", "algorithm"]].values
+            }
+        )
+
+    for env, algo in keys:
+        if overall:
+            data = aggregated[aggregated["algorithm"] == algo]
+        else:
+            data = aggregated[
+                (aggregated["environment"] == env) & (aggregated["algorithm"] == algo)
+            ]
+        if data.empty:
+            continue
+
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        for critic in sorted(data["critic"].unique()):
+            sub = data[data["critic"] == critic]
+            x = sub["x"].to_numpy()
+            y = sub["center"].to_numpy()
+            spread = sub["spread"].fillna(0).to_numpy()
+            color = get_algo_color(f"{algo}:{critic}")
+            ax.plot(x, y, label=critic, color=color, marker="o")
+            if len(sub) >= 2:
+                ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.2)
+
+        title_env = "overall" if overall else env
+        ax.set_title(f"{metric} - {title_env} - {algo}")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(metric)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
+        fig.tight_layout()
+
+        split_dir = outdir / "plots" / "critic"
+        subdir = split_dir / ("overall" if overall else "per_env") / metric
+        _ensure_dir(subdir)
+        if overall:
+            fname = subdir / algo
+        else:
+            fname = subdir / f"{algo}_{env.replace('/', '-')}"
         for fmt in formats:
             fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
         plt.close(fig)
@@ -369,12 +494,17 @@ def run_plotting(
     outdir: Path,
     formats: List[str],
 ):
-    config, train_df, eval_df = load_run(run_name)
+    config, train_df, eval_df, critic_df = load_run(run_name)
     rollout_len = _get_rollout_len(config)
     outdir = Path(outdir) / run_name
     x_label = "Frames" if x_axis == "frames" else "Episodes"
+    mode = (
+        config.get("training", {}).get("mode", "benchmark")
+        if isinstance(config, dict)
+        else "benchmark"
+    )
 
-    if split in ("train", "both") and not train_df.empty:
+    if split in ("train", "both", "all") and not train_df.empty:
         train_metrics = discover_metrics(train_df)
         for metric_name, mean_col, std_col in train_metrics:
             agg = compute_aggregates(
@@ -403,7 +533,7 @@ def run_plotting(
             )
         build_tables(train_df, train_metrics, "train", aggregation, outdir)
 
-    if split in ("eval", "both") and not eval_df.empty:
+    if split in ("eval", "both", "all") and not eval_df.empty:
         eval_metrics = discover_metrics(eval_df)
         for metric_name, mean_col, std_col in eval_metrics:
             agg = compute_aggregates(
@@ -431,6 +561,38 @@ def run_plotting(
             )
         build_tables(eval_df, eval_metrics, "eval", aggregation, outdir)
 
+    plot_critic = split in ("critic", "all") or (
+        split == "both" and mode == "critic_ablation"
+    )
+    critic_source = critic_df
+    if plot_critic and critic_source.empty and not train_df.empty:
+        critic_source = train_df.copy()
+        critic_source["critic"] = "standard"
+    if plot_critic and not critic_source.empty:
+        critic_metrics = discover_critic_metrics(critic_source)
+        for metric_name in critic_metrics:
+            agg = compute_critic_aggregates(
+                critic_source,
+                metric_name,
+                x_axis,
+                aggregation,
+                rollout_len,
+            )
+            if agg.empty:
+                continue
+            plot_critic_metric(
+                agg, metric_name, outdir, formats, x_label, overall=False
+            )
+            overall = (
+                agg.groupby(["algorithm", "critic", "x"])
+                .agg({"center": "mean", "spread": "mean"})
+                .reset_index()
+            )
+            overall["environment"] = "overall"
+            plot_critic_metric(
+                overall, metric_name, outdir, formats, x_label, overall=True
+            )
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -439,7 +601,7 @@ def main():
     parser.add_argument("--run", required=True, help="Run folder name under runs/")
     parser.add_argument(
         "--split",
-        choices=["train", "eval", "both"],
+        choices=["train", "eval", "critic", "both", "all"],
         default="both",
         help="Which split(s) to plot",
     )

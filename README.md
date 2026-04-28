@@ -135,6 +135,18 @@ Named environment set (overrides `--envs`):
 python main.py --env-set gymnasium --algos ppo a2c
 ```
 
+Critic ablation mode (same actor rollout, multiple auxiliary critics in parallel):
+
+```bash
+python main.py --ablation --envs CartPole-v1 --algos ppo a2c --ablation-lr 3e-4 --ablation-hidden-dims 64,64 --ablation-bins 32
+```
+
+Compare baseline + custom critic example:
+
+```bash
+python main.py --ablation --envs CartPole-v1 --algos ppo --ablation-critics standard_mlp residual_reward_model
+```
+
 ---
 
 ## CLI Parameters
@@ -173,6 +185,22 @@ Each `(algorithm, environment, seed)` combination runs independently.
 | `--n-train-envs`  | Parallel training environments                           |16     |
 | `--n-eval-envs`   | Parallel evaluation environments                         |16     |
 | `--n-checkpoints` | Number of checkpoint evaluations (min=2, max=n_episodes) |25     |
+
+### Experiment Mode
+
+| Flag              | Description                                                                 |
+| ----------------- | --------------------------------------------------------------------------- |
+| `--mode`          | `benchmark` (default) or `critic_ablation`                                 |
+| `--ablation`      | Shortcut to run ablation mode (`critic_ablation`)                          |
+| `--ablation-critics` | Optional override for critics to compare; default is `standard_mlp` |
+| `--ablation-lr`   | Learning rate for auxiliary critics                                         |
+| `--ablation-hidden-dims` | Comma-separated hidden dimensions for auxiliary critics (`--ablation-hidded-dims` also accepted) |
+| `--ablation-bins` | Histogram bins used for MI/KL/JS distribution metrics                       |
+
+In `critic_ablation` mode, the run writes `critic_ablation_metrics.csv` with checkpointed metrics for each auxiliary critic.
+It tracks value-quality metrics and reward-model metrics (real environment reward vs critic-implied reward), including:
+`advantage_mean`, `explained_variance`, `pearson`, `spearman`, `mutual_information`, `kl`, `js_normalized`, `mse`, `td_error_mean`, `real_reward_mean`, `pred_reward_mean`, `reward_explained_variance`, `reward_pearson`, `reward_spearman`, `reward_mutual_information`, `reward_kl`, `reward_js_normalized`, `reward_mse`, `reward_error_mean`.
+If you add a new critic to the critic registry, pass it in `--ablation-critics` to compare it against `standard_mlp`.
 
 Checkpoints are:
 
@@ -228,6 +256,9 @@ Generate publication-ready plots and LaTeX tables:
 python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
 ```
 
+```bash
+python plot.py --run <run_name> --split critic --x-axis episodes
+```
 ---
 
 ## Plot Parameters
@@ -235,10 +266,16 @@ python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --ag
 | Flag            | Description                    |
 | --------------- | ------------------------------ |
 | `--run`         | Run folder name inside `runs/` |
-| `--split`       | `train`, `eval`, or `both`     |
+| `--split`       | `train`, `eval`, `critic`, `both`, or `all` |
 | `--x-axis`      | `episodes` or `frames`         |
 | `--aggregation` | `mean` or `iqm`                |
 | `--formats`     | Output formats (e.g. png pdf)  |
+
+Notes:
+* `--split both` keeps the original behavior (`train` + `eval`), and if the run is in `critic_ablation` mode it also plots critic metrics automatically.
+* `--split critic` plots only `critic_ablation_metrics.csv`.
+* `--split all` plots `train`, `eval`, and `critic` when available.
+* If `critic_ablation_metrics.csv` is missing, `--split critic` falls back to `train_metrics.csv` and plots a single critic line named `standard`.
 
 ---
 

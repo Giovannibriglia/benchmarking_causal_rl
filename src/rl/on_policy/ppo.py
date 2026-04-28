@@ -38,6 +38,7 @@ class PPO(BaseActorCritic):
             idx = indices[start:end]
             yield RolloutBatch(
                 obs=batch.obs[idx],
+                next_obs=batch.next_obs[idx],
                 actions=batch.actions[idx],
                 log_probs=batch.log_probs[idx],
                 rewards=batch.rewards[idx],

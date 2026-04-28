@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
 import torch
 from tqdm import tqdm
 
+from src.benchmarking.critic_ablation import (
+    CRITIC_ABLATION_COLUMNS,
+    CriticAblationConfig,
+    CriticAblationManager,
+)
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.seeding import set_seed
 from src.envs.registry import build_env
@@ -51,6 +57,7 @@ class BenchmarkRunner:
         train_cfg: TrainingConfig,
         run_cfg: RunConfig,
         algo_spec: AlgorithmSpec,
+        critic_ablation_cfg: CriticAblationConfig | None = None,
         progress_label: str | None = None,
     ):
         self.env_cfg = env_cfg
@@ -117,11 +124,25 @@ class BenchmarkRunner:
         self.offpolicy_warmup = 1000
         if self.algo_spec.kind == "off_policy":
             self.replay_buffer = self.agent.buffer  # type: ignore[attr-defined]
+        self.critic_ablation = None
+        if critic_ablation_cfg is not None:
+            if self.algo_spec.kind != "on_policy":
+                raise ValueError(
+                    "Critic ablation mode is supported only for on-policy algorithms."
+                )
+            gamma = float(getattr(self.agent, "gamma", 0.99))
+            self.critic_ablation = CriticAblationManager(
+                obs_dim=self.obs_dim,
+                device=self.device,
+                config=critic_ablation_cfg,
+                gamma=gamma,
+            )
 
-    def _collect_on_policy(self) -> RolloutBatch:
+    def _collect_on_policy(self) -> tuple[RolloutBatch, float, float]:
         T = self.env_cfg.rollout_len
         N = self.env_cfg.n_train_envs
         obs_buf = []
+        next_obs_buf = []
         act_buf = []
         logp_buf = []
         rew_buf = torch.zeros(T, N, device=self.device)
@@ -141,6 +162,7 @@ class BenchmarkRunner:
             ep_returns += reward
 
             obs_buf.append(obs)
+            next_obs_buf.append(next_obs)
             act_buf.append(action.detach())
             logp_buf.append(logp.detach())
             rew_buf[t] = reward
@@ -157,6 +179,7 @@ class BenchmarkRunner:
         )
         batch = RolloutBatch(
             obs=torch.stack(obs_buf).reshape(T * N, -1),
+            next_obs=torch.stack(next_obs_buf).reshape(T * N, -1),
             actions=(
                 torch.stack(act_buf).reshape(T * N, -1)
                 if act_buf[0].ndim > 1
@@ -173,14 +196,23 @@ class BenchmarkRunner:
         train_return_mean, train_return_std = self._aggregate_returns(ep_returns)
         return batch, train_return_mean, train_return_std
 
-    def _train_on_policy(self, train_logger: CSVLogger, eval_logger: CSVLogger) -> None:
+    def _train_on_policy(
+        self,
+        train_logger: CSVLogger,
+        eval_logger: CSVLogger,
+        critic_logger: CSVLogger | None = None,
+    ) -> None:
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
             batch, train_ret_mean, train_ret_std = self._collect_on_policy()
             metrics = self.agent.update(batch)
+            critic_losses = {}
+            if self.critic_ablation is not None:
+                critic_losses = self.critic_ablation.update(batch)
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
+                self._save_aux_critic_checkpoint(ep)
                 eval_metrics = self.evaluate(ep)
                 eval_metrics.update(
                     {
@@ -201,6 +233,15 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 eval_logger.log(eval_row)
                 train_logger.log(train_row)
+                if self.critic_ablation is not None and critic_logger is not None:
+                    for row in self.critic_ablation.checkpoint_rows(
+                        batch=batch,
+                        episode=ep,
+                        algorithm=self.train_cfg.algorithm,
+                        environment=self.env_cfg.env_id,
+                        latest_losses=critic_losses,
+                    ):
+                        critic_logger.log(row)
 
     def _save_checkpoint(self, episode: int):
         ckpt_dir = os.path.join(
@@ -223,6 +264,23 @@ class BenchmarkRunner:
                     "training": self.train_cfg.__dict__,
                 },
             },
+        )
+
+    def _save_aux_critic_checkpoint(self, episode: int) -> None:
+        if self.critic_ablation is None:
+            return
+        ckpt_dir = os.path.join(
+            self.run_dir,
+            "checkpoints",
+            f"{self._env_tag}_{self.train_cfg.algorithm}_seed{self.env_cfg.seed}",
+        )
+        os.makedirs(ckpt_dir, exist_ok=True)
+        path = os.path.join(ckpt_dir, f"aux_critics_ep{episode:04d}.pt")
+        from .checkpoints import save_checkpoint
+
+        save_checkpoint(
+            path,
+            {"episode": episode, "aux_critics": self.critic_ablation.state_dict()},
         )
 
     def evaluate(self, episode: int) -> Dict[str, float]:
@@ -285,14 +343,22 @@ class BenchmarkRunner:
     def run(self) -> None:
         set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
         try:
+            critic_ctx = (
+                CSVLogger(
+                    os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
+                    fieldnames=CRITIC_ABLATION_COLUMNS,
+                )
+                if self.critic_ablation is not None
+                else nullcontext(None)
+            )
             with CSVLogger(
                 os.path.join(self.run_dir, "train_metrics.csv"),
                 fieldnames=TRAIN_COLUMNS,
             ) as train_log, CSVLogger(
                 os.path.join(self.run_dir, "eval_metrics.csv"), fieldnames=EVAL_COLUMNS
-            ) as eval_log:
+            ) as eval_log, critic_ctx as critic_log:
                 if self.algo_spec.kind == "on_policy":
-                    self._train_on_policy(train_log, eval_log)
+                    self._train_on_policy(train_log, eval_log, critic_log)
                 else:
                     self._train_off_policy(train_log, eval_log)
         finally:

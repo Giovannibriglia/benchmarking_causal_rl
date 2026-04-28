@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
 from src.benchmarking.registry import (
     expand_env_set,
     register_default_algorithms,
@@ -19,6 +20,17 @@ from src.envs.registry import register_default_env_wrappers
 
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmarking Causal RL")
+    p.add_argument(
+        "--mode",
+        choices=["benchmark", "critic_ablation"],
+        default="benchmark",
+        help="Run standard benchmarking or critic-ablation mode.",
+    )
+    p.add_argument(
+        "--ablation",
+        action="store_true",
+        help="Shortcut for --mode critic_ablation.",
+    )
     p.add_argument(
         "--envs", nargs="+", help="List of env ids to benchmark", default=None
     )
@@ -74,6 +86,35 @@ def parse_args():
         default="iqm",
         help="Aggregation strategy for reported stats",
     )
+    p.add_argument(
+        "--ablation-critics",
+        nargs="+",
+        default=None,
+        help=(
+            "Auxiliary critics to train in critic_ablation mode. "
+            f"Defaults to baseline critic: {' '.join(default_aux_critics())}"
+        ),
+    )
+    p.add_argument(
+        "--ablation-lr",
+        type=float,
+        default=3e-4,
+        help="Learning rate for auxiliary critics in critic_ablation mode.",
+    )
+    p.add_argument(
+        "--ablation-hidden-dims",
+        "--ablation-hidded-dims",
+        dest="ablation_hidden_dims",
+        type=str,
+        default="64,64",
+        help="Comma-separated hidden layer sizes for auxiliary critics.",
+    )
+    p.add_argument(
+        "--ablation-bins",
+        type=int,
+        default=32,
+        help="Histogram bins for distribution metrics (MI, KL, JS).",
+    )
     return p.parse_args()
 
 
@@ -103,6 +144,20 @@ def main():
         if isinstance(val, str):
             return val.split()
         return list(val)
+
+    def _parse_hidden_dims(raw) -> tuple[int, ...]:
+        if isinstance(raw, (list, tuple)):
+            dims = [int(x) for x in raw]
+        elif isinstance(raw, str):
+            normalized = raw.replace(",", " ")
+            dims = [int(x) for x in normalized.split() if x.strip()]
+        elif raw is None:
+            dims = [64, 64]
+        else:
+            dims = [int(raw)]
+        if not dims:
+            raise ValueError("ablation_hidden_dims cannot be empty.")
+        return tuple(dims)
 
     env_set = env_cfg_src.get(
         "env_set", cfg_from_file.get("env_set", args.env_set if args.env_set else None)
@@ -170,6 +225,58 @@ def main():
     aggregation = train_cfg_src.get(
         "aggregation", cfg_from_file.get("aggregation", args.aggregation)
     )
+    mode = train_cfg_src.get("mode", cfg_from_file.get("mode", args.mode))
+    ablation_enabled = bool(
+        train_cfg_src.get(
+            "ablation_enabled",
+            cfg_from_file.get("ablation_enabled", False),
+        )
+    ) or bool(args.ablation)
+    if ablation_enabled:
+        mode = "critic_ablation"
+    if mode not in {"benchmark", "critic_ablation"}:
+        raise ValueError(
+            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
+        )
+    ablation_cfg_src = train_cfg_src.get("ablation", {})
+    if not isinstance(ablation_cfg_src, dict):
+        ablation_cfg_src = {}
+    ablation_critics = (
+        _maybe_list(ablation_cfg_src.get("critics"))
+        or _maybe_list(train_cfg_src.get("ablation_critics"))
+        or _maybe_list(
+            cfg_from_file.get("ablation_critics")
+            if isinstance(cfg_from_file, dict)
+            else None
+        )
+        or args.ablation_critics
+        or default_aux_critics()
+    )
+    ablation_lr = ablation_cfg_src.get(
+        "lr",
+        train_cfg_src.get(
+            "ablation_lr", cfg_from_file.get("ablation_lr", args.ablation_lr)
+        ),
+    )
+    ablation_hidden_dims = _parse_hidden_dims(
+        ablation_cfg_src.get(
+            "hidden_dims",
+            train_cfg_src.get(
+                "ablation_hidden_dims",
+                cfg_from_file.get("ablation_hidden_dims", args.ablation_hidden_dims),
+            ),
+        )
+    )
+    ablation_bins = int(
+        ablation_cfg_src.get(
+            "bins",
+            train_cfg_src.get(
+                "ablation_bins", cfg_from_file.get("ablation_bins", args.ablation_bins)
+            ),
+        )
+    )
+    if ablation_bins < 4:
+        ablation_bins = 4
 
     n_checkpoints = max(n_checkpoints, 2)
     n_checkpoints = min(n_checkpoints, n_episodes)
@@ -181,9 +288,13 @@ def main():
 
     base_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.reproduce:
-        run_dir = Path(f"runs/{args.reproduce.replace(".yaml", "")}_{base_timestamp}")
+        repro_tag = args.reproduce.replace(".yaml", "")
+        if mode != "benchmark":
+            repro_tag = f"{repro_tag}_{mode}"
+        run_dir = Path(f"runs/{repro_tag}_{base_timestamp}")
     else:
-        run_dir = Path(f"runs/benchmark_{base_timestamp}")
+        prefix = "benchmark" if mode == "benchmark" else mode
+        run_dir = Path(f"runs/{prefix}_{base_timestamp}")
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "checkpoints").mkdir(exist_ok=True)
     (run_dir / "videos").mkdir(exist_ok=True)
@@ -205,12 +316,19 @@ def main():
             "seed": seed,
         },
         "training": {
+            "mode": mode,
             "algos": algos,
             "n_episodes": n_episodes,
             "n_checkpoints": n_checkpoints,
             "deterministic": deterministic,
             "aggregation": aggregation,
             "device": device_str,
+            "ablation": {
+                "critics": ablation_critics if mode == "critic_ablation" else [],
+                "lr": ablation_lr,
+                "hidden_dims": list(ablation_hidden_dims),
+                "bins": ablation_bins,
+            },
         },
         "timestamp": base_timestamp,
     }
@@ -241,9 +359,22 @@ def main():
                 algorithm=algo,
                 aggregation=aggregation,
             )
+            critic_ablation_cfg = None
+            if mode == "critic_ablation":
+                critic_ablation_cfg = CriticAblationConfig(
+                    critics=[str(x) for x in ablation_critics],
+                    lr=float(ablation_lr),
+                    hidden_dims=ablation_hidden_dims,
+                    bins=ablation_bins,
+                )
             spec = registry.get(algo)
             runner = BenchmarkRunner(
-                env_cfg, train_cfg, run_cfg, spec, progress_label=f"{algo} - {env_id}"
+                env_cfg,
+                train_cfg,
+                run_cfg,
+                spec,
+                critic_ablation_cfg=critic_ablation_cfg,
+                progress_label=f"{algo} - {env_id}",
             )
             runner.run()
 
