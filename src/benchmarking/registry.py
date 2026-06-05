@@ -67,6 +67,16 @@ ENV_SETS: Dict[str, List[str] | Callable[[], List[str]]] = {
         "Humanoid-v5",
         "HumanoidStandup-v5",
     ],
+    # Online causal cells (1-2) on both anchors; registered under the
+    # causal/ Gymnasium namespace by src.causal.cells.register_causal_envs.
+    "causal_cells_online": [
+        "causal/cartpole-cell1",
+        "causal/cartpole-cell2",
+        "causal/cartpole-cell2fs",
+        "causal/halfcheetah-cell1",
+        "causal/halfcheetah-cell2",
+        "causal/halfcheetah-cell2fs",
+    ],
     "gymnasium-robotics": [
         # Fetch (multi-goal, Dict obs)
         "FetchReach-v4",
