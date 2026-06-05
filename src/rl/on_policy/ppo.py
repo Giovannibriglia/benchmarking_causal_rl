@@ -49,7 +49,7 @@ class PPO(BaseActorCritic):
                 returns=batch.returns[idx],
             )
 
-    def update(self, batch: RolloutBatch) -> Dict[str, float]:
+    def learn(self, batch: RolloutBatch) -> Dict[str, float]:
         metrics = {}
         # Safety: old tensors must be constants.
         assert not batch.log_probs.requires_grad

@@ -19,7 +19,7 @@ class VanillaPolicyGradient(BaseActorCritic):
         super().__init__(policy, device, gamma=gamma, gae_lambda=1.0)
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=lr)
 
-    def update(self, batch: RolloutBatch) -> Dict[str, float]:
+    def learn(self, batch: RolloutBatch) -> Dict[str, float]:
         distribution = self.policy.distribution(batch.obs)
         logp = self.policy.log_prob(distribution, batch.actions)
         values = self.policy.value(batch.obs)

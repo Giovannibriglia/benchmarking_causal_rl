@@ -6,12 +6,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..base import ActionOutput
 from .base_off_policy import BaseOffPolicy
 from .replay_buffer import ReplayBuffer
 
 
 class DDPG(BaseOffPolicy):
     """DDPG for continuous action spaces."""
+
+    action_type = "continuous"
 
     def __init__(
         self,
@@ -39,7 +42,7 @@ class DDPG(BaseOffPolicy):
         self.tau = tau
         self.noise_std = 0.1
 
-    def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def learn(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         obs = batch["obs"]
         actions = batch["actions"]
         rewards = batch["rewards"]
@@ -85,11 +88,20 @@ class DDPG(BaseOffPolicy):
             "loss": (critic_loss + actor_loss).item(),
         }
 
-    def act(self, obs: torch.Tensor, noise: bool = True) -> torch.Tensor:
+    def act(
+        self,
+        obs: torch.Tensor,
+        state=None,
+        *,
+        deterministic: bool = False,
+        noise: bool = True,
+    ) -> ActionOutput:
+        if deterministic:
+            noise = False
         with torch.no_grad():
             action = self.actor(obs)
         if noise:
             action = action + self.noise_std * torch.randn_like(action)
         if hasattr(self, "action_low") and hasattr(self, "action_high"):
             action = torch.max(torch.min(action, self.action_high), self.action_low)
-        return action
+        return ActionOutput(action=action, state=state)

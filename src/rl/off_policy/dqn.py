@@ -6,12 +6,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..base import ActionOutput
 from .base_off_policy import BaseOffPolicy
 from .replay_buffer import ReplayBuffer
 
 
 class DQN(BaseOffPolicy):
     """DQN for discrete action spaces."""
+
+    action_type = "discrete"
 
     def __init__(
         self,
@@ -33,18 +36,32 @@ class DQN(BaseOffPolicy):
         self.tau = tau
         self.epsilon = epsilon
 
-    def act(self, obs: torch.Tensor, epsilon: float | None = None) -> torch.Tensor:
+    def act(
+        self,
+        obs: torch.Tensor,
+        state=None,
+        *,
+        deterministic: bool = False,
+        epsilon: float | None = None,
+    ) -> ActionOutput:
+        if deterministic:
+            epsilon = 0.0
         eps = self.epsilon if epsilon is None else epsilon
+        # NOTE: torch.rand is evaluated unconditionally (even for eps == 0.0)
+        # to preserve the exact RNG consumption order of the original code.
         if torch.rand(1).item() < eps:
             batch = obs.shape[0]
-            return torch.randint(
-                0, self.q_network(obs).shape[1], (batch,), device=obs.device
+            return ActionOutput(
+                action=torch.randint(
+                    0, self.q_network(obs).shape[1], (batch,), device=obs.device
+                ),
+                state=state,
             )
         with torch.no_grad():
             q = self.q_network(obs)
-            return torch.argmax(q, dim=1)
+            return ActionOutput(action=torch.argmax(q, dim=1), state=state)
 
-    def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+    def learn(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         obs = batch["obs"]
         actions = batch["actions"].long()
         rewards = batch["rewards"]
