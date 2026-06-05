@@ -1,0 +1,4 @@
+episode,algorithm,environment,train_return_mean,train_return_std,loss,policy_loss,value_loss,entropy,kl,critic_loss,actor_loss,q_loss
+0,dqn,CartPole-v1,,,0.008939404971897602,,,,,0.008939404971897602,,0.008939404971897602
+1,dqn,CartPole-v1,,,0.06654325872659683,,,,,0.06654325872659683,,0.06654325872659683
+2,dqn,CartPole-v1,,,0.09394678473472595,,,,,0.09394678473472595,,0.09394678473472595

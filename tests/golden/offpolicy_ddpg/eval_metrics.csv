@@ -1,0 +1,4 @@
+episode,algorithm,environment,eval_return_mean,eval_return_std
+0,ddpg,Pendulum-v1,-1997.298828125,67.41508483886719
+1,ddpg,Pendulum-v1,-1749.2293701171875,74.94207000732422
+2,ddpg,Pendulum-v1,-1868.1483154296875,83.32321166992188

@@ -1,0 +1,17 @@
+env:
+  env_set: causal_blockmdp_8cells
+  n_train_envs: 8
+  n_eval_envs: 8
+  rollout_len: 256
+  seed: 42
+  env_kwargs:
+    d: 4
+    D: 16
+    alpha: 1.0
+    rho: 0.8
+training:
+  n_episodes: 250
+  n_checkpoints: 25
+  deterministic: true
+  algos: dqn confounded_dqn
+  divergences: tv kl chi2 sup
