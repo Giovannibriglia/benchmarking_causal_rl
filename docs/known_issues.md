@@ -21,6 +21,20 @@ training numbers change for early-termination envs → all golden files must be
 regenerated under explicit approval (§3.1). CSV schemas, artifact layout, CLI
 and critic_ablation code are untouched by the fix.
 
+## 0a. NEXT_STEP dummy transitions — ACCEPTED LIMITATION (mid-Phase-2 gate)
+
+With gymnasium's native `NEXT_STEP` autoreset (the sanctioned fix for #0),
+the step after a sub-env finishes is a "reset step": the action is ignored,
+reward is 0, and the transition recorded by the rollout is
+`(final_obs, action, 0, reset_obs)` with `done` correctly flagged on the
+PREVIOUS step. These dummy transitions enter the on-policy buffer and replay
+buffer unmasked. Frequency equals the episode-termination rate
+(≈ #dones / (T·N) per rollout — measured in the Phase-2 summary; worst early
+in training on short-episode envs, negligible once policies improve, zero for
+fixed-length MuJoCo tasks). Gate decision (2026-06-05): do NOT mask them yet;
+if Cell-1 learning is visibly degraded, masking in `OnlineSource.rollout`
+will be proposed as a separate sanctioned change.
+
 ## 0b. Stale non-editable package install shadowed the working tree
 
 `pip install .` (non-editable) had left a frozen `src/` snapshot in
