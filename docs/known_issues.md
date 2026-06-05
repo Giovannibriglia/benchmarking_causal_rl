@@ -1,5 +1,34 @@
 # Known issues (pre-existing on master — documented, NOT fixed by the causal-RL refactor)
 
+## 0. [FIX PROPOSED, Phase-2 gate] Vector reset-on-done corrupted training data
+
+`GymnasiumEnv.step` (master) called `self.env.reset()` — a FULL vector reset —
+whenever ANY sub-env finished, then patched observations only for the done
+envs. Surviving envs were physically re-initialized while the agent kept
+their stale observations, so every subsequent transition of a surviving env
+(until its own next done) had a silent state/observation mismatch. Verified
+empirically (2-env CartPole probe: `env.unwrapped.state` ≠ obs returned to
+the agent right after another env's done). Impact is largest for
+variable-episode-length envs (CartPole family: episodes end constantly across
+16 envs); MuJoCo locomotion envs without early termination truncate in
+lockstep and are mostly unaffected — but any `comoreai26`-era CartPole-like
+numbers should be treated with suspicion.
+
+Proposed fix (commit on `phase2-masking-cell2`, pending gate sign-off):
+delegate episode boundaries to gymnasium >=1.0 native vector autoreset
+(`AutoresetMode.NEXT_STEP`) and delete the manual reset block. Consequence:
+training numbers change for early-termination envs → all golden files must be
+regenerated under explicit approval (§3.1). CSV schemas, artifact layout, CLI
+and critic_ablation code are untouched by the fix.
+
+## 0b. Stale non-editable package install shadowed the working tree
+
+`pip install .` (non-editable) had left a frozen `src/` snapshot in
+site-packages; any script executed without the repo root on `sys.path`
+(e.g. `python tools/<script>.py`) silently imported the stale code.
+Fixed 2026-06-05 by reinstalling editable (`pip install -e . --no-deps`).
+If the environment is ever rebuilt, install editable.
+
 ## 1. `reproducibility/comoreai26.yaml` references unregistered algorithms
 
 `comoreai26.yaml` lists `algos: a2c vanilla a2c_cc vanilla_cc`, but
