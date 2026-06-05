@@ -10,6 +10,6 @@ env:
   seed: 42
 training:
   algos: ppo
-  n_episodes: 40
-  n_checkpoints: 8
+  n_episodes: 150
+  n_checkpoints: 10
   deterministic: true
