@@ -148,28 +148,13 @@ class GymnasiumEnv(BaseEnv):
 
         obs, reward, terminated, truncated, info = self.env.step(act_np)
 
-        done = np.logical_or(terminated, truncated)
-        if done.any():
-            if hasattr(self.env, "reset_done"):
-                reset_obs, reset_info = self.env.reset_done(done)
-            else:
-                reset_obs, reset_info = self.env.reset()
-            # replace obs for done envs
-            if isinstance(obs, dict):
-                for k, v in obs.items():
-                    src = reset_obs[k] if reset_obs is not None else v
-                    v[done] = src[done]
-            else:
-                obs[done] = reset_obs[done] if reset_obs is not None else obs[done]
-            # merge infos
-            for i, d in enumerate(done):
-                if d:
-                    info["final_info"] = info.get("final_info", {})
-                    info["final_info"][i] = (
-                        reset_info[i]
-                        if isinstance(reset_info, dict) and i in reset_info
-                        else {}
-                    )
+        # Episode-boundary handling is delegated to gymnasium >=1.0 vector
+        # autoreset (NEXT_STEP mode): a finished sub-env returns its final
+        # observation here and is reset by the vector env on the NEXT step.
+        # The previous manual `self.env.reset()` on any done re-initialized
+        # ALL sub-envs while non-done envs kept their stale observations,
+        # silently corrupting every subsequent transition of surviving envs
+        # (state/obs mismatch verified empirically — Phase-2 finding).
 
         obs_tensor = self._flatten_obs(obs)
         reward_tensor = torch.as_tensor(reward, dtype=torch.float32, device=self.device)

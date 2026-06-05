@@ -1,0 +1,15 @@
+# Cells 1-2, discrete anchor, paper_mini scale (Phase-2 acceptance).
+# Cell 1 = causal/cartpole-cell1 (reference task, full obs)
+# Cell 2 basic = causal/cartpole-cell2 (velocities masked, feed-forward PPO)
+# Cell 2 variant = causal/cartpole-cell2fs (masked + frame-stack PPO)
+env:
+  envs: causal/cartpole-cell1 causal/cartpole-cell2 causal/cartpole-cell2fs
+  n_train_envs: 8
+  n_eval_envs: 8
+  rollout_len: 512
+  seed: 42
+training:
+  algos: ppo
+  n_episodes: 150
+  n_checkpoints: 10
+  deterministic: true
