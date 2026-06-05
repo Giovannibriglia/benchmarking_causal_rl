@@ -35,7 +35,7 @@ class TRPO(BaseActorCritic):
         ratio = torch.exp(new_logp - old_logp)
         return (ratio * (new_logp - old_logp)).mean()
 
-    def update(self, batch: RolloutBatch) -> Dict[str, float]:
+    def learn(self, batch: RolloutBatch) -> Dict[str, float]:
         distribution = self.policy.distribution(batch.obs)
         new_logp = self.policy.log_prob(distribution, batch.actions)
         ratio = torch.exp(new_logp - batch.log_probs)

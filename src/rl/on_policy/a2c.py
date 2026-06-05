@@ -24,7 +24,7 @@ class A2C(BaseActorCritic):
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
 
-    def update(self, batch: RolloutBatch) -> Dict[str, float]:
+    def learn(self, batch: RolloutBatch) -> Dict[str, float]:
         # Recompute forward pass so each update has its own graph; stored buffers stay detached.
         distribution = self.policy.distribution(batch.obs)
         logp = self.policy.log_prob(distribution, batch.actions)

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import torch
+
+from ..base import ActionOutput, Algorithm
 
 
 @dataclass
@@ -21,7 +23,10 @@ class RolloutBatch:
     returns: torch.Tensor
 
 
-class BaseActorCritic(abc.ABC):
+class BaseActorCritic(Algorithm):
+    paradigm = "on_policy"
+    action_type = "both"
+
     def __init__(
         self,
         policy: torch.nn.Module,
@@ -29,10 +34,23 @@ class BaseActorCritic(abc.ABC):
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
     ):
+        super().__init__()
         self.policy = policy
         self.device = device
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+
+    def act(
+        self,
+        obs: torch.Tensor,
+        state: Optional[Any] = None,
+        *,
+        deterministic: bool = False,
+    ) -> ActionOutput:
+        if deterministic and hasattr(self.policy, "act_deterministic"):
+            return ActionOutput(action=self.policy.act_deterministic(obs), state=state)
+        action, logp = self.policy.act(obs)
+        return ActionOutput(action=action, log_prob=logp, state=state)
 
     def compute_gae(
         self, rewards, dones, values, next_values
@@ -48,4 +66,4 @@ class BaseActorCritic(abc.ABC):
         return advantages, returns
 
     @abc.abstractmethod
-    def update(self, batch: RolloutBatch) -> Dict[str, float]: ...
+    def learn(self, batch: RolloutBatch) -> Dict[str, float]: ...

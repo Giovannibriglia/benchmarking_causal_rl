@@ -15,6 +15,7 @@ from src.benchmarking.critic_ablation import (
 )
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.seeding import set_seed
+from src.data.experience_source import OnlineSource, validate_pairing
 from src.envs.registry import build_env
 from src.logging.logger import CSVLogger
 from src.rl.on_policy.base_actor_critic import RolloutBatch
@@ -64,6 +65,10 @@ class BenchmarkRunner:
         self.train_cfg = train_cfg
         self.run_cfg = run_cfg
         self.algo_spec = algo_spec
+        # Seed BEFORE env/network construction so weight init is reproducible
+        # (sanctioned Phase-0 gate change; run() re-seeds at the same point as
+        # before, so the in-training RNG stream is unchanged).
+        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
         self.device = torch.device(train_cfg.device)
         self.progress_label = (
             progress_label or f"{self.train_cfg.algorithm} - {self.env_cfg.env_id}"
@@ -124,6 +129,8 @@ class BenchmarkRunner:
         self.offpolicy_warmup = 1000
         if self.algo_spec.kind == "off_policy":
             self.replay_buffer = self.agent.buffer  # type: ignore[attr-defined]
+        self.experience_source = OnlineSource(self.train_env, self.device)
+        validate_pairing(self.algo_spec.kind, self.experience_source)
         self.critic_ablation = None
         if critic_ablation_cfg is not None:
             if self.algo_spec.kind != "on_policy":
@@ -139,59 +146,12 @@ class BenchmarkRunner:
             )
 
     def _collect_on_policy(self) -> tuple[RolloutBatch, float, float]:
-        T = self.env_cfg.rollout_len
-        N = self.env_cfg.n_train_envs
-        obs_buf = []
-        next_obs_buf = []
-        act_buf = []
-        logp_buf = []
-        rew_buf = torch.zeros(T, N, device=self.device)
-        done_buf = torch.zeros(T, N, device=self.device)
-        val_buf = torch.zeros(T, N, device=self.device)
-        next_val_buf = torch.zeros(T, N, device=self.device)
-
-        obs, _ = self.train_env.reset()
-        ep_returns = torch.zeros(N, device=self.device)
-        for t in range(T):
-            # Collect rollout with detached storage: learning steps will recompute fresh graphs.
-            with torch.no_grad():
-                val = self.policy.value(obs)
-                action, logp = self.policy.act(obs)
-            next_obs, reward, terminated, truncated, _ = self.train_env.step(action)
-            done = torch.logical_or(terminated, truncated).float()
-            ep_returns += reward
-
-            obs_buf.append(obs)
-            next_obs_buf.append(next_obs)
-            act_buf.append(action.detach())
-            logp_buf.append(logp.detach())
-            rew_buf[t] = reward
-            done_buf[t] = done
-            val_buf[t] = val.detach()
-            # estimate next value
-            with torch.no_grad():
-                next_val_buf[t] = self.policy.value(next_obs).detach()
-
-            obs = next_obs
-
-        advantages, returns = self.agent.compute_gae(
-            rew_buf, done_buf, val_buf, next_val_buf
-        )
-        batch = RolloutBatch(
-            obs=torch.stack(obs_buf).reshape(T * N, -1),
-            next_obs=torch.stack(next_obs_buf).reshape(T * N, -1),
-            actions=(
-                torch.stack(act_buf).reshape(T * N, -1)
-                if act_buf[0].ndim > 1
-                else torch.stack(act_buf).reshape(T * N)
-            ),
-            log_probs=torch.stack(logp_buf).reshape(T * N),
-            rewards=rew_buf.reshape(T * N),
-            dones=done_buf.reshape(T * N),
-            values=val_buf.reshape(T * N),
-            next_values=next_val_buf.reshape(T * N),
-            advantages=advantages.reshape(T * N),
-            returns=returns.reshape(T * N),
+        # Rollout loop relocated verbatim to OnlineSource.rollout (Phase 1).
+        batch, ep_returns = self.experience_source.rollout(
+            self.policy,
+            self.agent,
+            n_steps=self.env_cfg.rollout_len,
+            n_envs=self.env_cfg.n_train_envs,
         )
         train_return_mean, train_return_std = self._aggregate_returns(ep_returns)
         return batch, train_return_mean, train_return_std
@@ -297,9 +257,9 @@ class BenchmarkRunner:
             with torch.no_grad():
                 if self.algo_spec.kind == "off_policy":
                     if self.action_type == "discrete":
-                        action = self.agent.act(obs, epsilon=0.0)  # type: ignore[arg-type]
+                        action = self.agent.act(obs, epsilon=0.0).action  # type: ignore[arg-type]
                     else:
-                        action = self.agent.act(obs, noise=False)  # type: ignore[arg-type]
+                        action = self.agent.act(obs, noise=False).action  # type: ignore[arg-type]
                 else:
                     if hasattr(self.policy, "act_deterministic"):
                         action = self.policy.act_deterministic(obs)
@@ -378,34 +338,19 @@ class BenchmarkRunner:
             range(self.train_cfg.n_episodes),
             desc=self.progress_label,
         ):
-            for _ in range(total_steps):
-                if self.action_type == "discrete":
-                    actions = self.agent.act(obs)  # type: ignore[attr-defined]
-                else:
-                    actions = self.agent.act(obs)  # type: ignore[attr-defined]
-                next_obs, reward, terminated, truncated, _ = self.train_env.step(
-                    actions
-                )
-                done = torch.logical_or(terminated, truncated).float()
-                # store each env transition separately
-                for i in range(self.env_cfg.n_train_envs):
-                    self.replay_buffer.add(
-                        {
-                            "obs": obs[i].detach(),
-                            "actions": actions[i].detach(),
-                            "rewards": reward[i].detach(),
-                            "next_obs": next_obs[i].detach(),
-                            "dones": done[i].detach(),
-                        }
-                    )
-                obs = next_obs
-
-                if len(self.replay_buffer) > max(
-                    self.offpolicy_warmup, self.offpolicy_batch_size
-                ):
-                    batch = self.replay_buffer.sample(self.offpolicy_batch_size)
-                    metrics = self.agent.update(batch)
-                    metrics_cache = metrics
+            # Collection/update loop relocated verbatim to
+            # OnlineSource.collect_off_policy (Phase 1).
+            obs, metrics_cache = self.experience_source.collect_off_policy(
+                self.agent,
+                self.replay_buffer,
+                obs,
+                n_steps=total_steps,
+                n_envs=self.env_cfg.n_train_envs,
+                action_type=self.action_type,
+                warmup=self.offpolicy_warmup,
+                batch_size=self.offpolicy_batch_size,
+                metrics_cache=metrics_cache,
+            )
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
