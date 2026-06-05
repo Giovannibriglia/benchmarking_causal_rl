@@ -28,12 +28,13 @@ the step after a sub-env finishes is a "reset step": the action is ignored,
 reward is 0, and the transition recorded by the rollout is
 `(final_obs, action, 0, reset_obs)` with `done` correctly flagged on the
 PREVIOUS step. These dummy transitions enter the on-policy buffer and replay
-buffer unmasked. Frequency equals the episode-termination rate
-(≈ #dones / (T·N) per rollout — measured in the Phase-2 summary; worst early
-in training on short-episode envs, negligible once policies improve, zero for
-fixed-length MuJoCo tasks). Gate decision (2026-06-05): do NOT mask them yet;
-if Cell-1 learning is visibly degraded, masking in `OnlineSource.rollout`
-will be proposed as a separate sanctioned change.
+buffer unmasked. Frequency equals the episode-termination rate. Measured on the retrained
+(fixed-wrapper) CartPole Cell-1 run with 512×8 rollouts: **3.91 %** of buffer
+transitions at the first checkpoint (untrained policy, short episodes),
+**0.20 %** at mid and final checkpoints; zero for fixed-length MuJoCo tasks.
+Cell-1 trains to a perfect deterministic J = 500 under this contamination.
+Gate decision (2026-06-05): do NOT mask them; revisit only if Cell-1
+learning ever degrades visibly (it does not).
 
 ## 0b. Stale non-editable package install shadowed the working tree
 
