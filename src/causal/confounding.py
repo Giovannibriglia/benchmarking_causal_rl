@@ -209,7 +209,7 @@ def assert_confounded(
     # dependence via the propensity residual: logged log pi_b(a|s,U) minus
     # the U-blind clone's log pi_bar(a|s). Without confounding the residual
     # is U-independent; with U->A coupling it shifts with the sign of U.
-    ep_u = _episode_u(source)
+    ep_u = _episode_u(source).cpu()
     lengths = [int(ep["rewards"].shape[0]) for ep in source.episodes]
     step_u = torch.repeat_interleave(ep_u, torch.tensor(lengths))
     actions = source.actions.long().cpu()
