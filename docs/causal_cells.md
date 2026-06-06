@@ -37,6 +37,47 @@ mattered little there. The fix's correctness credit belongs to the
 CartPole-family results (variable-length episodes), where it took the Cell-2
 variant from J≈30 (corrupted training data) to J≈497.
 
+## Cell 3: the horizon ablation (medium50) — graphical vs statistical identifiability
+
+**[flag for the paper]** Within Cell 3 the backdoor criterion holds at every
+horizon — the effect is *graphically* identifiable — yet IPW with EXACT
+logged propensities transitions from valid to degenerate as the horizon
+grows. Three regimes, same cell:
+
+1. **Analytic fixture, H=6**: IPW(known) matches closed-form DP values and
+   DR within 0.25 on a ±6 J scale (exact agreement).
+2. **Real data, H=50** (`causal/cartpole/medium50-v0`): IPW(known) CI
+   [8.0, 55.1] overlaps DR [51.7, 65.5]; self-normalized IPW point-matches
+   the truth (50.0 vs naive/DM ≈ 50). Valid but variance-dominated.
+3. **Real data, H=200+** (standard tiers): full-episode importance products
+   collapse to 0/∞ — *statistical* identifiability is lost (curse of
+   horizon) even though nothing about the causal graph changed.
+
+`medium50` is therefore the HORIZON ABLATION of Cell 3, not a workaround:
+identification ≠ estimability, and the cells story should separate the two.
+
+## Cell 3: the expert-tier inversion (S4 / coverage result)
+
+**[flag for the paper]** On the expert tier (ε=0.05, narrow support) the
+basic/variant ordering INVERTS: BC achieves norm regret 0.06 while CQL
+collapses to 0.51 (medium tier: BC 0.60 vs CQL 0.42). This is the known
+BC-vs-offline-RL support phenomenon — value-based offline RL needs coverage
+to evaluate counterfactual actions and its conservatism actively hurts on
+narrow expert data, while imitation inherits the logging policy's quality
+directly. Present as the S4/coverage result of the taxonomy, not a failure:
+which strategy is correct in Cell 3 depends on the support axis.
+
+## Continuous Cell-1 reference — ON HOLD (Phase-3 gate flag 1)
+
+The stock `mujoco/halfcheetah/medium-v0` behavior policy (J≈12,089) is far
+stronger than the paper_mini PPO reference (J≈2,629), so offline algorithms
+can show negative regret on the continuous anchor. AWAITING AUTHOR CHOICE:
+(A) add SAC as the continuous Cell-1 reference trainer in Phase 6
+[gate-recommended] vs (B) reframe the reference as max(J_online, J_behavior).
+**No Phase-6 HalfCheetah work starts before this lands.** Phase 6 must also
+make references reproducible in-pipeline (train-or-load keyed by the cell
+YAML; no dependencies on gitignored run dirs).
+
 ## Evaluation: window returns vs per-episode J
 
 The benchmark-mode eval metric accumulates rewards over a fixed

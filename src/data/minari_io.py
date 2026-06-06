@@ -57,33 +57,41 @@ def collect_dataset(
     seed: int,
     device: torch.device,
     max_steps_per_episode: Optional[int] = None,
+    env_factory=None,
 ) -> None:
-    """Roll ``behavior_policy`` in ``env_id`` and save a Minari dataset with
-    exact propensities in infos. Overwrites an existing local dataset id."""
+    """Roll ``behavior_policy`` in ``env_id`` (or ``env_factory()``, e.g. a
+    ConfoundedEnv wrap) and save a Minari dataset with exact propensities in
+    infos. Overwrites an existing local dataset id."""
     import minari
 
     if dataset_id in minari.list_local_datasets():
         minari.delete_dataset(dataset_id)
 
+    base_env = env_factory() if env_factory is not None else gym.make(env_id)
     env = DataCollector(
-        gym.make(env_id),
+        base_env,
         step_data_callback=PropensityStepDataCallback,
         record_infos=True,
     )
     for ep in range(int(n_episodes)):
-        obs, _ = env.reset(seed=seed + ep)
+        obs, info = env.reset(seed=seed + ep)
         done = False
         t = 0
         while not done:
             obs_t = torch.as_tensor(
                 np.asarray(obs, dtype=np.float32).reshape(1, -1), device=device
             )
-            action, logp = behavior_policy.select_action(obs_t)
+            # Confounded envs expose the per-episode U in infos; the biased
+            # logging policy needs it at action-selection time (U -> action).
+            latent = None
+            if isinstance(info, dict) and "confounder_u" in info:
+                latent = torch.tensor([float(info["confounder_u"])], device=device)
+            action, logp = behavior_policy.select_action(obs_t, latent=latent)
             PropensityStepDataCallback.current_logprob = float(logp.item())
             a = action.squeeze(0).detach().cpu().numpy()
             if a.ndim == 0:
                 a = a.item()
-            obs, _, terminated, truncated, _ = env.step(a)
+            obs, _, terminated, truncated, info = env.step(a)
             t += 1
             done = terminated or truncated
             if max_steps_per_episode is not None and t >= max_steps_per_episode:
@@ -132,6 +140,11 @@ def to_offline_source(
             # propensity was recorded at the post-step index t+1.
             logp = np.asarray(infos["behavior_logprob"], dtype=np.float32)
             entry["behavior_logprob"] = torch.as_tensor(logp[1:])
+        if "confounder_u" in infos:
+            # per-episode U (constant across the episode); kept for the
+            # assert_confounded gate ONLY - sample() never exposes it.
+            u = np.asarray(infos["confounder_u"], dtype=np.float32)
+            entry["confounder_u"] = torch.as_tensor(u[1:])
         if mask_indices is not None:
             keep = [j for j in range(obs.shape[-1]) if j not in set(mask_indices)]
             entry["full_obs"] = obs
