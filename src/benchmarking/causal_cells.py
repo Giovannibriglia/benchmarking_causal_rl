@@ -76,7 +76,13 @@ def _build_algo(
     torch.manual_seed(seed)
     name = name.lower()
     if name == "bc":
-        policy = ActorCriticMLP(obs_dim, action_dim, action_type, device)
+        # continuous control needs capacity comparable to the d3rlpy variants
+        # (256x256) to be a fair basic baseline; discrete stays at the repo
+        # default (64x64).
+        hidden = (256, 256) if action_type == "continuous" else (64, 64)
+        policy = ActorCriticMLP(
+            obs_dim, action_dim, action_type, device, hidden_dims=hidden
+        )
         return BehaviorCloning(policy, device)
     if name == "cql":
         from src.offline.d3rlpy_wrappers import make_cql
