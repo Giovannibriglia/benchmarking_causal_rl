@@ -147,9 +147,14 @@ def _target_adapter(agent, device, action_type, action_dim) -> Optional[TargetPo
             return agent.act(obs.to(device)).action
 
         return DeterministicPolicyAdapter(act, action_dim)
-    # deterministic continuous target: IPW/DR are ill-defined (zero-measure
-    # actions); DM/naive only.
-    return None
+    # continuous deterministic target: smooth with fixed Gaussian eval noise
+    # so IPW/DR densities are well-defined (Phase-6 prerequisite).
+    from src.eval.ope import GaussianPolicyAdapter
+
+    def act_c(obs: torch.Tensor) -> torch.Tensor:
+        return agent.act(obs.to(device)).action
+
+    return GaussianPolicyAdapter(act_c, sigma=0.1)
 
 
 def _ope_block(
@@ -249,33 +254,48 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
         mask_indices = resolve_mask_indices(probe, mask_spec)
         probe.close()
 
-    # reference + random floors (once per task)
-    j_random = float(np.mean(random_policy_returns(task_env, n_eval_episodes)))
-    if reference_ckpt:
-        ref_act = _load_reference_act_fn(str(reference_ckpt), task_env, device)
-        j_ref = float(np.mean(evaluate_policy(task_env, ref_act, n_eval_episodes)))
-    else:
+    # random floor (once per task); references are PER SEED when a reference
+    # spec is given (train-or-load, Phase-6), or a fixed legacy checkpoint.
+    reference_spec = cfg.get("reference")
+    if not reference_spec and not reference_ckpt:
         raise ValueError(
-            "reference_checkpoint is required: train Cell 1 first (benchmark "
-            "mode on the causal/<anchor>-cell1 id) and point the YAML at the "
-            "final PPO checkpoint."
+            "a reference is required: either reference: {env, algo, "
+            "n_episodes, ...} (train-or-load, preferred) or a legacy "
+            "reference_checkpoint path."
         )
+    j_random = float(np.mean(random_policy_returns(task_env, n_eval_episodes)))
+    j_ref_by_seed: Dict[int, float] = {}
 
     csv_path = os.path.join(run_dir, "causal_cells_metrics.csv")
     with CSVLogger(csv_path, fieldnames=CAUSAL_CELLS_COLUMNS) as log:
         base_row = {"cell": cell, "task": task_env, "anchor": anchor}
-        log.log(
-            {
-                **base_row,
-                "tier": "",
-                "algo": "ppo",
-                "role": "reference",
-                "seed": "",
-                "J": j_ref,
-                "regret": 0.0,
-                "normalized_regret": 0.0,
-            }
-        )
+
+        def _ensure_j_ref(seed: int) -> float:
+            if seed in j_ref_by_seed:
+                return j_ref_by_seed[seed]
+            if reference_spec:
+                from src.eval.references import ensure_reference
+
+                path = ensure_reference(dict(reference_spec), seed, device)
+            else:
+                path = str(reference_ckpt)
+            ref_act = _load_reference_act_fn(path, task_env, device)
+            j_ref = float(np.mean(evaluate_policy(task_env, ref_act, n_eval_episodes)))
+            j_ref_by_seed[seed] = j_ref
+            log.log(
+                {
+                    **base_row,
+                    "tier": "",
+                    "algo": str((reference_spec or {}).get("algo", "ppo")),
+                    "role": "reference",
+                    "seed": seed if reference_spec else "",
+                    "J": j_ref,
+                    "regret": 0.0,
+                    "normalized_regret": 0.0,
+                }
+            )
+            return j_ref
+
         log.log(
             {
                 **base_row,
@@ -284,7 +304,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                 "role": "random",
                 "seed": "",
                 "J": j_random,
-                "regret": j_ref - j_random,
+                "regret": "",
                 "normalized_regret": 1.0,
             }
         )
@@ -309,6 +329,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                     f"R-U z={report.reward_u_zscore:.1f}"
                 )
             for seed in seeds:
+                j_ref = _ensure_j_ref(seed)
                 set_seed(seed, deterministic=False)
                 source = to_offline_source(
                     dataset_id,

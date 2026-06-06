@@ -7,3 +7,4 @@ outputs
 __pycache__/
 *.pyc
 d3rlpy_logs/
+references/
