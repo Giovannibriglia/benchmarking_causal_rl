@@ -92,7 +92,13 @@ def _build_algo(
         from src.offline.d3rlpy_wrappers import make_iql
 
         return make_iql(device, action_type)
-    raise KeyError(f"Unknown offline algorithm '{name}' (expected bc|cql|iql).")
+    if name == "delphic":
+        if action_type != "discrete":
+            raise ValueError("delphic variant is discrete in Phase 4.")
+        from src.offline.delphic import DelphicOfflineDQN
+
+        return DelphicOfflineDQN(obs_dim, action_dim, device, seed=seed)
+    raise KeyError(f"Unknown offline algorithm '{name}' (expected bc|cql|iql|delphic).")
 
 
 def _act_fn(agent, device, action_type):
@@ -256,6 +262,25 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
             }
         )
         for tier, dataset_id in tiers.items():
+            # Confounded cells (7-8): the gate validates the data-generating
+            # process on the FULL known-pi_b view BEFORE any cell switches
+            # (mask / propensity discard) are applied. Hard error on failure.
+            gate_passed = ""
+            from src.causal.cells import get_cell
+
+            if get_cell(cell).confounded:
+                from src.causal.confounding import assert_confounded
+
+                gate_view = to_offline_source(
+                    dataset_id, device, behavior_policy="known"
+                )
+                report = assert_confounded(gate_view)  # raises if unconfounded
+                gate_passed = True
+                print(
+                    f"[gate PASS] {dataset_id}: |naive-ipw|="
+                    f"{report.naive_ipw_gap:.2f} A-U z={report.action_u_zscore:.1f} "
+                    f"R-U z={report.reward_u_zscore:.1f}"
+                )
             for seed in seeds:
                 set_seed(seed, deterministic=False)
                 source = to_offline_source(
@@ -302,6 +327,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                             "J": j,
                             "regret": reg.regret,
                             "normalized_regret": reg.normalized_regret,
+                            "gate_passed": gate_passed,
                             **ope,
                         }
                     )
