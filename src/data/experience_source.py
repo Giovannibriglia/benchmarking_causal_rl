@@ -63,6 +63,126 @@ def validate_pairing(paradigm: str, source: ExperienceSource) -> None:
         )
 
 
+class OfflineDatasetSource(ExperienceSource):
+    """A fixed logged dataset (Cells 3–8).
+
+    Episode structure is preserved (IPW needs per-episode importance
+    products); flat tensors are derived for batch sampling. ``behavior_logprob``
+    is exposed ONLY when the cell declares the behavior policy known —
+    constructing with ``behavior_policy="unknown"`` discards logged
+    propensities at load time, so downstream estimators cannot peek.
+    """
+
+    is_online = False
+
+    def __init__(
+        self,
+        episodes: list,
+        device: torch.device,
+        behavior_policy: str = "known",
+        rng_seed: int = 0,
+    ) -> None:
+        """``episodes``: list of dicts with keys ``obs [T+1, d]``,
+        ``actions [T, ...]``, ``rewards [T]``, ``terminations [T]``,
+        ``truncations [T]`` and optionally ``behavior_logprob [T]``
+        (+ ``full_obs [T+1, D]`` when the learner view is masked)."""
+        if behavior_policy not in ("known", "unknown"):
+            raise ValueError("behavior_policy must be 'known' or 'unknown'")
+        self.device = device
+        self.behavior_policy = behavior_policy
+        self._g = torch.Generator().manual_seed(int(rng_seed))
+
+        self.episodes = []
+        flat = {k: [] for k in ("obs", "actions", "rewards", "next_obs", "dones")}
+        flat_logp = []
+        for ep in episodes:
+            ep = {
+                k: (
+                    v.to(device)
+                    if isinstance(v, torch.Tensor)
+                    else torch.as_tensor(v).to(device)
+                )
+                for k, v in ep.items()
+            }
+            if behavior_policy == "unknown":
+                ep.pop("behavior_logprob", None)  # discard propensities
+            self.episodes.append(ep)
+            T = ep["rewards"].shape[0]
+            flat["obs"].append(ep["obs"][:T].float())
+            flat["next_obs"].append(ep["obs"][1 : T + 1].float())
+            flat["actions"].append(ep["actions"])
+            flat["rewards"].append(ep["rewards"].float())
+            done = (ep["terminations"] | ep["truncations"]).float()
+            flat["dones"].append(done)
+            if "behavior_logprob" in ep:
+                flat_logp.append(ep["behavior_logprob"].float())
+        self.obs = torch.cat(flat["obs"])
+        self.next_obs = torch.cat(flat["next_obs"])
+        self.actions = torch.cat(flat["actions"])
+        self.rewards = torch.cat(flat["rewards"])
+        self.dones = torch.cat(flat["dones"])
+        self._behavior_logprob = torch.cat(flat_logp) if flat_logp else None
+        if (
+            behavior_policy == "known"
+            and self._behavior_logprob is not None
+            and self._behavior_logprob.shape[0] != self.rewards.shape[0]
+        ):
+            raise ValueError("behavior_logprob must align with rewards.")
+
+    def __len__(self) -> int:
+        return int(self.rewards.shape[0])
+
+    @property
+    def n_episodes(self) -> int:
+        return len(self.episodes)
+
+    @property
+    def behavior_logprob(self) -> Optional[torch.Tensor]:
+        if self.behavior_policy == "unknown":
+            return None
+        return self._behavior_logprob
+
+    def episode_returns(self) -> torch.Tensor:
+        return torch.stack([ep["rewards"].sum() for ep in self.episodes]).float()
+
+    def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
+        idx = torch.randint(0, len(self), (batch_size,), generator=self._g).to(
+            self.device
+        )
+        batch = {
+            "obs": self.obs[idx],
+            "actions": self.actions[idx],
+            "rewards": self.rewards[idx],
+            "next_obs": self.next_obs[idx],
+            "dones": self.dones[idx],
+        }
+        if self.behavior_logprob is not None:
+            batch["behavior_logprob"] = self.behavior_logprob[idx]
+        return batch
+
+    def as_mdpdataset(self):
+        """d3rlpy MDPDataset adapter (built lazily; d3rlpy import deferred)."""
+        import numpy as np
+        from d3rlpy.dataset import MDPDataset
+
+        obs, acts, rews, terms, tos = [], [], [], [], []
+        for ep in self.episodes:
+            T = ep["rewards"].shape[0]
+            obs.append(ep["obs"][:T].cpu().numpy().astype(np.float32))
+            a = ep["actions"].cpu().numpy()
+            acts.append(a.reshape(T, -1) if a.ndim > 1 else a.reshape(T, 1))
+            rews.append(ep["rewards"].cpu().numpy().reshape(T, 1).astype(np.float32))
+            terms.append(ep["terminations"].cpu().numpy().astype(np.float32))
+            tos.append(ep["truncations"].cpu().numpy().astype(np.float32))
+        return MDPDataset(
+            observations=np.concatenate(obs),
+            actions=np.concatenate(acts),
+            rewards=np.concatenate(rews),
+            terminals=np.concatenate(terms),
+            timeouts=np.concatenate(tos),
+        )
+
+
 class OnlineSource(ExperienceSource):
     """Online interaction with a (vectorized) environment.
 

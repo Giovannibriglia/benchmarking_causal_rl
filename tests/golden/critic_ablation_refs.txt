@@ -1,16 +1,16 @@
-main.py:102:        help="Learning rate for auxiliary critics in critic_ablation mode.",
-main.py:236:        mode = "critic_ablation"
-main.py:237:    if mode not in {"benchmark", "critic_ablation"}:
-main.py:239:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
-main.py:25:        choices=["benchmark", "critic_ablation"],
-main.py:327:                "critics": ablation_critics if mode == "critic_ablation" else [],
-main.py:32:        help="Shortcut for --mode critic_ablation.",
-main.py:362:            critic_ablation_cfg = None
-main.py:363:            if mode == "critic_ablation":
-main.py:364:                critic_ablation_cfg = CriticAblationConfig(
-main.py:376:                critic_ablation_cfg=critic_ablation_cfg,
-main.py:94:            "Auxiliary critics to train in critic_ablation mode. "
-main.py:9:from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
+main.py:106:        help="Learning rate for auxiliary critics in critic_ablation mode.",
+main.py:10:from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
+main.py:257:        mode = "critic_ablation"
+main.py:258:    if mode not in {"benchmark", "critic_ablation"}:
+main.py:260:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
+main.py:26:        choices=["benchmark", "critic_ablation", "causal_cells"],
+main.py:348:                "critics": ablation_critics if mode == "critic_ablation" else [],
+main.py:36:        help="Shortcut for --mode critic_ablation.",
+main.py:383:            critic_ablation_cfg = None
+main.py:384:            if mode == "critic_ablation":
+main.py:385:                critic_ablation_cfg = CriticAblationConfig(
+main.py:397:                critic_ablation_cfg=critic_ablation_cfg,
+main.py:98:            "Auxiliary critics to train in critic_ablation mode. "
 src/benchmarking/plotting.py:47:    critic_path = run_dir / "critic_ablation_metrics.csv"
 src/benchmarking/plotting.py:53:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/plotting.py:565:        split == "both" and mode == "critic_ablation"
@@ -28,3 +28,4 @@ src/benchmarking/runner.py:243:            {"episode": episode, "aux_critics": s
 src/benchmarking/runner.py:308:                    os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
 src/benchmarking/runner.py:311:                if self.critic_ablation is not None
 src/benchmarking/runner.py:61:        critic_ablation_cfg: CriticAblationConfig | None = None,
+src/eval/oracle.py:9:Standalone module (never imported by ``critic_ablation``); estimators in

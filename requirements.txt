@@ -7,3 +7,10 @@ usort==1.0.4
 imageio[pyav]
 imageio
 imageio-ffmpeg
+# --- causal-cells offline stack (Phase 3) ---
+# NOTE: d3rlpy 2.8.1 declares gymnasium==1.0.0; we run it on 1.2.3 (verified
+# functional). Keep gymnasium pinned AFTER d3rlpy here so resolvers do not
+# silently downgrade it; tests/test_characterization.py guards the version.
+d3rlpy==2.8.1
+minari==0.5.3
+gymnasium==1.2.3

@@ -28,6 +28,15 @@ restores the masked information with zero new algorithm code — the variant is
 an env-id (`causal/<anchor>-cell2fs`), keeping the basic-vs-variant comparison
 free of optimizer/architecture confounds beyond input width.
 
+## Attribution note (Phase-2 gate)
+
+The HalfCheetah jump from ≈0 to J≈2629 between the first and final Phase-2
+runs is attributed **primarily to the training-budget extension (0.5M → 2M
+steps)**; HalfCheetah truncates in lockstep, so the autoreset fix likely
+mattered little there. The fix's correctness credit belongs to the
+CartPole-family results (variable-length episodes), where it took the Cell-2
+variant from J≈30 (corrupted training data) to J≈497.
+
 ## Evaluation: window returns vs per-episode J
 
 The benchmark-mode eval metric accumulates rewards over a fixed

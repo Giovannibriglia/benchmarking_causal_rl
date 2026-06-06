@@ -1,0 +1,25 @@
+# Cell 3 "Perfect Archive" - continuous anchor (stock Minari medium tier).
+# NOTE: stock Minari datasets carry no logged propensities, so IPW falls back
+# to cloned pi_b automatically (continuous cloning lands in Phase 6 - until
+# then OPE reports naive+DM for this anchor); the IPW(known)~DR acceptance
+# relation is carried by the discrete anchor where propensities are logged.
+mode: causal_cells
+cell: 3
+anchor: continuous
+task_env: HalfCheetah-v5
+behavior_policy: known
+mask_spec: null
+tiers:
+  medium: mujoco/halfcheetah/medium-v0
+algos:
+  basic: bc
+  variant: iql
+seeds: [0]
+training:
+  n_steps: 100000
+  batch_size: 256
+ope:
+  fqe_iters: 600
+evaluation:
+  n_episodes: 30
+reference_checkpoint: runs/causal_cells/paper_mini_cell12_halfcheetah_20260605_172649/checkpoints/causal-halfcheetah-cell1_ppo_seed42/ckpt_ep0249.pt

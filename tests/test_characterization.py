@@ -172,6 +172,22 @@ def test_checkpoint_episodes_contract():
 
 
 # ---------------------------------------------------------------------------
+# Dependency pins (Phase-3 gate): d3rlpy declares gymnasium==1.0.0 but runs
+# on 1.2.3; this guard catches any accidental downgrade (golden numbers and
+# the autoreset fix depend on gymnasium >=1.1 semantics).
+# ---------------------------------------------------------------------------
+
+
+def test_gymnasium_version_pinned():
+    import gymnasium
+
+    assert gymnasium.__version__ == "1.2.3", (
+        "gymnasium was downgraded (probably by a d3rlpy reinstall); "
+        "restore with: pip install gymnasium==1.2.3"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Grep snapshots (§3.3 / §8): seeding call sites and critic_ablation refs
 # ---------------------------------------------------------------------------
 
