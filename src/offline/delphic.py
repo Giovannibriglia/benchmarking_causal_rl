@@ -37,6 +37,7 @@ class DelphicOfflineDQN(Algorithm):
         device: torch.device,
         n_ensemble: int = 5,
         kappa: float = 1.0,
+        penalty_cap: float = 1.0,
         gamma: float = 0.99,
         lr: float = 3e-4,
         reward_model_steps: int = 2000,
@@ -50,6 +51,11 @@ class DelphicOfflineDQN(Algorithm):
         self.device = device
         self.n_ensemble = int(n_ensemble)
         self.kappa = float(kappa)
+        # Sensitivity budget (Kallus-Zhou flavored): the analyst's assumed
+        # bound on per-step reward distortion by hidden confounding. Caps the
+        # pessimism so total epistemic uncertainty (e.g. under masking, Cell 8)
+        # cannot drown the reward signal: r_tilde = mean - min(kappa*std, cap).
+        self.penalty_cap = float(penalty_cap) if penalty_cap is not None else None
         self.gamma = float(gamma)
         self.reward_model_steps = int(reward_model_steps)
         self.target_sync = int(target_sync)
@@ -111,7 +117,10 @@ class DelphicOfflineDQN(Algorithm):
                 ]
             )
         mean, std = preds.mean(dim=0), preds.std(dim=0)
-        return mean - self.kappa * std, std
+        penalty = self.kappa * std
+        if self.penalty_cap is not None:
+            penalty = penalty.clamp(max=self.penalty_cap)
+        return mean - penalty, std
 
     # ---------------------------------------------------------------- learn
     def learn(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
