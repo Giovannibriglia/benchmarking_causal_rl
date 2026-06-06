@@ -33,6 +33,9 @@ CAUSAL_CELLS_COLUMNS = [
     "ope_dm",
     "ope_ipw",
     "ope_dr",
+    "ope_kz_lb",
+    "ope_kz_ub",
+    "kz_gamma",
     "gate_passed",
 ]
 
@@ -51,6 +54,8 @@ def evaluate_policy(
     returns = []
     for ep in range(int(n_episodes)):
         obs, _ = env.reset(seed=seed_base + ep)
+        if hasattr(act_fn, "reset"):
+            act_fn.reset()  # stateful policies (history/recurrent) re-zero
         done, total = False, 0.0
         while not done:
             action = act_fn(np.asarray(obs, dtype=np.float32))

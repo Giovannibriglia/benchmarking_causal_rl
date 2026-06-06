@@ -1,8 +1,16 @@
-"""Delphic-style pessimistic offline RL (Cells 7–8 variant; Pace et al. 2024).
+"""Ensemble-pessimistic offline RL (delphic-INSPIRED, Pace et al. 2024).
+
+HONEST NAMING (Phase-4 gate condition 1): this is NOT the full delphic
+method. Bootstrap-ensemble disagreement captures SAMPLING uncertainty, not
+delphic uncertainty (variation across confounding-compatible models): the
+Cell-8 kappa-ablation showed disagreement = 0.022 and J invariant for
+kappa in {0,1,3} on masked confounded data, i.e. the proxy is structurally
+blind exactly where confounding is unidentifiable. It works as the Cell-7
+variant (observed Z), where pessimism over sampling uncertainty suffices.
 
 Simplified-but-faithful implementation: an ensemble of reward models trained
 on bootstrap resamples of the logged data spans hypotheses compatible with
-the observations; their DISAGREEMENT proxies delphic (confounding-induced)
+the observations; their DISAGREEMENT proxies sampling (NOT confounding-induced)
 uncertainty — under hidden confounding the data cannot pin down r(s, a), and
 the ensemble spreads exactly where U distorted the logged rewards. Learning
 is fitted Q-iteration on the pessimistic reward
@@ -26,7 +34,7 @@ from src.rl.base import ActionOutput, Algorithm
 from src.rl.nets.mlp import MLP
 
 
-class DelphicOfflineDQN(Algorithm):
+class EnsemblePessimisticDQN(Algorithm):
     paradigm = "offline"
     action_type = "discrete"
 
@@ -80,7 +88,7 @@ class DelphicOfflineDQN(Algorithm):
             q = self.q_net(obs.float().to(self.device))
         return ActionOutput(action=q.argmax(dim=-1), state=state)
 
-    # ------------------------------------------------- delphic reward model
+    # ----------------------------------------------- ensemble reward model
     def _fit_reward_ensemble(self, source: OfflineDatasetSource) -> None:
         n = len(source)
         self.reward_models = []
@@ -108,7 +116,7 @@ class DelphicOfflineDQN(Algorithm):
 
     def pessimistic_rewards(self, obs: torch.Tensor, actions: torch.Tensor):
         """r_tilde = mean − kappa·std over the ensemble; also returns the
-        per-transition delphic uncertainty (std)."""
+        per-transition ensemble uncertainty (std)."""
         with torch.no_grad():
             preds = torch.stack(
                 [
@@ -142,7 +150,7 @@ class DelphicOfflineDQN(Algorithm):
         batch_size: int = 256,
     ) -> Dict[str, float]:
         self._fit_reward_ensemble(source)
-        r_tilde, delphic_std = self.pessimistic_rewards(source.obs, source.actions)
+        r_tilde, ensemble_std = self.pessimistic_rewards(source.obs, source.actions)
         # FQI on the pessimism-adjusted dataset view
         pess_episodes = []
         start = 0
@@ -163,5 +171,5 @@ class DelphicOfflineDQN(Algorithm):
             metrics = self.update(pess_source.sample(batch_size), pess_source)
             if (it + 1) % self.target_sync == 0:
                 self.q_target.load_state_dict(self.q_net.state_dict())
-        metrics["delphic_std_mean"] = float(delphic_std.mean().item())
+        metrics["ensemble_std_mean"] = float(ensemble_std.mean().item())
         return metrics
