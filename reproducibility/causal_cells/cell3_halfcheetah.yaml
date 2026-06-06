@@ -16,7 +16,7 @@ algos:
   variant: iql
 seeds: [0]
 training:
-  n_steps: 20000
+  n_steps: 100000
   batch_size: 256
 ope:
   fqe_iters: 600
