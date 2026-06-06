@@ -13,7 +13,12 @@ tiers:
   b1d05: causal/cartpole/cell7-b1-d0p5-v0
 algos:
   basic: bc
-  variant: delphic
+  # Phase-5 gate-approved switch: the Cell-8 variant is the Kallus-Zhou
+  # sensitivity-interval EVALUATION - the lower-bound maximizer among
+  # already-trained candidates (no new training loop). Bootstrap-ensemble
+  # pessimism is structurally blind here (see docs/causal_cells.md).
+  variant: kz_select
+  kz_candidates: ens_pessimistic
 seeds: [0]
 training:
   n_steps: 4000
@@ -21,6 +26,7 @@ training:
 ope:
   fqe_iters: 6000
   fqe_sync_every: 10
+  kz_gamma: 2.0
 evaluation:
   n_episodes: 100
 reference_checkpoint: runs/causal_cells/paper_mini_cell12_cartpole_20260605_171246/checkpoints/causal-cartpole-cell1_ppo_seed42/ckpt_ep0149.pt

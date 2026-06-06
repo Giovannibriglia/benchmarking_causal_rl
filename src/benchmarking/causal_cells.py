@@ -39,6 +39,7 @@ import yaml
 from src.config.seeding import set_seed
 from src.data.experience_source import OfflineDatasetSource
 from src.data.minari_io import to_offline_source
+from src.eval.kallus_zhou import kz_interval
 from src.eval.ope import (
     DeterministicPolicyAdapter,
     DirectMethod,
@@ -92,16 +93,35 @@ def _build_algo(
         from src.offline.d3rlpy_wrappers import make_iql
 
         return make_iql(device, action_type)
-    if name == "delphic":
+    if name == "proximal":
         if action_type != "discrete":
-            raise ValueError("delphic variant is discrete in Phase 4.")
-        from src.offline.delphic import DelphicOfflineDQN
+            raise ValueError("proximal variant is discrete in Phase 5.")
+        from src.offline.proximal import ProximalBC
 
-        return DelphicOfflineDQN(obs_dim, action_dim, device, seed=seed)
-    raise KeyError(f"Unknown offline algorithm '{name}' (expected bc|cql|iql|delphic).")
+        return ProximalBC(obs_dim, action_dim, device, seed=seed)
+    if name == "latent_wm":
+        if action_type != "discrete":
+            raise ValueError("latent_wm variant is discrete in Phase 5.")
+        from src.offline.latent_world_model import LatentWorldModelBC
+
+        return LatentWorldModelBC(obs_dim, action_dim, device, seed=seed)
+    if name in ("ens_pessimistic", "delphic"):  # "delphic" kept as alias
+        if action_type != "discrete":
+            raise ValueError("ens_pessimistic variant is discrete in Phase 4/5.")
+        from src.offline.ensemble_pessimism import EnsemblePessimisticDQN
+
+        return EnsemblePessimisticDQN(obs_dim, action_dim, device, seed=seed)
+    raise KeyError(
+        f"Unknown offline algorithm '{name}' (expected bc|cql|iql|ens_pessimistic)."
+    )
 
 
 def _act_fn(agent, device, action_type):
+    # stateful (history/recurrent) agents supply their own eval act-fn with
+    # a per-episode reset() (evaluate_policy calls it at episode starts)
+    if hasattr(agent, "make_eval_act_fn"):
+        return agent.make_eval_act_fn(device)
+
     def act(obs: np.ndarray) -> np.ndarray:
         t = torch.as_tensor(obs.reshape(1, -1), dtype=torch.float32, device=device)
         with torch.no_grad():
@@ -113,6 +133,12 @@ def _act_fn(agent, device, action_type):
 
 
 def _target_adapter(agent, device, action_type, action_dim) -> Optional[TargetPolicy]:
+    # History-dependent targets (proximal, latent world model) cannot be
+    # faithfully evaluated by memoryless OPE adapters - their action depends
+    # on the trajectory prefix, which flat (obs, action) batches do not carry.
+    # OPE for those rows is naive-only (honest), like deterministic continuous.
+    if hasattr(agent, "make_eval_act_fn"):
+        return None
     if isinstance(agent, BehaviorCloning):
         return StochasticPolicyAdapter(agent.policy)
     if action_type == "discrete":
@@ -203,6 +229,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     ope_cfg = dict(cfg.get("ope", {}))
     fqe_iters = int(ope_cfg.get("fqe_iters", 400))
     fqe_sync_every = int(ope_cfg.get("fqe_sync_every", 50))
+    kz_gamma = float(ope_cfg.get("kz_gamma", 2.0))
     eval_cfg = dict(cfg.get("evaluation", {}))
     n_eval_episodes = int(eval_cfg.get("n_episodes", 100))
     reference_ckpt = cfg.get("reference_checkpoint")
@@ -291,14 +318,65 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                     rng_seed=seed,
                 )
                 obs_dim = source.obs.shape[-1]
+                trained = {}
                 for role in ("basic", "variant"):
                     algo_name = algos.get(role)
                     if not algo_name:
                         continue
-                    agent = _build_algo(
-                        algo_name, obs_dim, action_dim, action_type, device, seed
-                    )
-                    agent.fit_source(source, n_steps, batch_size=batch_size)
+                    if algo_name == "kz_select":
+                        # Cell-8 variant (gate condition 2): no new training
+                        # loop — pick the Kallus-Zhou LOWER-BOUND maximizer
+                        # among already-trained candidates.
+                        candidates = dict(trained)
+                        extra = str(algos.get("kz_candidates", "ens_pessimistic"))
+                        for name in extra.split():
+                            if name not in candidates:
+                                cand = _build_algo(
+                                    name, obs_dim, action_dim, action_type, device, seed
+                                )
+                                cand.fit_source(source, n_steps, batch_size=batch_size)
+                                candidates[name] = cand
+                        best_name, best_agent, best_iv = None, None, None
+                        for name, cand in candidates.items():
+                            tgt = _target_adapter(cand, device, action_type, action_dim)
+                            if tgt is None:
+                                continue
+                            iv = kz_interval(
+                                source, tgt, gamma=kz_gamma, clone_seed=seed
+                            )
+                            print(
+                                f"[kz_select] {name}: LB={iv.lower:.1f} "
+                                f"UB={iv.upper:.1f} (Gamma={kz_gamma})"
+                            )
+                            if best_iv is None or iv.lower > best_iv.lower:
+                                best_name, best_agent, best_iv = name, cand, iv
+                        agent, algo_label = best_agent, f"kz:{best_name}"
+                        kz_cols = {
+                            "ope_kz_lb": best_iv.lower,
+                            "ope_kz_ub": best_iv.upper,
+                            "kz_gamma": kz_gamma,
+                        }
+                    else:
+                        agent = _build_algo(
+                            algo_name, obs_dim, action_dim, action_type, device, seed
+                        )
+                        agent.fit_source(source, n_steps, batch_size=batch_size)
+                        trained[algo_name] = agent
+                        algo_label = algo_name
+                        kz_cols = {}
+                        if gate_passed:  # confounded cells: report the interval too
+                            tgt = _target_adapter(
+                                agent, device, action_type, action_dim
+                            )
+                            if tgt is not None:
+                                iv = kz_interval(
+                                    source, tgt, gamma=kz_gamma, clone_seed=seed
+                                )
+                                kz_cols = {
+                                    "ope_kz_lb": iv.lower,
+                                    "ope_kz_ub": iv.upper,
+                                    "kz_gamma": kz_gamma,
+                                }
                     returns = evaluate_policy(
                         eval_env,
                         _act_fn(agent, device, action_type),
@@ -321,7 +399,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                         {
                             **base_row,
                             "tier": tier,
-                            "algo": algo_name,
+                            "algo": algo_label,
                             "role": role,
                             "seed": seed,
                             "J": j,
@@ -329,13 +407,20 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                             "normalized_regret": reg.normalized_regret,
                             "gate_passed": gate_passed,
                             **ope,
+                            **kz_cols,
                         }
                     )
                     print(
-                        f"[cell {cell}|{tier}|seed {seed}] {role}={algo_name}: "
+                        f"[cell {cell}|{tier}|seed {seed}] {role}={algo_label}: "
                         f"J={j:.1f} regret={reg.regret:.1f} "
                         f"(norm {reg.normalized_regret:.2f}) "
                         f"naive={ope['ope_naive']:.1f} dm={ope['ope_dm']:.1f} "
                         f"ipw={ope['ope_ipw']:.1f} dr={ope['ope_dr']:.1f}"
+                        + (
+                            f" kz=[{kz_cols['ope_kz_lb']:.1f},"
+                            f"{kz_cols['ope_kz_ub']:.1f}]"
+                            if kz_cols
+                            else ""
+                        )
                     )
     return csv_path

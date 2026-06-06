@@ -78,6 +78,43 @@ can show negative regret on the continuous anchor. AWAITING AUTHOR CHOICE:
 make references reproducible in-pipeline (train-or-load keyed by the cell
 YAML; no dependencies on gitignored run dirs).
 
+## Cells 7–8 paired result: sampling uncertainty ≠ delphic uncertainty
+
+**[flag for the paper]** The Cell-7 variant is *ensemble-pessimistic offline
+RL (delphic-inspired, Pace et al. 2024)*: FQI on rewards penalized by
+bootstrap-ensemble disagreement, with a Kallus–Zhou-flavored sensitivity cap.
+In Cell 7 (Z observed) it wins decisively (norm regret 0.24 vs BC 0.63). In
+Cell 8 the κ-ablation (κ ∈ {0, 1, 3} → identical J; ensemble std = 0.022)
+demonstrates WHY the simplification fails there: bootstrap disagreement
+captures **sampling** uncertainty, which vanishes as data grows, whereas
+delphic uncertainty is **variation across confounding-compatible models** —
+on masked confounded data all bootstrap members agree with each other and
+are all equally wrong. Present the Cell-7 success and the Cell-8 blindness
+as a paired result; the Cell-8 variant is the Kallus–Zhou sensitivity
+INTERVAL instead (gate-approved switch).
+
+## Methods note: the confounding gate needs a conditional test
+
+**[flag for the paper]** A state-symmetric U→action bias
+(``logits' = logits + β·U·e_{a*}``) leaves the MARGINAL action distribution
+unchanged — U boosts whichever action is preferred at each state, so
+marginal A–U tests (contingency/TV) have zero power against it. The gate's
+condition (ii) therefore tests **conditional** dependence via the propensity
+residual ``log π_b(a|s,U) − log π̄(a|s)`` (logged propensities minus the
+U-blind behavior clone), which isolates "A depends on U given s".
+
+## Methods note: the sign of naive-OPE bias is coupling-dependent
+
+**[flag for the paper]** "Naive OPE inflated" is not a law: in our Cell-7
+instantiation all data-side estimators (naive/DM/DR ≈ 72–81) UNDERestimate
+true deployment values (BC 198, variant 384) by 2.5–5×. The U→action bias
+degrades the logging policy's survival (shorter episodes → lower logged
+returns), and the additive ±δ reward shifts cancel in expectation — so the
+bias direction flows through the dominant coupling channel (here: episode
+length), not through a universal inflation. The robust statement is
+"confounding makes OPE wrong regardless of estimator"; the sign is
+DGP-specific.
+
 ## Evaluation: window returns vs per-episode J
 
 The benchmark-mode eval metric accumulates rewards over a fixed
