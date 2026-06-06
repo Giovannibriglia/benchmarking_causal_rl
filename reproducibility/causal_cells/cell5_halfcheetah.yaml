@@ -1,0 +1,23 @@
+# Cell 5 "Doctor's Intuition" - continuous anchor.
+# pi_b UNKNOWN (stock data has no propensities anyway - the cell makes it
+# explicit). Basic: BC (DM consistent). Variant: IQL.
+mode: causal_cells
+cell: 5
+anchor: continuous
+task_env: HalfCheetah-v5
+behavior_policy: unknown
+mask_spec: null
+tiers:
+  medium: mujoco/halfcheetah/medium-v0
+algos:
+  basic: bc
+  variant: iql
+seeds: [0]
+training:
+  n_steps: 20000
+  batch_size: 256
+ope:
+  fqe_iters: 600
+evaluation:
+  n_episodes: 30
+reference_checkpoint: runs/causal_cells/paper_mini_cell12_halfcheetah_20260605_172649/checkpoints/causal-halfcheetah-cell1_ppo_seed42/ckpt_ep0249.pt

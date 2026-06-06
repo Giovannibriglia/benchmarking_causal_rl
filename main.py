@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import torch
 import yaml
 from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
 from src.benchmarking.registry import (
@@ -22,9 +23,12 @@ def parse_args():
     p = argparse.ArgumentParser(description="Benchmarking Causal RL")
     p.add_argument(
         "--mode",
-        choices=["benchmark", "critic_ablation"],
+        choices=["benchmark", "critic_ablation", "causal_cells"],
         default="benchmark",
-        help="Run standard benchmarking or critic-ablation mode.",
+        help=(
+            "Run standard benchmarking, critic-ablation mode, or the "
+            "offline causal-cells pipeline (cells 3-8; spec via --reproduce)."
+        ),
     )
     p.add_argument(
         "--ablation",
@@ -130,6 +134,23 @@ def main():
             repro_name = f"{repro_name}.yaml"
         repro_path = Path("reproducibility") / repro_name
         cfg_from_file = yaml.safe_load(repro_path.read_text())
+
+    # Offline causal-cells mode: the YAML *is* the spec; dispatch and exit.
+    file_mode = cfg_from_file.get("mode") if isinstance(cfg_from_file, dict) else None
+    if args.mode == "causal_cells" or file_mode == "causal_cells":
+        if not isinstance(cfg_from_file, dict) or "cell" not in cfg_from_file:
+            raise ValueError(
+                "causal_cells mode needs a cell spec YAML via --reproduce "
+                "(see reproducibility/causal_cells/)."
+            )
+        from src.benchmarking.causal_cells import run_causal_cells
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tag = args.reproduce.replace(".yaml", "").replace("/", "_")
+        cells_run_dir = Path(f"runs/{tag}_{ts}")
+        device = torch.device(str(cfg_from_file.get("device", str(detect_device()))))
+        run_causal_cells(cfg_from_file, str(cells_run_dir), device)
+        return
 
     env_cfg_src = (
         cfg_from_file.get("env", {}) if isinstance(cfg_from_file, dict) else {}

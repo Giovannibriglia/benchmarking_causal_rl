@@ -230,9 +230,16 @@ class DirectMethod:
 
     name = "dm"
 
-    def __init__(self, gamma: float = 1.0, n_iters: int = 400, seed: int = 0) -> None:
+    def __init__(
+        self,
+        gamma: float = 1.0,
+        n_iters: int = 400,
+        sync_every: int = 50,
+        seed: int = 0,
+    ) -> None:
         self.gamma = gamma
         self.n_iters = n_iters
+        self.sync_every = sync_every
         self.seed = seed
         self.fqe: Optional[FQE] = None
 
@@ -251,7 +258,7 @@ class DirectMethod:
             source.device,
             gamma=self.gamma,
             seed=self.seed,
-        ).fit(source, target, n_iters=self.n_iters)
+        ).fit(source, target, n_iters=self.n_iters, sync_every=self.sync_every)
         starts = torch.stack([ep["obs"][0] for ep in source.episodes]).float()
         return _result(self.fqe.state_value(target, starts), self.name)
 
@@ -381,17 +388,24 @@ class DoublyRobust:
         behavior: str = "known",
         gamma: float = 1.0,
         n_fqe_iters: int = 400,
+        fqe_sync_every: int = 50,
         rho_clip: float = 100.0,
         seed: int = 0,
     ) -> None:
         self.behavior = behavior
         self.gamma = gamma
         self.n_fqe_iters = n_fqe_iters
+        self.fqe_sync_every = fqe_sync_every
         self.rho_clip = rho_clip
         self.seed = seed
 
     def estimate(self, source: OfflineDatasetSource, target: TargetPolicy) -> OPEResult:
-        dm = DirectMethod(gamma=self.gamma, n_iters=self.n_fqe_iters, seed=self.seed)
+        dm = DirectMethod(
+            gamma=self.gamma,
+            n_iters=self.n_fqe_iters,
+            sync_every=self.fqe_sync_every,
+            seed=self.seed,
+        )
         dm.estimate(source, target)  # fits the FQE
         fqe = dm.fqe
         assert fqe is not None
