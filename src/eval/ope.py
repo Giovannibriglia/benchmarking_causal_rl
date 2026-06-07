@@ -70,6 +70,34 @@ class StochasticPolicyAdapter(TargetPolicy):
         return None
 
 
+class GaussianPolicyAdapter(TargetPolicy):
+    """Continuous deterministic policies smoothed with fixed Gaussian eval
+    noise so IPW/DR densities are well-defined: pi_eval = N(mu(s), sigma^2 I).
+    The reported value is that of the SMOOTHED policy (sigma -> 0 recovers
+    the deterministic one but degenerates the densities) - documented choice,
+    sigma defaults to 0.1 on [-1,1]-scaled actions."""
+
+    def __init__(
+        self, act_fn: Callable[[torch.Tensor], torch.Tensor], sigma: float = 0.1
+    ):
+        self._act = act_fn
+        self.sigma = float(sigma)
+
+    def log_prob(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        mu = self.act(obs).float()
+        a = actions.float()
+        if a.ndim == 1:
+            a = a.unsqueeze(-1)
+        if mu.ndim == 1:
+            mu = mu.unsqueeze(-1)
+        dist = torch.distributions.Normal(mu, self.sigma)
+        return dist.log_prob(a).sum(-1)
+
+    def act(self, obs: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            return self._act(obs)
+
+
 class DeterministicPolicyAdapter(TargetPolicy):
     """Deterministic (e.g. d3rlpy greedy) discrete target: pi(a|s) is an
     indicator, so IPW ratios become indicator/propensity."""
@@ -277,29 +305,59 @@ def clone_behavior_policy(
 ) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
     """MLE-fit pi_b on observed (obs, actions); returns log pi_b(a|s).
 
-    Discrete only for now (the CartPole tiers); continuous cloning arrives
-    with the continuous confounded cells.
+    Discrete: categorical MLE. Continuous (Phase 6): Gaussian MLE with a
+    state-independent learned log-std.
     """
-    if source.actions.dtype not in (torch.int64, torch.int32):
-        raise NotImplementedError("behavior cloning of continuous pi_b: Phase 6")
     torch.manual_seed(seed)
-    n_actions = int(source.actions.max().item()) + 1
-    net = MLP(source.obs.shape[-1], n_actions).to(source.device)
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
+    if source.actions.dtype in (torch.int64, torch.int32):
+        n_actions = int(source.actions.max().item()) + 1
+        net = MLP(source.obs.shape[-1], n_actions).to(source.device)
+        opt = torch.optim.Adam(net.parameters(), lr=lr)
+        for _ in range(int(n_iters)):
+            batch = source.sample(batch_size)
+            logits = net(batch["obs"].float())
+            loss = F.cross_entropy(logits, batch["actions"].long())
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+
+        def logprob(obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+            with torch.no_grad():
+                logp = torch.log_softmax(net(obs.float()), dim=-1)
+                return logp.gather(1, actions.long().unsqueeze(-1)).squeeze(-1)
+
+        return logprob
+
+    act_dim = source.actions.shape[-1] if source.actions.ndim > 1 else 1
+    mean_net = MLP(source.obs.shape[-1], act_dim, hidden_dims=(256, 256)).to(
+        source.device
+    )
+    log_std = torch.zeros(act_dim, device=source.device, requires_grad=True)
+    opt = torch.optim.Adam(list(mean_net.parameters()) + [log_std], lr=lr)
     for _ in range(int(n_iters)):
         batch = source.sample(batch_size)
-        logits = net(batch["obs"].float())
-        loss = F.cross_entropy(logits, batch["actions"].long())
+        a = batch["actions"].float()
+        if a.ndim == 1:
+            a = a.unsqueeze(-1)
+        dist = torch.distributions.Normal(
+            mean_net(batch["obs"].float()), log_std.exp().clamp_min(1e-3)
+        )
+        loss = -dist.log_prob(a).sum(-1).mean()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
 
-    def logprob(obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    def logprob_c(obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        a = actions.float()
+        if a.ndim == 1:
+            a = a.unsqueeze(-1)
         with torch.no_grad():
-            logp = torch.log_softmax(net(obs.float()), dim=-1)
-            return logp.gather(1, actions.long().unsqueeze(-1)).squeeze(-1)
+            dist = torch.distributions.Normal(
+                mean_net(obs.float()), log_std.exp().clamp_min(1e-3)
+            )
+            return dist.log_prob(a).sum(-1)
 
-    return logprob
+    return logprob_c
 
 
 # ---------------------------------------------------------------------------

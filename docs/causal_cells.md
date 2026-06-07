@@ -93,6 +93,27 @@ are all equally wrong. Present the Cell-7 success and the Cell-8 blindness
 as a paired result; the Cell-8 variant is the Kallus–Zhou sensitivity
 INTERVAL instead (gate-approved switch).
 
+## Cell 6 honesty note: what the latent world model actually demonstrates
+
+**[flag for the paper]** In our velocity-masked instantiation, Cell 6 is the
+history-RECOVERABLE flavor of hidden state, so the GRU world model is doing
+state restoration (S3) — the same mechanism as the Cell-2 frame-stack — and
+its J ≈ 212 ceiling is the IMITATION-quality cap of its BC head (it matches
+the full-information BC on the same data, norm regret 0.60), not the
+unidentifiability bound. The unidentifiability claim genuinely binds only in
+the epistemic variant (hidden per-episode dynamics parameter, future work).
+Corollary TESTED (belief+CQL probe, `tools/probe_belief_cql.py`): reusing
+the trained GRU encoder with a CQL head was expected to recover the Cell-5
+result (~299). **Measured: J = 210.9 ± 43.3 — the reduction did NOT
+materialize**; CQL on the learned beliefs performs exactly like the BC head.
+Reading: the encoder's latent space, shaped by world-model + imitation
+losses, restores enough state for imitation but not the geometry offline
+value learning needs — so in practice the Cell-6 variant is capped twice
+(imitation head AND encoder quality), even where restoration is possible in
+principle. Caveat: single-seed probe with untuned CQL hyperparameters — the
+direction of the result is informative, its magnitude is not load-bearing.
+Paper-flag this as a negative result alongside the honesty note above.
+
 ## Methods note: the confounding gate needs a conditional test
 
 **[flag for the paper]** A state-symmetric U→action bias

@@ -15,7 +15,7 @@ tiers:
 algos:
   basic: bc
   variant: cql
-seeds: [0]
+seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 4000
   batch_size: 256
@@ -24,4 +24,13 @@ ope:
   fqe_sync_every: 10
 evaluation:
   n_episodes: 100
-reference_checkpoint: runs/causal_cells/paper_mini_cell12_cartpole_20260605_171246/checkpoints/causal-cartpole-cell1_ppo_seed42/ckpt_ep0149.pt
+# Train-or-load per-seed Cell-1 reference (cached under references/;
+# regenerated deterministically on a fresh clone - no gitignored deps).
+reference:
+  env: causal/cartpole-cell1
+  algo: ppo
+  n_episodes: 150
+  rollout_len: 512
+  n_train_envs: 8
+  n_eval_envs: 8
+  deterministic: true
