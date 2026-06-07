@@ -24,7 +24,9 @@ def reference_key(spec: dict, seed: int) -> str:
     n_episodes = int(spec.get("n_episodes", 150))
     rollout = int(spec.get("rollout_len", 512))
     n_envs = int(spec.get("n_train_envs", 8))
-    return f"{env}_{algo}_seed{seed}_ep{n_episodes}_rl{rollout}_ne{n_envs}"
+    tag = str(spec.get("tag", "")).strip()
+    suffix = f"_{tag}" if tag else ""
+    return f"{env}_{algo}_seed{seed}_ep{n_episodes}_rl{rollout}_ne{n_envs}{suffix}"
 
 
 def ensure_reference(spec: dict, seed: int, device: torch.device) -> str:

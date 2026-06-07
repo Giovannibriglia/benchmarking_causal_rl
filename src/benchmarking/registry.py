@@ -204,9 +204,9 @@ def register_default_algorithms() -> None:
         device = kwargs["device"]
         action_space = kwargs["action_space"]
         actor = SquashedGaussianActor(obs_dim, action_dim).to(device)
-        mk_q = lambda: MLP(
-            obs_dim + action_dim, 1, hidden_dims=(256, 256)
-        )  # noqa: E731
+        mk_q = lambda: MLP(  # noqa: E731
+            obs_dim + action_dim, 1, hidden_dims=(256, 256), activation=nn.ReLU
+        )
         q1, q2, q1t, q2t = (mk_q().to(device) for _ in range(4))
         # SAC needs a large buffer for million-step reference training
         buffer = ReplayBuffer(capacity=1_000_000, device=device)
