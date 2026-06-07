@@ -56,7 +56,9 @@ def ensure_reference(spec: dict, seed: int, device: torch.device) -> str:
     )
     train_cfg = TrainingConfig(
         n_episodes=n_episodes,
-        n_checkpoints=2,  # only first/last - the artifact is the final policy
+        # default 2 (first/last): the artifact is the final policy. Specs may
+        # raise it to record a usable learning curve (continuous Cell-1 panel).
+        n_checkpoints=int(spec.get("n_checkpoints", 2)),
         deterministic=bool(spec.get("deterministic", True)),
         device=str(device),
         algorithm=algo,
