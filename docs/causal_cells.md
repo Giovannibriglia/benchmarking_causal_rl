@@ -110,8 +110,9 @@ Reading: the encoder's latent space, shaped by world-model + imitation
 losses, restores enough state for imitation but not the geometry offline
 value learning needs — so in practice the Cell-6 variant is capped twice
 (imitation head AND encoder quality), even where restoration is possible in
-principle. Paper-flag this as a negative result alongside the honesty note
-above.
+principle. Caveat: single-seed probe with untuned CQL hyperparameters — the
+direction of the result is informative, its magnitude is not load-bearing.
+Paper-flag this as a negative result alongside the honesty note above.
 
 ## Methods note: the confounding gate needs a conditional test
 
