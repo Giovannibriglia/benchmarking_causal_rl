@@ -11,6 +11,7 @@ behavior_policy: unknown
 mask_spec: velocities
 tiers:
   b1d05: causal/cartpole/cell7-b1-d0p5-v0
+  b2d1: causal/cartpole/cell7-b2-d1-v0
 algos:
   basic: bc
   # Phase-5 gate-approved switch: the Cell-8 variant is the Kallus-Zhou

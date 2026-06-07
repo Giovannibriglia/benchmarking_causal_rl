@@ -367,6 +367,38 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                 )
                 report = assert_confounded(gate_view)  # raises if unconfounded
                 gate_passed = True
+                import csv as _csv
+
+                gate_csv = os.path.join(run_dir, "gate_reports.csv")
+                write_header = not os.path.exists(gate_csv)
+                with open(gate_csv, "a", newline="") as gf:
+                    w = _csv.DictWriter(
+                        gf,
+                        fieldnames=[
+                            "tier",
+                            "dataset_id",
+                            "naive_value",
+                            "ipw_value",
+                            "naive_ipw_gap",
+                            "action_u_tv",
+                            "action_u_zscore",
+                            "reward_u_zscore",
+                        ],
+                    )
+                    if write_header:
+                        w.writeheader()
+                    w.writerow(
+                        {
+                            "tier": tier,
+                            "dataset_id": dataset_id,
+                            "naive_value": report.naive_value,
+                            "ipw_value": report.ipw_value,
+                            "naive_ipw_gap": report.naive_ipw_gap,
+                            "action_u_tv": report.action_u_dependence,
+                            "action_u_zscore": report.action_u_zscore,
+                            "reward_u_zscore": report.reward_u_zscore,
+                        }
+                    )
                 print(
                     f"[gate PASS] {dataset_id}: |naive-ipw|="
                     f"{report.naive_ipw_gap:.2f} A-U z={report.action_u_zscore:.1f} "
