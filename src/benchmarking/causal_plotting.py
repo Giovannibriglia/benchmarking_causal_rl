@@ -282,6 +282,117 @@ def horizon_figure(horizon_csv: Path, outdir: Path, formats: Sequence[str]) -> N
     _save(fig, outdir, "horizon_ablation", formats)
 
 
+def online_curves(
+    bench_run_dirs: List[Path],
+    reference_run_dirs: List[Path],
+    outdir: Path,
+    formats: Sequence[str],
+    rollout_len: int = 512,
+    n_train_envs: int = 8,
+) -> None:
+    """Online cells 1/2/2fs learning curves from EXISTING benchmark CSVs:
+    window eval return vs frames, IQM band over seeds. NOTE (caption): the
+    window eval metric compresses differences near saturation - final
+    per-episode J lives in the money plot; this figure shows training
+    dynamics. Cell-1 reference runs keep only first/last checkpoints."""
+    series = {
+        "causal/cartpole-cell1": ("cell 1 (reference)", "0.3"),
+        "causal/cartpole-cell2": ("cell 2 basic (masked)", BASIC_COLOR),
+        "causal/cartpole-cell2fs": ("cell 2 variant (frame-stack)", VARIANT_COLOR),
+    }
+    frames_per_ep = rollout_len * n_train_envs
+    fig, ax = plt.subplots(figsize=(6.5, 4))
+    for env_id, (label, color) in series.items():
+        runs = reference_run_dirs if "cell1" in env_id else bench_run_dirs
+        per_seed = []
+        for rd in runs:
+            df = pd.read_csv(Path(rd) / "eval_metrics.csv")
+            df = df[df.environment == env_id]
+            if not df.empty:
+                per_seed.append(df.set_index("episode").eval_return_mean)
+        if not per_seed:
+            continue
+        mat = pd.concat(per_seed, axis=1).dropna()
+        x = (mat.index.to_numpy(float) + 1) * frames_per_ep
+        vals = mat.to_numpy(float)
+        center = np.array([iqm(v) for v in vals])
+        lo = np.quantile(vals, 0.25, axis=1)
+        hi = np.quantile(vals, 0.75, axis=1)
+        ax.plot(x, center, color=color, label=label, marker="o", ms=3)
+        ax.fill_between(x, lo, hi, color=color, alpha=0.2)
+    ax.set_xlabel("frames")
+    ax.set_ylabel("window eval return (IQM, IQR band, 5 seeds)")
+    ax.set_title(
+        "Online cells: training dynamics (window eval metric;\n"
+        "near-saturation differences are compressed - see money plot for J)",
+        fontsize=10,
+    )
+    ax.legend(fontsize=9)
+    _save(fig, outdir, "online_learning_curves", formats)
+
+
+def curve_grid(
+    curve_run_dirs: List[Path], outdir: Path, formats: Sequence[str]
+) -> None:
+    """Per-cell offline learning curves (J vs gradient step), regime-grouped
+    like the money plot; IQM band across seeds (single seed = plain line)."""
+    frames = []
+    refs = {}
+    for rd in curve_run_dirs:
+        rd = Path(rd)
+        frames.append(pd.read_csv(rd / "learning_curve.csv"))
+        m = pd.read_csv(rd / "causal_cells_metrics.csv")
+        cell = int(m.cell.iloc[0])
+        refs[cell] = (
+            iqm(m[m.role == "reference"].J.to_numpy(float)),
+            float(m[m.role == "random"].J.iloc[0]),
+        )
+    df = pd.concat(frames, ignore_index=True)
+    cells = [c for _, cs in REGIMES for c in cs if c in set(df.cell)]
+    ncols = min(3, max(1, len(cells)))
+    nrows = int(np.ceil(len(cells) / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(4 * ncols, 3 * nrows), squeeze=False
+    )
+    for i, cell in enumerate(cells):
+        ax = axes[i // ncols][i % ncols]
+        sub = df[df.cell == cell]
+        for role, color in (("basic", BASIC_COLOR), ("variant", VARIANT_COLOR)):
+            r = sub[sub.role == role]
+            if r.empty:
+                continue
+            piv = r.pivot_table(index="step", columns="seed", values="J")
+            x = piv.index.to_numpy(float)
+            vals = piv.to_numpy(float)
+            center = np.array([iqm(v[~np.isnan(v)]) for v in vals])
+            label = f"{role} ({r.algo.iloc[0]})"
+            ax.plot(x, center, color=color, label=label, marker="o", ms=3)
+            if vals.shape[1] > 1:
+                ax.fill_between(
+                    x,
+                    np.nanquantile(vals, 0.25, axis=1),
+                    np.nanquantile(vals, 0.75, axis=1),
+                    color=color,
+                    alpha=0.2,
+                )
+        if cell in refs:
+            ax.axhline(refs[cell][0], color="0.4", ls="--", lw=1)
+            ax.axhline(refs[cell][1], color="0.7", ls=":", lw=1)
+        ax.set_title(CELL_NAMES.get(cell, str(cell)), fontsize=10)
+        ax.set_xlabel("gradient step")
+        ax.set_ylabel("J (true env)")
+        ax.legend(fontsize=8)
+    for j in range(len(cells), nrows * ncols):
+        axes[j // ncols][j % ncols].axis("off")
+    fig.suptitle(
+        "Offline cells: learning curves, grouped by identification regime "
+        "(dashed: cell-1 reference; dotted: random floor)",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    _save(fig, outdir, "offline_learning_curves", formats)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Causal-cells figures/tables (regenerate from CSVs alone)"
@@ -296,6 +407,9 @@ def main() -> None:
         default=[],
         help="sweep run causal_cells_metrics.csv paths (for the OPE table)",
     )
+    parser.add_argument("--online-bench-runs", nargs="*", default=[])
+    parser.add_argument("--online-reference-runs", nargs="*", default=[])
+    parser.add_argument("--curve-runs", nargs="*", default=[])
     parser.add_argument("--outdir", default="outputs/causal_cells")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = parser.parse_args()
@@ -309,6 +423,15 @@ def main() -> None:
         gamma_figure(Path(args.gamma), outdir, args.formats)
     if Path(args.horizon).exists():
         horizon_figure(Path(args.horizon), outdir, args.formats)
+    if args.online_bench_runs:
+        online_curves(
+            [Path(p) for p in args.online_bench_runs],
+            [Path(p) for p in args.online_reference_runs],
+            outdir,
+            args.formats,
+        )
+    if args.curve_runs:
+        curve_grid([Path(p) for p in args.curve_runs], outdir, args.formats)
 
 
 if __name__ == "__main__":

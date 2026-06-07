@@ -148,6 +148,8 @@ class EnsemblePessimisticDQN(Algorithm):
         source: OfflineDatasetSource,
         n_steps: int,
         batch_size: int = 256,
+        on_step=None,
+        on_step_every: int = 0,
     ) -> Dict[str, float]:
         self._fit_reward_ensemble(source)
         r_tilde, ensemble_std = self.pessimistic_rewards(source.obs, source.actions)
@@ -171,5 +173,7 @@ class EnsemblePessimisticDQN(Algorithm):
             metrics = self.update(pess_source.sample(batch_size), pess_source)
             if (it + 1) % self.target_sync == 0:
                 self.q_target.load_state_dict(self.q_net.state_dict())
+            if on_step and on_step_every and (it + 1) % on_step_every == 0:
+                on_step(it + 1)
         metrics["ensemble_std_mean"] = float(ensemble_std.mean().item())
         return metrics

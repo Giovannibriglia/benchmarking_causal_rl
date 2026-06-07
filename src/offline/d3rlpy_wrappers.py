@@ -56,15 +56,34 @@ class D3rlpyAlgorithm(Algorithm):
         source: OfflineDatasetSource,
         n_steps: int,
         batch_size: int = 256,  # noqa: ARG002 - d3rlpy configs own batch size
+        on_step=None,
+        on_step_every: int = 0,
     ) -> Dict[str, float]:
         dataset = source.as_mdpdataset()
-        history = self.algo.fit(
-            dataset,
-            n_steps=int(n_steps),
-            n_steps_per_epoch=max(1, int(n_steps) // 2),
-            show_progress=False,
-            save_interval=10**9,  # no intermediate model dumps
-        )
+
+        def _fit(steps: int):
+            return self.algo.fit(
+                dataset,
+                n_steps=int(steps),
+                n_steps_per_epoch=max(1, int(steps)),
+                show_progress=False,
+                save_interval=10**9,  # no intermediate model dumps
+            )
+
+        if not (on_step and on_step_every):
+            history = _fit(n_steps)
+        else:
+            # learning-curve mode: repeated fit calls continue training the
+            # same (lazily built once) model. NOTE: the chunk boundaries reset
+            # d3rlpy's batch iterator, so chunked training is NOT bitwise
+            # identical to a single fit (verified ~eval-noise level drift).
+            done = 0
+            history = []
+            while done < int(n_steps):
+                chunk = min(on_step_every, int(n_steps) - done)
+                history = _fit(chunk)
+                done += chunk
+                on_step(done)
         # history: list of (epoch, metrics-dict)
         return {k: float(v) for k, v in (history[-1][1] if history else {}).items()}
 

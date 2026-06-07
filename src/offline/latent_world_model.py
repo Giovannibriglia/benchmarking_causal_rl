@@ -106,6 +106,8 @@ class LatentWorldModelBC(Algorithm):
         source: OfflineDatasetSource,
         n_steps: int,
         batch_size: int = 256,
+        on_step=None,
+        on_step_every: int = 0,
     ) -> Dict[str, float]:
         # batch_size is transition-scale (dispatcher convention); sequence
         # batches use whole episodes, so convert with a safe cap.
@@ -113,7 +115,7 @@ class LatentWorldModelBC(Algorithm):
         seqs = [self._episode_inputs(ep) for ep in source.episodes]
         g = torch.Generator().manual_seed(0)
         metrics: Dict[str, float] = {}
-        for _ in range(int(n_steps)):
+        for it in range(int(n_steps)):
             idx = torch.randint(0, len(seqs), (episodes_per_batch,), generator=g)
             chosen = [seqs[i] for i in idx.tolist()]
             T_max = max(c[0].shape[0] for c in chosen)
@@ -140,6 +142,8 @@ class LatentWorldModelBC(Algorithm):
                 },
                 source,
             )
+            if on_step and on_step_every and (it + 1) % on_step_every == 0:
+                on_step(it + 1)
         return metrics
 
     # ------------------------------------------------------------------ act

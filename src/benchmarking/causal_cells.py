@@ -60,6 +60,45 @@ from src.offline.bc import BehaviorCloning
 from src.rl.on_policy.policy import ActorCriticMLP
 
 
+class _rng_guard:
+    """Save/restore ALL global RNG state around intermediate curve evals so
+    the final policy matches the unchunked training path exactly."""
+
+    def __enter__(self):
+        import random as _random
+
+        self.torch_state = torch.get_rng_state()
+        self.cuda_state = (
+            torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        )
+        self.py_state = _random.getstate()
+        self.np_state = np.random.get_state()
+        return self
+
+    def __exit__(self, *exc):
+        import random as _random
+
+        torch.set_rng_state(self.torch_state)
+        if self.cuda_state is not None:
+            torch.cuda.set_rng_state_all(self.cuda_state)
+        _random.setstate(self.py_state)
+        np.random.set_state(self.np_state)
+        return False
+
+
+CURVE_COLUMNS = [
+    "cell",
+    "task",
+    "anchor",
+    "tier",
+    "algo",
+    "role",
+    "seed",
+    "step",
+    "J",
+]
+
+
 def _env_dims(env_id: str):
     env = gym.make(env_id)
     obs_dim = int(np.prod(env.observation_space.shape))
@@ -237,6 +276,8 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     kz_gamma = float(ope_cfg.get("kz_gamma", 2.0))
     eval_cfg = dict(cfg.get("evaluation", {}))
     n_eval_episodes = int(eval_cfg.get("n_episodes", 100))
+    eval_every = int(train_cfg.get("eval_every", max(1, n_steps // 10)))
+    curve_episodes = int(eval_cfg.get("curve_episodes", 20))
     reference_ckpt = cfg.get("reference_checkpoint")
 
     os.makedirs(run_dir, exist_ok=True)
@@ -267,7 +308,10 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     j_ref_by_seed: Dict[int, float] = {}
 
     csv_path = os.path.join(run_dir, "causal_cells_metrics.csv")
-    with CSVLogger(csv_path, fieldnames=CAUSAL_CELLS_COLUMNS) as log:
+    curve_path = os.path.join(run_dir, "learning_curve.csv")
+    with CSVLogger(csv_path, fieldnames=CAUSAL_CELLS_COLUMNS) as log, CSVLogger(
+        curve_path, fieldnames=CURVE_COLUMNS
+    ) as curve_log:
         base_row = {"cell": cell, "task": task_env, "anchor": anchor}
 
         def _ensure_j_ref(seed: int) -> float:
@@ -339,6 +383,32 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                     rng_seed=seed,
                 )
                 obs_dim = source.obs.shape[-1]
+
+                def _curve_cb(agent_, algo_label_, role_, tier_=tier, seed_=seed):
+                    act = _act_fn(agent_, device, action_type)
+
+                    def cb(step: int) -> None:
+                        with _rng_guard():
+                            rets = evaluate_policy(
+                                eval_env,
+                                act,
+                                curve_episodes,
+                                seed_base=60_000 + 100 * seed_,
+                            )
+                        curve_log.log(
+                            {
+                                **base_row,
+                                "tier": tier_,
+                                "algo": algo_label_,
+                                "role": role_,
+                                "seed": seed_,
+                                "step": step,
+                                "J": float(rets.mean()),
+                            }
+                        )
+
+                    return cb
+
                 trained = {}
                 for role in ("basic", "variant"):
                     algo_name = algos.get(role)
@@ -355,7 +425,13 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                                 cand = _build_algo(
                                     name, obs_dim, action_dim, action_type, device, seed
                                 )
-                                cand.fit_source(source, n_steps, batch_size=batch_size)
+                                cand.fit_source(
+                                    source,
+                                    n_steps,
+                                    batch_size=batch_size,
+                                    on_step=_curve_cb(cand, name, "variant"),
+                                    on_step_every=eval_every,
+                                )
                                 candidates[name] = cand
                         best_name, best_agent, best_iv = None, None, None
                         for name, cand in candidates.items():
@@ -381,7 +457,13 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                         agent = _build_algo(
                             algo_name, obs_dim, action_dim, action_type, device, seed
                         )
-                        agent.fit_source(source, n_steps, batch_size=batch_size)
+                        agent.fit_source(
+                            source,
+                            n_steps,
+                            batch_size=batch_size,
+                            on_step=_curve_cb(agent, algo_name, role),
+                            on_step_every=eval_every,
+                        )
                         trained[algo_name] = agent
                         algo_label = algo_name
                         kz_cols = {}

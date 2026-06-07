@@ -61,8 +61,12 @@ class BehaviorCloning(Algorithm):
         source: OfflineDatasetSource,
         n_steps: int,
         batch_size: int = 256,
+        on_step=None,
+        on_step_every: int = 0,
     ) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
-        for _ in range(int(n_steps)):
+        for it in range(int(n_steps)):
             metrics = self.update(source.sample(batch_size), source)
+            if on_step and on_step_every and (it + 1) % on_step_every == 0:
+                on_step(it + 1)
         return metrics
