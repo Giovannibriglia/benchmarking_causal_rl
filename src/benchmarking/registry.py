@@ -195,5 +195,38 @@ def register_default_algorithms() -> None:
     registry.register("a2c", AlgorithmSpec(builder=build_a2c, kind="on_policy"))
     registry.register("ppo", AlgorithmSpec(builder=build_ppo, kind="on_policy"))
     registry.register("trpo", AlgorithmSpec(builder=build_trpo, kind="on_policy"))
+
+    def build_sac(**kwargs):
+        from src.rl.off_policy.sac import SAC, SquashedGaussianActor
+
+        obs_dim = kwargs["obs_dim"]
+        action_dim = kwargs["action_dim"]
+        device = kwargs["device"]
+        action_space = kwargs["action_space"]
+        actor = SquashedGaussianActor(obs_dim, action_dim).to(device)
+        mk_q = lambda: MLP(
+            obs_dim + action_dim, 1, hidden_dims=(256, 256)
+        )  # noqa: E731
+        q1, q2, q1t, q2t = (mk_q().to(device) for _ in range(4))
+        # SAC needs a large buffer for million-step reference training
+        buffer = ReplayBuffer(capacity=1_000_000, device=device)
+        try:
+            scale = float(abs(action_space.high[0]))
+        except Exception:
+            scale = 1.0
+        agent = SAC(
+            actor,
+            q1,
+            q2,
+            q1t,
+            q2t,
+            buffer,
+            device=device,
+            action_dim=action_dim,
+            action_scale=scale,
+        )
+        return actor, agent
+
     registry.register("dqn", AlgorithmSpec(builder=build_dqn, kind="off_policy"))
+    registry.register("sac", AlgorithmSpec(builder=build_sac, kind="off_policy"))
     registry.register("ddpg", AlgorithmSpec(builder=build_ddpg, kind="off_policy"))
