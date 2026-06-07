@@ -324,8 +324,10 @@ def online_curves(
     ax.set_ylabel("window eval return (IQM, IQR band, 5 seeds)")
     ax.set_title(
         "Online cells: training dynamics (window eval metric;\n"
-        "near-saturation differences are compressed - see money plot for J)",
-        fontsize=10,
+        "near-saturation differences are compressed - see money plot for J).\n"
+        "The frame-stack variant pays an early sample-efficiency cost for\n"
+        "observability restoration, then crosses the basic's plateau",
+        fontsize=9,
     )
     ax.legend(fontsize=9)
     _save(fig, outdir, "online_learning_curves", formats)
