@@ -77,7 +77,7 @@ class SAC(BaseOffPolicy):
         gamma: float = 0.99,
         tau: float = 0.005,
         action_scale: float = 1.0,
-        updates_per_learn: int = 4,
+        updates_per_learn: int = 8,  # = n_train_envs -> canonical UTD 1.0
     ) -> None:
         super().__init__(device, gamma=gamma)
         self.actor = actor

@@ -1,15 +1,16 @@
-# Cell 3 "Perfect Archive" - continuous anchor (stock Minari medium tier).
+# Cell 4 "Burned Files" - continuous anchor.
 mode: causal_cells
-cell: 3
+cell: 4
 anchor: continuous
 task_env: HalfCheetah-v5
+eval_env: causal/halfcheetah-cell2
 behavior_policy: known
-mask_spec: null
+mask_spec: velocities
 tiers:
   medium: mujoco/halfcheetah/medium-v0
 algos:
   basic: bc
-  variant: iql
+  variant: proximal
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000

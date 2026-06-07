@@ -41,10 +41,19 @@ class PropensityStepDataCallback(StepDataCallback):
         self, env, obs, info, action=None, rew=None, terminated=None, truncated=None
     ):
         step_data = super().__call__(env, obs, info, action, rew, terminated, truncated)
-        info = dict(step_data["info"] or {})
-        info["behavior_logprob"] = np.float64(
-            0.0 if action is None else type(self).current_logprob
-        )
+        src_info = step_data["info"] or {}
+        # Emit a FIXED info schema regardless of the env's native infos
+        # (MuJoCo varies keys between reset and step; Minari requires identical
+        # keys on every step). Our two keys are the only load-bearing ones;
+        # full observations are stored separately. Preserve confounder_u when
+        # the wrapped env provides it.
+        info = {
+            "behavior_logprob": np.float64(
+                0.0 if action is None else type(self).current_logprob
+            )
+        }
+        if "confounder_u" in src_info:
+            info["confounder_u"] = np.float64(src_info["confounder_u"])
         step_data["info"] = info
         return step_data
 
@@ -109,7 +118,9 @@ def collect_dataset(
             if isinstance(info, dict) and "confounder_u" in info:
                 latent = torch.tensor([float(info["confounder_u"])], device=device)
             action, logp = behavior_policy.select_action(obs_t, latent=latent)
-            PropensityStepDataCallback.current_logprob = float(logp.item())
+            PropensityStepDataCallback.current_logprob = float(
+                logp.reshape(-1)[0].item()
+            )
             a = action.squeeze(0).detach().cpu().numpy()
             if a.ndim == 0:
                 a = a.item()

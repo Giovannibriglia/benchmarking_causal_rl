@@ -1,15 +1,20 @@
-# Cell 3 "Perfect Archive" - continuous anchor (stock Minari medium tier).
+# Cell 7 "Shadowed Vitals" - continuous anchor. Confounded HC (gamma=1,
+# delta=1.5 ~= 1 per-step reward std), pi_b known, Z observed. Gate-checked.
 mode: causal_cells
-cell: 3
+cell: 7
 anchor: continuous
 task_env: HalfCheetah-v5
 behavior_policy: known
 mask_spec: null
 tiers:
-  medium: mujoco/halfcheetah/medium-v0
+  g1d1p5: causal/halfcheetah/cell7-g1-d1p5-v0
+dataset_expect:
+  g1d1p5:
+    gamma: 1.0
+    delta: 1.5
 algos:
   basic: bc
-  variant: iql
+  variant: ens_pessimistic
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000

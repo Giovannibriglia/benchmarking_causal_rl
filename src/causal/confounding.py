@@ -127,6 +127,55 @@ class ConfoundedExplorer(BehaviorPolicy):
         return action, logp
 
 
+class GaussianConfoundedExplorer(BehaviorPolicy):
+    """Continuous U-biased logging policy (§6.2 continuous coupling).
+
+    Behavior: ``a ~ N(mu_b(s) + gamma*U*v, sigma^2 I)`` where ``mu_b`` is a
+    base deterministic policy (e.g. the cached Cell-1 SAC actor mean) and
+    ``v`` a fixed unit direction. The EXACT Gaussian log-density of the
+    SAMPLED action is logged. The sampled action is passed to the env
+    unclipped (MuJoCo clamps ctrl internally); the biased mean is kept
+    inside (−0.95, 0.95) so boundary effects are negligible — documented
+    rather than hidden in the propensities.
+    """
+
+    def __init__(
+        self,
+        base_mean_fn,
+        gamma: float = 1.0,
+        sigma: float = 0.3,
+        v: Optional[torch.Tensor] = None,
+        action_dim: int = 6,
+    ) -> None:
+        self.base_mean_fn = base_mean_fn
+        self.gamma = float(gamma)
+        self.sigma = float(sigma)
+        if v is None:
+            v = torch.ones(action_dim) / float(action_dim) ** 0.5
+        self.v = v
+
+    def _biased_mean(self, obs: torch.Tensor, latent: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            mu = self.base_mean_fn(obs)
+        u = latent.reshape(-1, 1).to(mu.device).float()
+        v = self.v.to(mu.device)
+        return (mu + self.gamma * u * v).clamp(-0.95, 0.95)
+
+    def select_action(
+        self, obs: torch.Tensor, latent: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if latent is None:
+            raise ValueError(
+                "GaussianConfoundedExplorer requires the latent U at "
+                "action-selection time (U -> action pathway)."
+            )
+        mean = self._biased_mean(obs, latent)
+        dist = torch.distributions.Normal(mean, self.sigma)
+        action = dist.sample()
+        logp = dist.log_prob(action).sum(-1)
+        return action, logp
+
+
 # ---------------------------------------------------------------------------
 # The confounding gate
 # ---------------------------------------------------------------------------
@@ -179,41 +228,76 @@ def assert_confounded(
             "the gate needs LOGGED propensities; run it on the known-pi_b "
             "view of the dataset before any cell switches discard them."
         )
-    if source.actions.dtype not in (torch.int64, torch.int32):
-        raise NotImplementedError("continuous-action gate arrives in Phase 6")
+    continuous = source.actions.dtype not in (torch.int64, torch.int32)
 
-    # --- (i) naive vs IPW of the U-blind behavior clone -------------------
-    from src.offline.bc import BehaviorCloning
-    from src.rl.on_policy.policy import ActorCriticMLP
-
-    torch.manual_seed(clone_seed)
-    n_actions = int(source.actions.max().item()) + 1
-    clone = BehaviorCloning(
-        ActorCriticMLP(source.obs.shape[-1], n_actions, "discrete", source.device),
-        source.device,
-    )
-    clone.fit_source(source, n_steps=1500)
-    target = StochasticPolicyAdapter(clone.policy)
-    naive = NaiveEstimator().estimate(source, target).value
-    ipw = (
-        IPWEstimator(behavior="known", self_normalized=True)
-        .estimate(source, target)
-        .value
-    )
-    gap = abs(naive - ipw)
-    cond_i = gap > tau * max(abs(naive), 1e-8)
-
-    # --- (ii) A depends on U GIVEN s ---------------------------------------
-    # A state-symmetric logit bias (logits' = logits + beta*U*e_{a*}) leaves
-    # the MARGINAL action distribution unchanged, so we test conditional
-    # dependence via the propensity residual: logged log pi_b(a|s,U) minus
-    # the U-blind clone's log pi_bar(a|s). Without confounding the residual
-    # is U-independent; with U->A coupling it shifts with the sign of U.
+    # --- U-blind behavior clone (shared by conditions i and ii) ------------
     ep_u = _episode_u(source).cpu()
     lengths = [int(ep["rewards"].shape[0]) for ep in source.episodes]
     step_u = torch.repeat_interleave(ep_u, torch.tensor(lengths))
-    actions = source.actions.long().cpu()
-    clone_logp = target.log_prob(source.obs.float(), source.actions).cpu()
+    tv_a = 0.0
+
+    if continuous:
+        # Gaussian MLE clone of the marginal behavior policy
+        from src.eval.ope import clone_behavior_policy
+
+        torch.manual_seed(clone_seed)
+        clone_logp_fn = clone_behavior_policy(source, seed=clone_seed)
+        clone_logp = clone_logp_fn(source.obs.float(), source.actions).cpu()
+
+        # --- (i) truncated-horizon SN-IPW vs naive ------------------------
+        # Full-episode importance products degenerate at MuJoCo horizons
+        # (curse of horizon), so the gate uses a TRUNCATED-horizon (K-step)
+        # self-normalized IPW as a DETECTION STATISTIC (not an estimator):
+        # partial products over the first K steps against K-step returns.
+        K = 50
+        log_ratio = (-(source.behavior_logprob.cpu() - clone_logp)).cpu()
+        w_list, g_list, naive_list = [], [], []
+        start = 0
+        for T in lengths:
+            k = min(K, T)
+            lr = log_ratio[start : start + k].sum().clamp(min=-30.0, max=30.0)
+            w_list.append(torch.exp(lr))
+            g = source.rewards[start : start + k].sum().cpu()
+            g_list.append(g)
+            naive_list.append(g)
+            start += T
+        w = torch.stack(w_list)
+        g = torch.stack(g_list).float()
+        naive = float(torch.stack(naive_list).float().mean())
+        ipw = float((w * g).sum() / w.sum().clamp_min(1e-12))
+        gap = abs(naive - ipw)
+        cond_i = gap > tau * max(abs(naive), 1e-8)
+    else:
+        from src.offline.bc import BehaviorCloning
+        from src.rl.on_policy.policy import ActorCriticMLP
+
+        torch.manual_seed(clone_seed)
+        n_actions = int(source.actions.max().item()) + 1
+        clone = BehaviorCloning(
+            ActorCriticMLP(source.obs.shape[-1], n_actions, "discrete", source.device),
+            source.device,
+        )
+        clone.fit_source(source, n_steps=1500)
+        target = StochasticPolicyAdapter(clone.policy)
+        naive = NaiveEstimator().estimate(source, target).value
+        ipw = (
+            IPWEstimator(behavior="known", self_normalized=True)
+            .estimate(source, target)
+            .value
+        )
+        gap = abs(naive - ipw)
+        cond_i = gap > tau * max(abs(naive), 1e-8)
+        clone_logp = target.log_prob(source.obs.float(), source.actions).cpu()
+        actions = source.actions.long().cpu()
+        # marginal TV kept as a descriptive diagnostic only (discrete)
+        pos, neg = actions[step_u > 0], actions[step_u < 0]
+        p_pos = torch.bincount(pos, minlength=n_actions).float() / max(len(pos), 1)
+        p_neg = torch.bincount(neg, minlength=n_actions).float() / max(len(neg), 1)
+        tv_a = 0.5 * (p_pos - p_neg).abs().sum().item()
+
+    # --- (ii) A depends on U GIVEN s ---------------------------------------
+    # Conditional dependence via the propensity residual: logged
+    # log pi_b(a|s,U) minus the U-blind clone's log pi_bar(a|s).
     residual = source.behavior_logprob.cpu() - clone_logp
     res_pos, res_neg = residual[step_u > 0], residual[step_u < 0]
     effect_a = float(res_pos.mean() - res_neg.mean())
@@ -224,11 +308,6 @@ def assert_confounded(
         )
     )
     z_a = abs(effect_a) / max(se_a, 1e-12)
-    # marginal TV kept as a descriptive diagnostic only
-    pos, neg = actions[step_u > 0], actions[step_u < 0]
-    p_pos = torch.bincount(pos, minlength=n_actions).float() / max(len(pos), 1)
-    p_neg = torch.bincount(neg, minlength=n_actions).float() / max(len(neg), 1)
-    tv_a = 0.5 * (p_pos - p_neg).abs().sum().item()
     cond_ii = z_a > z_crit
 
     # --- (iii) R depends on U ----------------------------------------------

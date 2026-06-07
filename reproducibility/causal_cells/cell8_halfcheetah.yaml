@@ -1,15 +1,22 @@
-# Cell 3 "Perfect Archive" - continuous anchor (stock Minari medium tier).
+# Cell 8 "Dark Ages" - continuous anchor. Same confounded HC data, velocities
+# masked, propensities discarded. KZ interval variant (non-identifiable).
 mode: causal_cells
-cell: 3
+cell: 8
 anchor: continuous
 task_env: HalfCheetah-v5
-behavior_policy: known
-mask_spec: null
+eval_env: causal/halfcheetah-cell2
+behavior_policy: unknown
+mask_spec: velocities
 tiers:
-  medium: mujoco/halfcheetah/medium-v0
+  g1d1p5: causal/halfcheetah/cell7-g1-d1p5-v0
+dataset_expect:
+  g1d1p5:
+    gamma: 1.0
+    delta: 1.5
 algos:
   basic: bc
-  variant: iql
+  variant: kz_select
+  kz_candidates: ens_pessimistic
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000
@@ -17,6 +24,7 @@ training:
 ope:
   fqe_iters: 2000
   fqe_sync_every: 20
+  kz_gamma: 2.0
 evaluation:
   n_episodes: 30
   curve_episodes: 10
