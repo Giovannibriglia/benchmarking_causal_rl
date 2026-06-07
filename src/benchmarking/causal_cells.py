@@ -244,8 +244,32 @@ def _load_reference_act_fn(ckpt_path: str, env_id: str, device):
     from src.benchmarking.checkpoints import load_checkpoint
 
     obs_dim, action_dim, action_type = _env_dims(env_id)
+    ckpt = load_checkpoint(ckpt_path)
+    ref_algo = str(
+        ((ckpt.get("config") or {}).get("training") or {}).get("algorithm", "ppo")
+    )
+    if ref_algo == "sac":
+        from src.rl.off_policy.sac import SquashedGaussianActor
+
+        actor = SquashedGaussianActor(obs_dim, action_dim).to(device)
+        actor.load_state_dict(ckpt["policy_state"])
+
+        import gymnasium as gym
+
+        probe = gym.make(env_id)
+        scale = float(abs(probe.action_space.high[0]))
+        probe.close()
+
+        def act(obs: np.ndarray):
+            t = torch.as_tensor(obs.reshape(1, -1), dtype=torch.float32, device=device)
+            with torch.no_grad():
+                mean, _ = actor(t)
+            return (torch.tanh(mean) * scale).squeeze(0).cpu().numpy()
+
+        return act
+
     policy = ActorCriticMLP(obs_dim, action_dim, action_type, device)
-    policy.load_state_dict(load_checkpoint(ckpt_path)["policy_state"])
+    policy.load_state_dict(ckpt["policy_state"])
 
     def act(obs: np.ndarray):
         t = torch.as_tensor(obs.reshape(1, -1), dtype=torch.float32, device=device)
