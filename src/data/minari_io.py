@@ -58,14 +58,36 @@ def collect_dataset(
     device: torch.device,
     max_steps_per_episode: Optional[int] = None,
     env_factory=None,
+    collection_config: Optional[dict] = None,
+    force: bool = False,
 ) -> None:
     """Roll ``behavior_policy`` in ``env_id`` (or ``env_factory()``, e.g. a
     ConfoundedEnv wrap) and save a Minari dataset with exact propensities in
-    infos. Overwrites an existing local dataset id."""
+    infos.
+
+    OVERWRITE GUARD (Phase-6A gate condition 2): an existing dataset id is a
+    HARD ERROR unless ``force=True`` — any collection-parameter change must
+    bump the version suffix instead. The full collection config is embedded
+    in the Minari description as JSON and asserted at load time.
+    """
+    import json as _json
+
     import minari
 
     if dataset_id in minari.list_local_datasets():
+        if not force:
+            raise FileExistsError(
+                f"Minari dataset '{dataset_id}' already exists. Datasets are "
+                "content-versioned: bump the version suffix for changed "
+                "collection parameters, or pass force=True to overwrite "
+                "deliberately."
+            )
         minari.delete_dataset(dataset_id)
+    cfg = dict(collection_config or {})
+    cfg.setdefault("env_id", env_id)
+    cfg.setdefault("n_episodes", int(n_episodes))
+    cfg.setdefault("seed", int(seed))
+    cfg.setdefault("policy", type(behavior_policy).__name__)
 
     base_env = env_factory() if env_factory is not None else gym.make(env_id)
     env = DataCollector(
@@ -100,9 +122,48 @@ def collect_dataset(
         dataset_id=dataset_id,
         algorithm_name=type(behavior_policy).__name__,
         description="Collected with exact behavior_logprob in infos "
-        "(benchmarking_causal_rl, causal cells).",
+        "(benchmarking_causal_rl, causal cells). "
+        f"|collection_config={_json.dumps(cfg, sort_keys=True)}",
     )
     env.close()
+
+
+def read_collection_config(dataset_id: str) -> Optional[dict]:
+    """Parse the collection config embedded in the Minari description."""
+    import json as _json
+
+    import minari
+
+    ds = minari.load_dataset(dataset_id)
+    desc = ""
+    storage = getattr(ds, "storage", None)
+    if storage is not None:
+        desc = str(storage.metadata.get("description", "") or "")
+    if not desc:
+        desc = str(getattr(ds.spec, "description", "") or "")
+    marker = "|collection_config="
+    if marker not in desc:
+        return None
+    return _json.loads(desc.split(marker, 1)[1])
+
+
+def assert_collection_config(dataset_id: str, expect: dict) -> None:
+    """Assert the dataset's embedded collection config matches the cell
+    YAML's expectations (subset match). Hard error on mismatch or when the
+    dataset predates config embedding."""
+    cfg = read_collection_config(dataset_id)
+    if cfg is None:
+        raise AssertionError(
+            f"dataset '{dataset_id}' has no embedded collection config; "
+            "recollect it with the guarded collector before pinning "
+            "expectations."
+        )
+    for key, val in expect.items():
+        if key not in cfg or cfg[key] != val:
+            raise AssertionError(
+                f"dataset '{dataset_id}' collection config mismatch on "
+                f"'{key}': expected {val!r}, recorded {cfg.get(key)!r}."
+            )
 
 
 def to_offline_source(
@@ -112,6 +173,7 @@ def to_offline_source(
     mask_indices: Optional[Sequence[int]] = None,
     max_episodes: Optional[int] = None,
     rng_seed: int = 0,
+    expect: Optional[dict] = None,
 ) -> OfflineDatasetSource:
     """Load a Minari dataset into an :class:`OfflineDatasetSource`.
 
@@ -121,6 +183,8 @@ def to_offline_source(
     """
     import minari
 
+    if expect:
+        assert_collection_config(dataset_id, expect)
     ds = minari.load_dataset(dataset_id)
     episodes = []
     for i, ep in enumerate(ds.iterate_episodes()):

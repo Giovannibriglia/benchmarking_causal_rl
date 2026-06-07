@@ -46,6 +46,7 @@ def collect_confounded_cartpole(
     q_net,
     version: int = 0,
     run_gate: bool = True,
+    force: bool = False,
 ):
     """Collect one (beta, delta) config; optionally enforce the gate."""
 
@@ -69,6 +70,12 @@ def collect_confounded_cartpole(
         seed=seed * 1000 + 400_000,
         device=device,
         env_factory=env_factory,
+        collection_config={
+            "beta": float(beta),
+            "delta": float(delta),
+            "u_dist": "bernoulli_pm1",
+        },
+        force=force,
     )
     if run_gate:
         source = to_offline_source(dataset_id, device, behavior_policy="known")
@@ -93,6 +100,11 @@ def main() -> None:
         help="beta:delta pairs to collect (gated)",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="deliberately overwrite existing dataset ids",
+    )
+    parser.add_argument(
         "--neutered",
         action="store_true",
         help="also collect the beta=delta=0 negative control (ungated)",
@@ -106,11 +118,18 @@ def main() -> None:
     for cfg in args.configs:
         beta, delta = (float(x) for x in cfg.split(":"))
         collect_confounded_cartpole(
-            beta, delta, args.episodes, args.seed, device, q_net
+            beta, delta, args.episodes, args.seed, device, q_net, force=args.force
         )
     if args.neutered:
         collect_confounded_cartpole(
-            0.0, 0.0, args.episodes, args.seed, device, q_net, run_gate=False
+            0.0,
+            0.0,
+            args.episodes,
+            args.seed,
+            device,
+            q_net,
+            run_gate=False,
+            force=args.force,
         )
 
 

@@ -277,6 +277,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     eval_cfg = dict(cfg.get("evaluation", {}))
     n_eval_episodes = int(eval_cfg.get("n_episodes", 100))
     eval_every = int(train_cfg.get("eval_every", max(1, n_steps // 10)))
+    dataset_expect = dict(cfg.get("dataset_expect", {}) or {})
     curve_episodes = int(eval_cfg.get("curve_episodes", 20))
     reference_ckpt = cfg.get("reference_checkpoint")
 
@@ -363,7 +364,10 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                 from src.causal.confounding import assert_confounded
 
                 gate_view = to_offline_source(
-                    dataset_id, device, behavior_policy="known"
+                    dataset_id,
+                    device,
+                    behavior_policy="known",
+                    expect=dataset_expect.get(tier),
                 )
                 report = assert_confounded(gate_view)  # raises if unconfounded
                 gate_passed = True
@@ -413,6 +417,7 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                     behavior_policy=behavior_policy,
                     mask_indices=mask_indices,
                     rng_seed=seed,
+                    expect=dataset_expect.get(tier),
                 )
                 obs_dim = source.obs.shape[-1]
 

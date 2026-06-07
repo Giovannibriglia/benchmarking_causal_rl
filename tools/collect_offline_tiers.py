@@ -89,6 +89,11 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=300, help="episodes per tier")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--version", type=int, default=0)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="deliberately overwrite existing dataset ids",
+    )
     args = parser.parse_args()
 
     device = torch.device("cpu")  # tiny nets; CPU keeps collection portable
@@ -104,6 +109,8 @@ def main() -> None:
             n_episodes=args.episodes,
             seed=args.seed * 1000 + seed_offset * 100_000,
             device=device,
+            collection_config={"tier": tier, "epsilon": float(eps)},
+            force=args.force,
         )
         print(f"collected {dataset_id}: {args.episodes} episodes (epsilon={eps})")
 

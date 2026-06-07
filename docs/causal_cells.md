@@ -143,3 +143,28 @@ The benchmark-mode eval metric accumulates rewards over a fixed
 (`512 − #failures`), hiding most of the Cell-2 regret. Acceptance and the
 Phase-3 regret protocol use TRUE per-episode returns
 (`tools/quick_j_eval.py`; ≥100 full episodes per checkpoint).
+
+## Phase-6A grid findings
+
+**[flag for the paper — three results]**
+
+1. **Gate-statistic factorization** (heatmap iii, the gate-validation
+   figure): over the β×δ grid the A–U conditional z-score depends ONLY on β
+   (3.1–6.4 → 13.2 → 18.1) and the R–U z-score ONLY on δ — the two gate
+   conditions cleanly isolate their designed causal pathways.
+2. **Gate power boundary**: β=0.5 confounding is undetectable at 300
+   episodes (z = 2.34 < 3) and decisively detected at 600 (z = 6.4) — the
+   gate's sensitivity is a sample-size statement, quotable as an operating
+   characteristic.
+3. **Non-monotone naive-OPE bias** (heatmap ii, caption-level claim only):
+   |naive − true J| peaks at weak-β/strong-δ (175 at β=0.5, δ=0.5) rather
+   than at maximal confounding — the bias channel mixes action-pathway
+   survival effects with reward shifts, so "stronger confounding" does not
+   monotonically mean "more biased naive OPE".
+
+Dataset ruling (6A gate, decision A): the 600-episode confounded datasets
+are canonical for cells 7/8; June-6 (300-episode) values are archived in the
+run dirs; the within-CI drift is explained-and-resolved. Collection tools
+now hard-error on existing dataset ids (no silent overwrites), embed the
+full collection config in Minari metadata, and cell YAMLs can pin
+`dataset_expect:` blocks asserted at load time.
