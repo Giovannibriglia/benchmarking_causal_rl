@@ -185,3 +185,71 @@ def test_psi_hook():
     env = ConfoundedEnv(gym.make("CartPole-v1"), delta=1.0, seed=0)
     assert env._psi(np.zeros(4), 0) == 1.0
     env.close()
+
+
+# ---------------------------------------------------------------------------
+# Continuous-anchor gate (Phase-6C Option A): synthetic, hermetic
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_continuous_confounded(
+    gamma: float, delta: float, n_episodes: int = 300, horizon: int = 30, seed: int = 0
+):
+    """2-dim continuous world: U biases the action mean AND shifts reward."""
+    from src.data.experience_source import OfflineDatasetSource
+
+    g = torch.Generator().manual_seed(seed)
+    sigma = 0.3
+    episodes = []
+    for _ in range(n_episodes):
+        u = 1.0 if torch.rand(1, generator=g).item() < 0.5 else -1.0
+        obs_l, act_l, rew_l, logp_l = [], [], [], []
+        x = torch.randn(2, generator=g)
+        for _t in range(horizon):
+            mean = torch.tanh(x) + gamma * u * torch.tensor([0.7, -0.7])
+            a = mean + sigma * torch.randn(2, generator=g)
+            logp = torch.distributions.Normal(mean, sigma).log_prob(a).sum()
+            r = float(x.sum() * 0.1) + delta * u
+            obs_l.append(x.clone())
+            act_l.append(a)
+            rew_l.append(r)
+            logp_l.append(float(logp))
+            x = torch.randn(2, generator=g)
+        obs_l.append(x.clone())
+        episodes.append(
+            {
+                "obs": torch.stack(obs_l),
+                "actions": torch.stack(act_l),
+                "rewards": torch.tensor(rew_l),
+                "terminations": torch.zeros(horizon, dtype=torch.bool),
+                "truncations": torch.tensor(
+                    [False] * (horizon - 1) + [True], dtype=torch.bool
+                ),
+                "behavior_logprob": torch.tensor(logp_l),
+                "confounder_u": torch.full((horizon,), u),
+            }
+        )
+    return OfflineDatasetSource(episodes, DEVICE, behavior_policy="known")
+
+
+def test_continuous_gate_passes_on_confounded():
+    src = _synthetic_continuous_confounded(gamma=1.0, delta=1.5)
+    report = assert_confounded(src)
+    assert report.passed
+    assert report.action_u_zscore > 3.0  # (ii) holds
+    assert report.reward_u_zscore > 3.0  # (iii) holds
+
+
+def test_continuous_gate_fails_on_neutered():
+    src = _synthetic_continuous_confounded(gamma=0.0, delta=0.0)
+    with pytest.raises(ConfoundingGateError, match="functionally unconfounded"):
+        assert_confounded(src)
+
+
+def test_continuous_gate_condition_i_is_diagnostic_only():
+    """gamma>0, delta>0 but a near-degenerate condition (i): still PASSES on
+    (ii)+(iii) - condition (i) is diagnostic on continuous, not pass/fail."""
+    src = _synthetic_continuous_confounded(gamma=1.0, delta=1.5)
+    report = assert_confounded(src)
+    # passing despite condition (i) being unreliable at horizon is the point
+    assert report.passed
