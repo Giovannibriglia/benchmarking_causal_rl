@@ -223,3 +223,21 @@ collection callback therefore emits a FIXED schema — only the load-bearing
 variable native infos (full observations are stored separately, so nothing
 is lost). Without this, continuous-anchor collection raises a Minari
 "Dict key mismatch".
+
+## Reading the merged 8×2 money plot: anchors are NOT comparable in height
+
+**[binding figure-interpretation rule]** Continuous normalized regret is
+computed against a DEMONSTRATOR-level normalizer (J_ref^cont = 12,451, the
+medium-tier behavior policy), which 100k-step offline learners do not
+approach even in the IDENTIFIED cells (3, 5). Consequently the ABSOLUTE
+regret levels are not comparable across anchors — a continuous cell sitting
+higher than its discrete counterpart does NOT mean it is "harder". Only
+WITHIN-anchor cell patterns and basic-vs-variant orderings carry meaning.
+
+This is the same effect already visible on the discrete anchor, where
+identified-cell regret is nonzero because medium-tier data caps achievable
+performance below the Cell-1 optimum — the normalizer measures distance to
+the reference, not to the best offline-achievable policy. The merged money
+plot caption states this explicitly; the two anchors are drawn in separate
+side-by-side panels (never a shared y-axis comparison) precisely to prevent
+a height-offset misreading.
