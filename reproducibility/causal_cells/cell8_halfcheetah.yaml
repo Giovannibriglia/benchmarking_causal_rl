@@ -17,17 +17,18 @@ algos:
   basic: bc
   variant: kz_select
   kz_candidates: bc cql  # K-Z LB-maximizer over continuous-native candidates
-seeds: [0, 1, 2, 3, 4]
+seeds: [0, 1, 2]
 training:
   n_steps: 100000
   batch_size: 256
+  eval_every: 100000000
 ope:
-  fqe_iters: 2000
-  fqe_sync_every: 20
+  fqe_iters: 0          # FQE/DM/DR off (continuous OPE diagnostic-only)
+  kz_gamma: 2.0
   kz_gamma: 2.0
 evaluation:
   n_episodes: 30
-  curve_episodes: 10
+  curve_episodes: 0   # curves off on continuous offline cells
 # Regret normalizer: anchor-level constant J_ref^cont (Phase-6C
 # ruling). Per-seed SAC references are trained separately and feed
 # only the Cell-1 learning-curve panel, not these regret numbers.

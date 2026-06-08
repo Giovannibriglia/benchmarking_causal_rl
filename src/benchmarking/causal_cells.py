@@ -212,7 +212,9 @@ def _ope_block(
     out = {"ope_naive": nan, "ope_dm": nan, "ope_ipw": nan, "ope_dr": nan}
     target = _target_adapter(agent, device, action_type, action_dim)
     out["ope_naive"] = NaiveEstimator().estimate(source, target).value
-    if target is None:
+    if target is None or fqe_iters <= 0:
+        # fqe_iters<=0: OPE is naive-only (continuous anchor - DM/IPW/DR are
+        # diagnostic-only and degenerate at H~1000; skipped to save compute).
         return out
     out["ope_dm"] = (
         DirectMethod(gamma=1.0, n_iters=fqe_iters, sync_every=fqe_sync_every, seed=seed)
