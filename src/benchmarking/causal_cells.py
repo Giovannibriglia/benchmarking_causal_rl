@@ -329,11 +329,11 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     # the SAC online policy scores ~9.5k. Honest: SAC's J is still logged as
     # the reference row; only the normalizer denominator uses this constant.
     reference_normalizer = cfg.get("reference_normalizer")
-    if not reference_spec and not reference_ckpt:
+    if not reference_spec and not reference_ckpt and reference_normalizer is None:
         raise ValueError(
             "a reference is required: either reference: {env, algo, "
-            "n_episodes, ...} (train-or-load, preferred) or a legacy "
-            "reference_checkpoint path."
+            "n_episodes, ...} (train-or-load), a legacy reference_checkpoint, "
+            "or an anchor-level reference_normalizer constant."
         )
     j_random = float(np.mean(random_policy_returns(task_env, n_eval_episodes)))
     j_ref_by_seed: Dict[int, float] = {}
@@ -348,6 +348,27 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
         def _ensure_j_ref(seed: int) -> float:
             if seed in j_ref_by_seed:
                 return j_ref_by_seed[seed]
+            # When an anchor-level normalizer constant is set, regret uses it
+            # (not the per-seed reference J), so cell runs need NOT train or
+            # evaluate the per-seed reference at all - the SAC reference
+            # curves come from the dedicated reference jobs and feed only the
+            # Cell-1 figure panel. Log the constant as the reference row.
+            if reference_normalizer is not None and not reference_spec:
+                j_ref = float(reference_normalizer)
+                j_ref_by_seed[seed] = j_ref
+                log.log(
+                    {
+                        **base_row,
+                        "tier": "",
+                        "algo": "reference_normalizer",
+                        "role": "reference",
+                        "seed": seed,
+                        "J": j_ref,
+                        "regret": 0.0,
+                        "normalized_regret": 0.0,
+                    }
+                )
+                return j_ref
             if reference_spec:
                 from src.eval.references import ensure_reference
 

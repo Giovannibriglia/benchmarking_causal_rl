@@ -25,17 +25,7 @@ ope:
 evaluation:
   n_episodes: 30
   curve_episodes: 10
-# Anchor-level regret normalizer (Phase-6C ruling): J_ref^cont =
-# max(J_SAC=9516, J_behavior_medium=12451). SAC's 9.5k is logged as
-# the reference row; regret uses this constant so it stays >= 0.
+# Regret normalizer: anchor-level constant J_ref^cont (Phase-6C
+# ruling). Per-seed SAC references are trained separately and feed
+# only the Cell-1 learning-curve panel, not these regret numbers.
 reference_normalizer: 12451
-reference:
-  env: causal/halfcheetah-cell1
-  algo: sac
-  tag: relu8
-  n_episodes: 250
-  rollout_len: 1024
-  n_train_envs: 8
-  n_eval_envs: 8
-  n_checkpoints: 12
-  deterministic: true
