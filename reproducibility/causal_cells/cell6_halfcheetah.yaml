@@ -10,7 +10,9 @@ tiers:
   medium: mujoco/halfcheetah/medium-v0
 algos:
   basic: bc
-  variant: latent_wm
+  # variant latent_wm is discrete-anchor-only (Phase-5); continuous
+  # proximal / recurrent latent-WM = future work. Basic-only here; the
+  # history-recoverable recovery story is established on the discrete anchor.
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000

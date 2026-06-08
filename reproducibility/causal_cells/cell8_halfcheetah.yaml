@@ -16,7 +16,7 @@ dataset_expect:
 algos:
   basic: bc
   variant: kz_select
-  kz_candidates: ens_pessimistic
+  kz_candidates: bc cql  # K-Z LB-maximizer over continuous-native candidates
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000

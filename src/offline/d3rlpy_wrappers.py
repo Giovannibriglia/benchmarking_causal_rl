@@ -89,14 +89,17 @@ class D3rlpyAlgorithm(Algorithm):
 
 
 def make_cql(device: torch.device, action_type: str, **overrides) -> D3rlpyAlgorithm:
+    from d3rlpy.preprocessing import StandardObservationScaler
+
+    obs_scaler = StandardObservationScaler()
     if action_type == "discrete":
         from d3rlpy.algos import DiscreteCQLConfig
 
-        cfg = DiscreteCQLConfig(**overrides)
+        cfg = DiscreteCQLConfig(observation_scaler=obs_scaler, **overrides)
     else:
         from d3rlpy.algos import CQLConfig
 
-        cfg = CQLConfig(**overrides)
+        cfg = CQLConfig(observation_scaler=obs_scaler, **overrides)
     dev = "cuda:0" if device.type == "cuda" else "cpu:0"
     return D3rlpyAlgorithm(cfg.create(device=dev), device, action_type)
 
@@ -106,8 +109,13 @@ def make_iql(device: torch.device, action_type: str, **overrides) -> D3rlpyAlgor
         # d3rlpy has no discrete IQL; CQL is the canonical discrete variant.
         raise ValueError("IQL is continuous-only in d3rlpy; use cql for discrete.")
     from d3rlpy.algos import IQLConfig
+    from d3rlpy.preprocessing import StandardObservationScaler
 
     dev = "cuda:0" if device.type == "cuda" else "cpu:0"
     return D3rlpyAlgorithm(
-        IQLConfig(**overrides).create(device=dev), device, "continuous"
+        IQLConfig(observation_scaler=StandardObservationScaler(), **overrides).create(
+            device=dev
+        ),
+        device,
+        "continuous",
     )

@@ -241,3 +241,25 @@ the reference, not to the best offline-achievable policy. The merged money
 plot caption states this explicitly; the two anchors are drawn in separate
 side-by-side panels (never a shared y-axis comparison) precisely to prevent
 a height-offset misreading.
+
+## Per-anchor variant choices (Phase-6C value-tiered ruling)
+
+The Phase-4/5 variant algorithms `proximal`, `latent_world_model`, and
+`ens_pessimistic` were implemented discrete-only (categorical heads /
+discrete Q). Rather than risk fragile continuous ports late in the project,
+the continuous anchor uses a value-tiered hybrid:
+
+| cell | discrete variant | continuous variant | note |
+|------|------------------|--------------------|------|
+| 3, 5 | CQL / CQL | **IQL** | continuous-native (d3rlpy) |
+| 4    | proximal | **basic only** | continuous proximal = future work |
+| 6    | latent_wm | **basic only** | continuous recurrent latent-WM = future work |
+| 7    | ens_pessimistic | **CQL** | CQL = continuous-native pessimistic offline RL, substitutes the bootstrap-ensemble proxy |
+| 8    | kz_select / ens_pess | **kz_select / {BC, CQL}** | K-Z interval is anchor-agnostic |
+
+All eight continuous BASICS are BC (anchor-agnostic). The
+history-recoverable recovery story (cells 4, 6) is fully established on the
+discrete anchor; the continuous basic-only rows still populate the regret
+matrix and the confounding axis (cells 7, 8) is covered on BOTH anchors. The
+substitutions are documented here so the cross-anchor comparison is read as
+"different canonical variant per anchor", not a silent omission.

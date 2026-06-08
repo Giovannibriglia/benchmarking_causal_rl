@@ -179,7 +179,9 @@ def _target_adapter(agent, device, action_type, action_dim) -> Optional[TargetPo
     if hasattr(agent, "make_eval_act_fn"):
         return None
     if isinstance(agent, BehaviorCloning):
-        return StochasticPolicyAdapter(agent.policy)
+        return StochasticPolicyAdapter(
+            agent.policy, preprocess=getattr(agent, "_scale", None)
+        )
     if action_type == "discrete":
 
         def act(obs: torch.Tensor) -> torch.Tensor:

@@ -14,7 +14,9 @@ dataset_expect:
     delta: 1.5
 algos:
   basic: bc
-  variant: ens_pessimistic
+  # continuous-native pessimistic offline RL (substitutes the
+  # discrete-only ens_pessimistic)
+  variant: cql
 seeds: [0, 1, 2, 3, 4]
 training:
   n_steps: 100000

@@ -48,23 +48,30 @@ class TargetPolicy(abc.ABC):
 
 
 class StochasticPolicyAdapter(TargetPolicy):
-    """Adapter over an ActorCriticMLP-style policy (distribution/log_prob)."""
+    """Adapter over an ActorCriticMLP-style policy (distribution/log_prob).
 
-    def __init__(self, policy) -> None:
+    ``preprocess`` applies the SAME observation scaling the policy was trained
+    under (e.g. BC's StandardObservation stats), so OPE evaluates the policy
+    on the inputs it actually consumes. Identity by default (discrete BC,
+    unscaled).
+    """
+
+    def __init__(self, policy, preprocess=None) -> None:
         self.policy = policy
+        self._pre = preprocess if preprocess is not None else (lambda o: o)
 
     def log_prob(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            dist = self.policy.distribution(obs)
+            dist = self.policy.distribution(self._pre(obs.float()))
             return self.policy.log_prob(dist, actions)
 
     def act(self, obs: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            return self.policy.act_deterministic(obs)
+            return self.policy.act_deterministic(self._pre(obs.float()))
 
     def action_probs(self, obs: torch.Tensor) -> Optional[torch.Tensor]:
         with torch.no_grad():
-            dist = self.policy.distribution(obs)
+            dist = self.policy.distribution(self._pre(obs.float()))
             if hasattr(dist, "logits"):
                 return torch.softmax(dist.logits, dim=-1)
         return None
