@@ -395,6 +395,97 @@ def curve_grid(
     _save(fig, outdir, "offline_learning_curves", formats)
 
 
+def merged_money_plot(
+    discrete_matrix: Path,
+    discrete_cell2: Path,
+    continuous_matrix: Path,
+    outdir: Path,
+    formats: Sequence[str],
+) -> None:
+    """8x2 money plot: two anchor panels SIDE BY SIDE with SEPARATE y-axes.
+
+    Binding rule (docs/causal_cells.md): absolute regret heights are NOT
+    comparable across anchors (the continuous normalizer is a demonstrator
+    that 100k-step learners do not approach). Panels are drawn separately,
+    never on a shared axis; the caption states only within-anchor patterns
+    and basic-vs-variant orderings are meaningful.
+    """
+    disc = _summary_rows(discrete_matrix, discrete_cell2)
+    cont = pd.read_csv(continuous_matrix)
+    cont = cont[(cont.cell != 3) | (cont.tier == "medium")]
+    panels = [
+        ("discrete (CartPole, 5 seeds)", disc, True),
+        ("continuous (HalfCheetah, 3 seeds)", cont, False),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(15, 4.6))
+    for ax, (title, rows, has_cell2) in zip(axes, panels):
+        order = [
+            c
+            for _, cells in REGIMES
+            for c in cells
+            if c in set(rows.cell) and (has_cell2 or c != 2)
+        ]
+        xpos = {c: i for i, c in enumerate(order)}
+        start = 0
+        for i, (label, cells) in enumerate(REGIMES):
+            present = [c for c in cells if c in xpos]
+            if not present:
+                continue
+            end = start + len(present)
+            if i % 2 == 1:
+                ax.axvspan(start - 0.5, end - 0.5, color="0.92", zorder=0)
+            ax.text(
+                (start + end - 1) / 2,
+                1.13,
+                label,
+                ha="center",
+                va="bottom",
+                fontsize=9,
+                style="italic",
+            )
+            start = end
+        for role, color, off in (
+            ("basic", BASIC_COLOR, -0.12),
+            ("variant", VARIANT_COLOR, +0.12),
+        ):
+            sub = rows[rows.role == role]
+            xs = [xpos[int(c)] + off for c in sub.cell if int(c) in xpos]
+            ys = [r.iqm_norm_regret for _, r in sub.iterrows() if int(r.cell) in xpos]
+            lo = [r.ci_low for _, r in sub.iterrows() if int(r.cell) in xpos]
+            hi = [r.ci_high for _, r in sub.iterrows() if int(r.cell) in xpos]
+            if not xs:
+                continue
+            yerr = np.vstack([np.array(ys) - np.array(lo), np.array(hi) - np.array(ys)])
+            ax.errorbar(
+                xs,
+                ys,
+                yerr=yerr,
+                fmt="o",
+                color=color,
+                capsize=4,
+                markersize=7,
+                label=role,
+                lw=1.5,
+            )
+        ax.axhline(0.0, color="0.4", ls="--", lw=1)
+        ax.axhline(1.0, color="0.7", ls=":", lw=1)
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels(
+            [CELL_NAMES[c] for c in order], rotation=25, ha="right", fontsize=8
+        )
+        ax.set_ylim(-0.1, 1.25)
+        ax.set_ylabel("normalized regret (IQM, 95% CI)")
+        ax.set_title(title, fontsize=10)
+        ax.legend(loc="lower right", fontsize=8)
+    fig.suptitle(
+        "Regret by identification regime, per anchor (SEPARATE y-axes - "
+        "heights NOT cross-anchor comparable; cells are not a difficulty axis)",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    _save(fig, outdir, "money_plot_8x2", formats)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Causal-cells figures/tables (regenerate from CSVs alone)"
@@ -412,6 +503,9 @@ def main() -> None:
     parser.add_argument("--online-bench-runs", nargs="*", default=[])
     parser.add_argument("--online-reference-runs", nargs="*", default=[])
     parser.add_argument("--curve-runs", nargs="*", default=[])
+    parser.add_argument(
+        "--continuous-matrix", default="outputs/matrix_summary_continuous.csv"
+    )
     parser.add_argument("--outdir", default="outputs/causal_cells")
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"])
     args = parser.parse_args()
@@ -434,6 +528,14 @@ def main() -> None:
         )
     if args.curve_runs:
         curve_grid([Path(p) for p in args.curve_runs], outdir, args.formats)
+    if Path(args.continuous_matrix).exists():
+        merged_money_plot(
+            Path(args.matrix),
+            Path(args.cell2),
+            Path(args.continuous_matrix),
+            outdir,
+            args.formats,
+        )
 
 
 if __name__ == "__main__":

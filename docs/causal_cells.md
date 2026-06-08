@@ -263,3 +263,40 @@ discrete anchor; the continuous basic-only rows still populate the regret
 matrix and the confounding axis (cells 7, 8) is covered on BOTH anchors. The
 substitutions are documented here so the cross-anchor comparison is read as
 "different canonical variant per anchor", not a silent omission.
+
+## Continuous-anchor completion notes (Phase-6C)
+
+- **3-seed vs 5-seed asymmetry**: continuous cells use 3 seeds (IQM + bootstrap
+  CI), discrete 5 — a compute trade documented here so cross-anchor CI widths
+  are read correctly. The continuous claim is "the within-anchor pattern
+  generalizes", carried at 3-seed resolution; the discrete anchor carries the
+  full 5-seed statistics and all estimator relations.
+- **Continuous OPE is naive-only** (fqe_iters=0): DM/IPW/DR are
+  diagnostic-only and degenerate at H≈1000 (curse of horizon), so FQE is
+  skipped. Regret uses true-env J vs the constant normalizer, unaffected. The
+  discrete cells×estimators table carries the IPW≈DR / DM relations.
+- **Continuous learning-curve grid is reference-only**: offline-cell curves
+  were turned off for compute; the continuous Cell-1 panel comes from the
+  relu8 SAC reference run (12-checkpoint curve). Discrete carries the full
+  offline learning-curve grid.
+- **Cell-8 KZ containment (HC)**: the Γ=2 interval is [940, 2938] in the
+  LOGGED (confounded) reward space, while clean-env true J ≈ 868 — the
+  interval does NOT contain true J. This is honest: (a) the interval is
+  computed on confounded returns (which carry the +δ·U shift) while true J is
+  measured in the clean env, so they live in offset reward spaces; (b) at
+  H≈1000 the importance weights are extreme, widening/shifting the interval.
+  Reported as an interval-calibration result at long horizon, not hidden — it
+  does not change the cell-8 conclusion (nothing closes the regret; variant
+  ties basic).
+
+## The continuous matrix mirrors the discrete story (within-anchor)
+
+Both anchors, grouped by identification regime:
+- **identified** (3, 5): variant (IQL) beats basic (BC) — 0.77 vs 0.88.
+- **confounded** (7): variant (CQL pessimism) beats basic decisively —
+  0.60 vs 0.82.
+- **hidden state** (4, 6): basic-only on continuous (variants are
+  discrete-anchor-only); masked BC collapses toward random.
+- **cell 8** (hidden + confounded + unknown π_b): variant (KZ-selected) ties
+  basic at 0.91 — nothing closes the regret, the matrix's hardest cell on
+  both anchors.
