@@ -323,6 +323,12 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
     # random floor (once per task); references are PER SEED when a reference
     # spec is given (train-or-load, Phase-6), or a fixed legacy checkpoint.
     reference_spec = cfg.get("reference")
+    # Anchor-level normalizer override (Phase-6C ruling): for the continuous
+    # anchor the regret normalizer is a SINGLE constant J_ref^cont =
+    # max(J_SAC, J_behavior_medium) ~= 12k, so regret stays >=0 even though
+    # the SAC online policy scores ~9.5k. Honest: SAC's J is still logged as
+    # the reference row; only the normalizer denominator uses this constant.
+    reference_normalizer = cfg.get("reference_normalizer")
     if not reference_spec and not reference_ckpt:
         raise ValueError(
             "a reference is required: either reference: {env, algo, "
@@ -548,7 +554,12 @@ def run_causal_cells(cfg: dict, run_dir: str, device: torch.device) -> str:
                         seed_base=20_000 + 100 * seed,
                     )
                     j = float(returns.mean())
-                    reg = compute_regret(j, j_ref, j_random)
+                    norm_ref = (
+                        float(reference_normalizer)
+                        if reference_normalizer is not None
+                        else j_ref
+                    )
+                    reg = compute_regret(j, norm_ref, j_random)
                     ope = _ope_block(
                         source,
                         agent,

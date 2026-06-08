@@ -21,6 +21,10 @@ ope:
 evaluation:
   n_episodes: 30
   curve_episodes: 10
+# Anchor-level regret normalizer (Phase-6C ruling): J_ref^cont =
+# max(J_SAC=9516, J_behavior_medium=12451). SAC's 9.5k is logged as
+# the reference row; regret uses this constant so it stays >= 0.
+reference_normalizer: 12451
 reference:
   env: causal/halfcheetah-cell1
   algo: sac

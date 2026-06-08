@@ -323,6 +323,19 @@ def assert_confounded(
     z_r = abs(effect) / max(se_r, 1e-12)
     cond_iii = z_r > z_crit
 
+    if continuous:
+        # Option A (Phase-6C gate ruling): on the long-horizon continuous
+        # anchor, condition (i)'s naive-vs-IPW gap is non-discriminative
+        # (H~1000 IPW degeneracy = curse of horizon, independent of
+        # confounding). It is COMPUTED and REPORTED as a diagnostic only;
+        # acceptance rests on the horizon-independent (ii) A-U|s and (iii)
+        # R-U. The gate's causal meaning is unchanged across anchors.
+        passed = bool(cond_ii and cond_iii)
+        cond_i_label = cond_i  # reported, not required
+    else:
+        passed = bool(cond_i and cond_ii and cond_iii)
+        cond_i_label = cond_i
+
     report = GateReport(
         naive_value=float(naive),
         ipw_value=float(ipw),
@@ -331,13 +344,17 @@ def assert_confounded(
         action_u_zscore=z_a,
         reward_u_effect=effect,
         reward_u_zscore=float(z_r),
-        passed=bool(cond_i and cond_ii and cond_iii),
+        passed=passed,
     )
     if not report.passed:
+        i_clause = (
+            f"(i) |naive-ipw|={gap:.3f} vs tau*|naive|={tau * abs(naive):.3f} "
+            f"-> {cond_i_label}"
+            + (" [diagnostic only on continuous]" if continuous else "")
+        )
         raise ConfoundingGateError(
             "dataset labeled confounded is functionally unconfounded: "
-            f"(i) |naive-ipw|={gap:.3f} vs tau*|naive|={tau * abs(naive):.3f} "
-            f"-> {cond_i}; (ii) A-U z={z_a:.2f} (TV={tv_a:.3f}) -> {cond_ii}; "
+            f"{i_clause}; (ii) A-U z={z_a:.2f} (TV={tv_a:.3f}) -> {cond_ii}; "
             f"(iii) R-U z={z_r:.2f} (effect={effect:.4f}) -> {cond_iii}"
         )
     return report

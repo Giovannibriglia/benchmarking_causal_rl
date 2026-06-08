@@ -168,3 +168,58 @@ run dirs; the within-CI drift is explained-and-resolved. Collection tools
 now hard-error on existing dataset ids (no silent overwrites), embed the
 full collection config in Minari metadata, and cell YAMLs can pin
 `dataset_expect:` blocks asserted at load time.
+
+## Continuous anchor: the gate is condition (ii) ∧ (iii), condition (i) is a diagnostic
+
+**[flag for the paper]** The confounding gate's three conditions —
+(i) |J_naive − J_IPW| > τ, (ii) A ⊥̸ U | s, (iii) R ⊥̸ U — were designed for
+the discrete short-horizon anchor. On the continuous HalfCheetah anchor
+(H ≈ 1000, 6-dim actions) condition (i) becomes **non-discriminative**: the
+Gaussian behavior clone underfits the structured SAC-based logging policy by
+a systematic ≈ −2.87 nats/step, so even a 50-step importance product
+saturates the weight clamp and the self-normalized IPW collapses onto naive
+(gap ≡ 0.000) — INDEPENDENT of whether the data is confounded. This is the
+curse of horizon (documented for IPW estimation above) striking the *gate*
+one level earlier than the OPE.
+
+Resolution (Phase-6C ruling, Option A): on the continuous anchor the gate
+ACCEPTS on the two horizon-independent conditions (ii) A ⊥̸ U | s (propensity
+residual, z ≈ 14.5) and (iii) R ⊥̸ U (z ≈ 712); the neutered control still
+fails both. Condition (i) is COMPUTED and REPORTED as a diagnostic, never
+pass/fail. The gate's causal meaning — "U functionally drives both action
+and reward" — is identical across anchors; only the *estimability* of one
+redundant symptom differs. This is itself a clean cross-anchor result: the
+identification status is graph-determined and anchor-invariant, but the
+finite-sample detectability of its symptoms is horizon-dependent.
+
+## Continuous Cell-1 reference and the regret normalizer
+
+The continuous Cell-1 reference is SAC (ReLU nets, UTD 1.0) at 2M env steps:
+J = 9,516 ± 120, curve rising-but-decelerating (the 12-checkpoint curve is
+the continuous Cell-1 learning-curve panel). It sits below the stock medium
+demonstrator (J_behavior(medium) = 12,451), so the **regret normalizer for
+all continuous cells is the single constant J_ref^cont = max(9516, 12451) =
+12451**, keeping normalized regret ≥ 0. SAC's 9.5k is reported honestly as
+the *online* result against the ~12.5k demonstrator — the gap is itself a
+continuous-anchor datapoint (online RL from scratch under-performs the
+logged demonstrator within a 2M-step budget), not hidden by the normalizer
+choice.
+
+**[flag for the paper — methods]** Two on-policy-defaults-leak lessons from
+building the continuous reference: (a) tanh-trunk actor/critic nets (the
+repo's PPO default) cost ≈ 4× final return on HalfCheetah (3.2k vs 9.5k) vs
+standard ReLU — activation defaults do not transfer across algorithm
+families; (b) the shared off-policy loop calls update() once per vector
+step (UTD ≈ 1/n_envs), so SAC needs an internal update-to-data multiplier to
+reach the canonical UTD = 1.0 that MuJoCo SAC results assume.
+
+## Minari fixed-info-schema quirk
+
+MuJoCo envs vary their native `info` keys between reset and step
+(`reward_run`, `x_position`, … appear only post-step), but Minari's
+`record_infos` requires an IDENTICAL info-key set on every step. The
+collection callback therefore emits a FIXED schema — only the load-bearing
+`behavior_logprob` (and `confounder_u` when present) — discarding the env's
+variable native infos (full observations are stored separately, so nothing
+is lost). Without this, continuous-anchor collection raises a Minari
+"Dict key mismatch".
