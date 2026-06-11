@@ -22,13 +22,28 @@ import numpy as np
 from minari.data_collector.episode_buffer import EpisodeBuffer
 
 
+def _heuristic_action(obs, rng) -> int:
+    """A simple better-than-random CartPole policy: push toward the falling pole.
+
+    obs = [cart_pos, cart_vel, pole_angle, pole_ang_vel]; act 1 when the pole is
+    tilting/rotating right, else 0. Mostly-greedy with a little exploration so
+    the dataset still covers both actions.
+    """
+    if rng.random() < 0.2:
+        return int(rng.integers(0, 2))
+    return 1 if (obs[2] + 0.5 * obs[3]) > 0 else 0
+
+
 def make_cartpole_dataset(
     dataset_id: str = "cartpole/random-v0",
     n_episodes: int = 20,
     seed: int = 0,
+    policy: str = "random",
 ):
-    """Collect ``n_episodes`` of random-policy CartPole-v1 into a Minari dataset.
+    """Collect ``n_episodes`` of CartPole-v1 into a Minari dataset.
 
+    ``policy``: ``"random"`` (uniform actions) or ``"heuristic"`` (a simple
+    better-than-random pole-balancing policy, for learning-sanity tests).
     Returns the created MinariDataset. Honors ``MINARI_DATASETS_PATH``.
     """
     env = gym.make("CartPole-v1")
@@ -40,7 +55,10 @@ def make_cartpole_dataset(
         actions, rewards, terminations, truncations = [], [], [], []
         done = False
         while not done:
-            action = int(rng.integers(0, 2))
+            if policy == "heuristic":
+                action = _heuristic_action(obs, rng)
+            else:
+                action = int(rng.integers(0, 2))
             obs, reward, terminated, truncated, _ = env.step(action)
             observations.append(obs)
             actions.append(action)
@@ -62,7 +80,7 @@ def make_cartpole_dataset(
         dataset_id=dataset_id,
         buffer=buffers,
         env=gym.make("CartPole-v1"),
-        algorithm_name="random",
+        algorithm_name=policy,
     )
 
 
@@ -71,8 +89,9 @@ def main() -> None:
     p.add_argument("--dataset-id", default="cartpole/random-v0")
     p.add_argument("--n-episodes", type=int, default=20)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--policy", choices=["random", "heuristic"], default="random")
     args = p.parse_args()
-    ds = make_cartpole_dataset(args.dataset_id, args.n_episodes, args.seed)
+    ds = make_cartpole_dataset(args.dataset_id, args.n_episodes, args.seed, args.policy)
     print(f"created {ds.id}: {ds.total_steps} steps, {ds.total_episodes} episodes")
 
 
