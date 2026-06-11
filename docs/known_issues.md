@@ -1,4 +1,4 @@
-# Known issues (pre-existing on master — documented, NOT fixed by the causal-RL refactor)
+# Known issues (pre-existing on master — documented, NOT fixed here)
 
 ## 0. [FIX PROPOSED, Phase-2 gate] Vector reset-on-done corrupted training data
 
@@ -21,47 +21,13 @@ training numbers change for early-termination envs → all golden files must be
 regenerated under explicit approval (§3.1). CSV schemas, artifact layout, CLI
 and critic_ablation code are untouched by the fix.
 
-## 0a. NEXT_STEP dummy transitions — ACCEPTED LIMITATION (mid-Phase-2 gate)
-
-With gymnasium's native `NEXT_STEP` autoreset (the sanctioned fix for #0),
-the step after a sub-env finishes is a "reset step": the action is ignored,
-reward is 0, and the transition recorded by the rollout is
-`(final_obs, action, 0, reset_obs)` with `done` correctly flagged on the
-PREVIOUS step. These dummy transitions enter the on-policy buffer and replay
-buffer unmasked. Frequency equals the episode-termination rate. Measured on the retrained
-(fixed-wrapper) CartPole Cell-1 run with 512×8 rollouts: **3.91 %** of buffer
-transitions at the first checkpoint (untrained policy, short episodes),
-**0.20 %** at mid and final checkpoints; zero for fixed-length MuJoCo tasks.
-Cell-1 trains to a perfect deterministic J = 500 under this contamination.
-Gate decision (2026-06-05): do NOT mask them; revisit only if Cell-1
-learning ever degrades visibly (it does not).
-
 ## 0b. Stale non-editable package install shadowed the working tree
 
 `pip install .` (non-editable) had left a frozen `src/` snapshot in
 site-packages; any script executed without the repo root on `sys.path`
-(e.g. `python tools/<script>.py`) silently imported the stale code.
+silently imported the stale code.
 Fixed 2026-06-05 by reinstalling editable (`pip install -e . --no-deps`).
 If the environment is ever rebuilt, install editable.
-
-## 1. `reproducibility/comoreai26.yaml` references unregistered algorithms
-
-`comoreai26.yaml` lists `algos: a2c vanilla a2c_cc vanilla_cc`, but
-`register_default_algorithms()` registers only
-`vanilla | a2c | ppo | trpo | dqn | ddpg`. A full
-`python main.py --reproduce comoreai26` therefore completes the `a2c` and
-`vanilla` sweeps over the `mujoco` env set, then crashes with
-`KeyError: "Algorithm a2c_cc not registered"`.
-
-The `a2c_cc` / `vanilla_cc` ("causal critic") implementations existed in an
-earlier, uncommitted version of the codebase (orphaned `__pycache__` artifacts
-for `src/causal_metrics/{estimators,gap}.py`, `src/envs/causal_base.py` etc.
-are the remaining traces) and were removed before commit `a98359b`.
-
-**Status (Phase-0 gate decision, 2026-06-05):** the reproducibility invariant
-for this file is downgraded to *"YAML byte-untouched + the a2c/vanilla portion
-runs"*. The missing algorithms are pre-existing breakage and are explicitly
-out of scope for this project.
 
 ## 2. Reproduce-YAML keys override CLI flags
 

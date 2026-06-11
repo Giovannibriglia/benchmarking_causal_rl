@@ -58,12 +58,6 @@ def register_default_env_wrappers() -> None:
     if _DEFAULTS_REGISTERED:
         return
 
-    # Make the causal/ env ids available to gym.make before any env is built
-    # (gate decision 6: causal cells are plain Gymnasium ids).
-    from src.causal.cells import register_causal_envs
-
-    register_causal_envs()
-
     from .wrappers.custom_env import CustomEnv
     from .wrappers.gymnasium_env import GymnasiumEnv
 
