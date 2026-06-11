@@ -51,19 +51,27 @@ The goal is not just to run (MA)RL — but to **benchmark it rigorously**.
 
 ---
 
-## Implemented Algorithms (v0)
+## Implemented Algorithms
 
-### On-Policy
+The names below are the exact `--algos` keys (from `register_default_algorithms`).
 
-- **Vanilla Policy Gradient**
-- **A2C**
-- **PPO**
-- **TRPO** (KL-penalized trust-region variant)
+### On-Policy (online)
 
-### Off-Policy
+- `vanilla` — **Vanilla Policy Gradient**
+- `vanilla_ac` — alias of `vanilla` (same builder/spec)
+- `a2c` — **A2C**
+- `ppo` — **PPO**
+- `trpo` — **TRPO** (KL-penalized trust-region variant)
 
-- **DQN** — supports **discrete action spaces only**
-- **DDPG** — supports **continuous action spaces only**
+### Off-Policy (online)
+
+- `dqn` — **DQN** — **discrete** action spaces only
+- `ddpg` — **DDPG** — **continuous** action spaces only
+- `sac` — **SAC** — **continuous** action spaces only
+
+### Offline (fixed dataset)
+
+- `offline_dqn` — **DQN over a fixed Minari dataset** (discrete); requires `--offline-dataset`. Eval still runs in the live env. See the offline workflow under [Running Experiments](#running-experiments).
 
 All implementations maintain strict separation between actor and critic modules.
 
@@ -105,47 +113,62 @@ Use one of the following patterns:
 
 ```bash
 # Use custom wrapper for all envs in the run
-python main.py --env-wrapper custom --env-entry-point my_pkg.envs:make_env --envs CustomEnv-v0 --algos ppo
+uv run python main.py --env-wrapper custom --env-entry-point my_pkg.envs:make_env --envs CustomEnv-v0 --algos ppo
 
 # Mixed envs: prefix only the custom ones
-python main.py --envs CartPole-v1 custom:my_pkg.envs:make_env --algos ppo
+uv run python main.py --envs CartPole-v1 custom:my_pkg.envs:make_env --algos ppo
 ```
 
 You can pass JSON kwargs to the entry point with `--env-kwargs`.
 
 # Main Training Script (`main.py`)
 
-## Basic Usage
+## Running Experiments
 
-Single algorithm:
-
-```bash
-python main.py --envs CartPole-v1 --algos ppo
-````
-
-Multiple algorithms and environments:
+Command reference (all forms use `uv run`, consistent with the install section).
+Registered `--algos`: on-policy `vanilla` `vanilla_ac` `a2c` `ppo` `trpo`; online off-policy `dqn` `sac` `ddpg`; offline `offline_dqn`. Named `--env-set`: `gymnasium`, `mujoco`, `gymnasium-robotics`.
 
 ```bash
-python main.py --envs CartPole-v1 HalfCheetah-v5 --algos ppo trpo
+# --- setup ---
+uv sync                                 # base runtime + dev tooling
+uv sync --extra mujoco                  # add an env family: atari | minigrid | mujoco | robotics | minari | offline
+
+# --- online benchmark (vectorized envs) ---
+uv run python main.py --envs CartPole-v1 --algos ppo dqn          # discrete env
+uv run python main.py --envs Pendulum-v1 --algos ppo ddpg sac     # continuous env
+uv run python main.py --env-set gymnasium --algos ppo             # whole named set
+uv run python main.py --env-set mujoco --algos sac ddpg           # needs: uv sync --extra mujoco
+
+# --- common knobs ---
+uv run python main.py --envs CartPole-v1 --algos ppo \
+    --n-train-envs 16 --n-eval-envs 16 --rollout-len 1024 \
+    --n-episodes 250 --n-checkpoints 25 --seed 42 \
+    --deterministic --aggregation iqm                            # deterministic = bitwise-reproducible
+
+# --- critic-ablation mode (on-policy only) ---
+uv run python main.py --envs CartPole-v1 --algos ppo --ablation   # == --mode critic_ablation
+
+# --- offline training (fixed dataset; eval still runs in the live env) ---
+uv sync --extra offline
+uv run python tools/make_cartpole_offline.py --dataset-id cartpole/random-v0   # build a tiny dataset
+uv run python main.py --envs CartPole-v1 --algos offline_dqn \
+    --offline-dataset cartpole/random-v0
+
+# --- auxiliary reward/next-state models (opt-in; any algo/regime; logged to aux_metrics.csv, not in the RL loss) ---
+uv run python main.py --envs CartPole-v1 --algos ppo --aux-models --aux-lr 3e-4 --aux-hidden-dims 64,64
+
+# --- reproduce a pinned config ---
+uv run python main.py --reproduce <name>.yaml    # reads reproducibility/<name>.yaml
+
+# --- plots + LaTeX tables from a run ---
+uv run python plot.py --run <run_name>           # see the Plotting section / plot.py --help
 ```
 
-Named environment set (overrides `--envs`):
+Outputs: per-run CSVs and checkpoints land in `runs/<run>/`; plots and LaTeX tables in `outputs/<run>/` (see [Run Artifacts](#run-artifacts) and [Plotting and Tables](#plotting-and-tables-plotpy)).
 
-```bash
-python main.py --env-set gymnasium --algos ppo a2c
-```
+> **Note:** `atari` and `minigrid` are installable extras but are **not** yet runnable `--env-set`s — image/grid observation backbones arrive in PR6.
 
-Critic ablation mode (same actor rollout, multiple auxiliary critics in parallel):
-
-```bash
-python main.py --ablation --envs CartPole-v1 --algos ppo a2c --ablation-lr 3e-4 --ablation-hidden-dims 64,64 --ablation-bins 32
-```
-
-Compare baseline + custom critic example:
-
-```bash
-python main.py --ablation --envs CartPole-v1 --algos ppo --ablation-critics standard_mlp residual_reward_model
-```
+The `--algos` list runs each `(algorithm, environment, seed)` combination independently; multiple algorithms and environments can be passed together (e.g. `--envs CartPole-v1 HalfCheetah-v5 --algos ppo trpo`). Custom critics for ablation: `--ablation-critics standard_mlp residual_reward_model`.
 
 ---
 
@@ -160,6 +183,7 @@ python main.py --ablation --envs CartPole-v1 --algos ppo --ablation-critics stan
 | `--env-wrapper` | Env wrapper to use (`auto`, `gymnasium`, `custom`, or a registered name) |
 | `--env-entry-point` | Python entry point for custom envs (`module:callable`) |
 | `--env-kwargs` | JSON dict of kwargs for the env entry point |
+| `--offline-dataset` | Minari dataset id for offline algorithms (`--algos offline_dqn`); the live env is still built for eval |
 
 Precedence:
 `--reproduce` > `--env-set` > `--envs`
@@ -185,6 +209,10 @@ Each `(algorithm, environment, seed)` combination runs independently.
 | `--n-train-envs`  | Parallel training environments                           |16     |
 | `--n-eval-envs`   | Parallel evaluation environments                         |16     |
 | `--n-checkpoints` | Number of checkpoint evaluations (min=2, max=n_episodes) |25     |
+| `--seed`          | Random seed                                              |42     |
+| `--aggregation`   | Reported-stat aggregation: `iqm` or `mean`              |iqm    |
+
+For offline algorithms (`offline_dqn`), `--n-episodes` is reinterpreted as the number of training **epochs** and `--rollout-len` as **gradient steps per epoch** (offline has gradient steps, not env episodes).
 
 ### Experiment Mode
 
@@ -208,14 +236,25 @@ Checkpoints are:
 * Include episode 0 and final episode
 * The only points where metrics, models, and videos are saved
 
+### Auxiliary Models (opt-in)
+
+Optional learned reward `r(s,a)` and next-state `s'(s,a)` models, trained alongside RL on its existing batch and **logged, not folded into the RL loss**. Off by default; composes with any algorithm/regime. When enabled, the run writes a separate `aux_metrics.csv` (`episode, algorithm, environment, model, train_loss, mse, mae`); the frozen train/eval schema is unchanged.
+
+| Flag                 | Description                                              |Default |
+| -------------------- | -------------------------------------------------------- |------- |
+| `--aux-models`       | Train the auxiliary reward + next-state models           |off     |
+| `--aux-lr`           | Learning rate for the auxiliary models                   |3e-4    |
+| `--aux-hidden-dims`  | Comma-separated hidden layer sizes for the aux models    |64,64   |
+
 ---
 
 ### Device & Determinism
 
+The device is **auto-detected** (CUDA if available, else CPU) via a single `detect_device()` — there is no device flag.
+
 | Flag              | Description                           |
 | ----------------- | ------------------------------------- |
-| `--device`        | `auto`, `cpu`, or `cuda`              |
-| `--deterministic` | Enable deterministic PyTorch behavior |
+| `--deterministic` | Enable deterministic PyTorch behavior (bitwise-reproducible runs) |
 
 Default:
 
@@ -231,7 +270,7 @@ Reproducibility configs live in: ```reproducibility/```
 Run:
 
 ```bash
-python main.py --reproduce <config_name>
+uv run python main.py --reproduce <config_name>
 ```
 
 This will:

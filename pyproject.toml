@@ -47,7 +47,7 @@ offline = ["minari[hdf5]==0.5.3"]
 dev = [
     "pytest",
     "black>24.3.0",
-    "ufmt==2.0.0",
+    "ufmt==2.7.3",
     "usort==1.0.4",
     "flake8",
     "pre-commit",
