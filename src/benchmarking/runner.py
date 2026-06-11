@@ -49,6 +49,10 @@ EVAL_COLUMNS: List[str] = [
 class AlgorithmSpec:
     builder: Callable
     kind: str  # "on_policy" or "off_policy"
+    # Data-source axis, orthogonal to ``kind``: "online" (live env interaction)
+    # or "offline" (logged dataset; Stage B). Distinct from the agent's
+    # vestigial ``Algorithm.paradigm`` (the on/off-policy learning regime).
+    data_regime: str = "online"
 
 
 class BenchmarkRunner:
@@ -125,10 +129,16 @@ class BenchmarkRunner:
             action_space=act_space,
         )
         self.replay_buffer = None
+        self.behavior_policy = None
         self.offpolicy_batch_size = 128
         self.offpolicy_warmup = 1000
         if self.algo_spec.kind == "off_policy":
             self.replay_buffer = self.agent.buffer  # type: ignore[attr-defined]
+            # Default collection seam: delegates to agent.act (exact pre-seam
+            # behavior). Stage B can inject a biased/logged BehaviorPolicy here.
+            from src.rl.policies.behavior_policy import AgentBehaviorPolicy
+
+            self.behavior_policy = AgentBehaviorPolicy(self.agent)
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(self.algo_spec.kind, self.experience_source)
         self.critic_ablation = None
@@ -301,6 +311,12 @@ class BenchmarkRunner:
         return {col: full.get(col, "") for col in schema}
 
     def run(self) -> None:
+        if self.algo_spec.data_regime == "offline":
+            # Stage B fills this in; no offline spec is registered yet, so this
+            # branch is never reached and online behavior is unchanged.
+            raise NotImplementedError(
+                "offline training (data_regime='offline') arrives in Stage B."
+            )
         set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
         try:
             critic_ctx = (
@@ -311,12 +327,17 @@ class BenchmarkRunner:
                 if self.critic_ablation is not None
                 else nullcontext(None)
             )
-            with CSVLogger(
-                os.path.join(self.run_dir, "train_metrics.csv"),
-                fieldnames=TRAIN_COLUMNS,
-            ) as train_log, CSVLogger(
-                os.path.join(self.run_dir, "eval_metrics.csv"), fieldnames=EVAL_COLUMNS
-            ) as eval_log, critic_ctx as critic_log:
+            with (
+                CSVLogger(
+                    os.path.join(self.run_dir, "train_metrics.csv"),
+                    fieldnames=TRAIN_COLUMNS,
+                ) as train_log,
+                CSVLogger(
+                    os.path.join(self.run_dir, "eval_metrics.csv"),
+                    fieldnames=EVAL_COLUMNS,
+                ) as eval_log,
+                critic_ctx as critic_log,
+            ):
                 if self.algo_spec.kind == "on_policy":
                     self._train_on_policy(train_log, eval_log, critic_log)
                 else:
@@ -344,9 +365,9 @@ class BenchmarkRunner:
                 self.agent,
                 self.replay_buffer,
                 obs,
+                collection_policy=self.behavior_policy,
                 n_steps=total_steps,
                 n_envs=self.env_cfg.n_train_envs,
-                action_type=self.action_type,
                 warmup=self.offpolicy_warmup,
                 batch_size=self.offpolicy_batch_size,
                 metrics_cache=metrics_cache,

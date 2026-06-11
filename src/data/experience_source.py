@@ -272,20 +272,24 @@ class OnlineSource(ExperienceSource):
         replay_buffer,
         obs: torch.Tensor,
         *,
+        collection_policy,
         n_steps: int,
         n_envs: int,
-        action_type: str,
         warmup: int,
         batch_size: int,
         metrics_cache: Optional[Dict[str, float]] = None,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, float]]]:
         """One episode worth of interleaved off-policy collection + updates;
-        returns the carried observation and the latest update metrics."""
+        returns the carried observation and the latest update metrics.
+
+        Actions come from ``collection_policy`` (the collection seam; named to
+        avoid colliding with the ``OfflineDatasetSource.behavior_policy``
+        known/unknown string flag in this module). The default
+        ``AgentBehaviorPolicy`` delegates to ``agent.act(obs)`` verbatim, so RNG
+        consumption is identical to the pre-seam loop and golden stays bitwise.
+        """
         for _ in range(n_steps):
-            if action_type == "discrete":
-                actions = agent.act(obs).action
-            else:
-                actions = agent.act(obs).action
+            actions = collection_policy.act(obs).action
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             # store each env transition separately
