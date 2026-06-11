@@ -292,11 +292,11 @@ Precedence:
 Generate publication-ready plots and LaTeX tables:
 
 ```bash
-python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
+uv run python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
 ```
 
 ```bash
-python plot.py --run <run_name> --split critic --x-axis episodes
+uv run python plot.py --run <run_name> --split critic --x-axis episodes
 ```
 ---
 
