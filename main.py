@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from src.benchmarking.aux_models import AuxModelConfig
 from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
 from src.benchmarking.registry import (
     expand_env_set,
@@ -123,6 +124,28 @@ def parse_args():
         type=int,
         default=32,
         help="Histogram bins for distribution metrics (MI, KL, JS).",
+    )
+    p.add_argument(
+        "--aux-models",
+        action="store_true",
+        help=(
+            "Train auxiliary reward r(s,a) + next-state s'(s,a) models alongside "
+            "RL (logged to aux_metrics.csv; NOT folded into the RL loss). "
+            "Off by default; works with any algorithm/regime."
+        ),
+    )
+    p.add_argument(
+        "--aux-lr",
+        type=float,
+        default=3e-4,
+        help="Learning rate for the auxiliary models.",
+    )
+    p.add_argument(
+        "--aux-hidden-dims",
+        dest="aux_hidden_dims",
+        type=str,
+        default="64,64",
+        help="Comma-separated hidden layer sizes for the auxiliary models.",
     )
     return p.parse_args()
 
@@ -291,6 +314,18 @@ def main():
     if ablation_bins < 4:
         ablation_bins = 4
 
+    # Auxiliary reward/next-state models (opt-in, off by default).
+    aux_enabled = bool(
+        train_cfg_src.get("aux_models", cfg_from_file.get("aux_models", False))
+    ) or bool(args.aux_models)
+    aux_lr = train_cfg_src.get("aux_lr", cfg_from_file.get("aux_lr", args.aux_lr))
+    aux_hidden_dims = _parse_hidden_dims(
+        train_cfg_src.get(
+            "aux_hidden_dims",
+            cfg_from_file.get("aux_hidden_dims", args.aux_hidden_dims),
+        )
+    )
+
     n_checkpoints = max(n_checkpoints, 2)
     n_checkpoints = min(n_checkpoints, n_episodes)
 
@@ -382,6 +417,11 @@ def main():
                     hidden_dims=ablation_hidden_dims,
                     bins=ablation_bins,
                 )
+            aux_model_cfg = None
+            if aux_enabled:
+                aux_model_cfg = AuxModelConfig(
+                    lr=float(aux_lr), hidden_dims=aux_hidden_dims
+                )
             spec = registry.get(algo)
             runner = BenchmarkRunner(
                 env_cfg,
@@ -389,6 +429,7 @@ def main():
                 run_cfg,
                 spec,
                 critic_ablation_cfg=critic_ablation_cfg,
+                aux_model_cfg=aux_model_cfg,
                 progress_label=f"{algo} - {env_id}",
             )
             runner.run()

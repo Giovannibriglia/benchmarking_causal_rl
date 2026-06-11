@@ -266,9 +266,11 @@ class OnlineSource(ExperienceSource):
         warmup: int,
         batch_size: int,
         metrics_cache: Optional[Dict[str, float]] = None,
-    ) -> Tuple[torch.Tensor, Optional[Dict[str, float]]]:
+        aux_models=None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, float]], Optional[dict]]:
         """One episode worth of interleaved off-policy collection + updates;
-        returns the carried observation and the latest update metrics.
+        returns the carried observation, the latest update metrics, and the
+        last sampled batch (for aux checkpoint logging without re-sampling).
 
         Actions come from ``collection_policy`` (the collection seam; named to
         avoid colliding with the ``OfflineDatasetSource.behavior_policy``
@@ -276,6 +278,7 @@ class OnlineSource(ExperienceSource):
         ``AgentBehaviorPolicy`` delegates to ``agent.act(obs)`` verbatim, so RNG
         consumption is identical to the pre-seam loop and golden stays bitwise.
         """
+        last_batch = None
         for _ in range(n_steps):
             actions = collection_policy.act(obs).action
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
@@ -297,4 +300,9 @@ class OnlineSource(ExperienceSource):
                 batch = replay_buffer.sample(batch_size)
                 metrics = agent.update(batch)
                 metrics_cache = metrics
-        return obs, metrics_cache
+                # aux models train on the SAME sampled batch (no new sampling,
+                # no global-RNG draws) — keeps off-policy golden bitwise.
+                if aux_models is not None:
+                    aux_models.update(batch)
+                last_batch = batch
+        return obs, metrics_cache, last_batch

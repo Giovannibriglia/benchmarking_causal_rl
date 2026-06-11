@@ -8,6 +8,11 @@ from typing import Callable, Dict, List, Tuple
 import torch
 from tqdm import tqdm
 
+from src.benchmarking.aux_models import (
+    AUX_METRICS_COLUMNS,
+    AuxModelConfig,
+    AuxModelManager,
+)
 from src.benchmarking.critic_ablation import (
     CRITIC_ABLATION_COLUMNS,
     CriticAblationConfig,
@@ -63,6 +68,7 @@ class BenchmarkRunner:
         run_cfg: RunConfig,
         algo_spec: AlgorithmSpec,
         critic_ablation_cfg: CriticAblationConfig | None = None,
+        aux_model_cfg: "AuxModelConfig | None" = None,
         progress_label: str | None = None,
     ):
         self.env_cfg = env_cfg
@@ -159,6 +165,21 @@ class BenchmarkRunner:
                 gamma=gamma,
             )
 
+        # Auxiliary reward/next-state models (opt-in, off by default; orthogonal
+        # to kind/data_regime, so available in all three loops). Built AFTER the
+        # policy/agent; the manager snapshots/restores the global RNG around
+        # construction so an aux-enabled run is bitwise-identical to aux-off.
+        self.aux_models = None
+        if aux_model_cfg is not None:
+            self.aux_models = AuxModelManager(
+                obs_dim=self.obs_dim,
+                obs_shape=tuple(self.train_env.obs_space.shape) or (1,),
+                action_dim=self.action_dim,
+                action_type=self.action_type,
+                device=self.device,
+                config=aux_model_cfg,
+            )
+
     def _collect_on_policy(self) -> tuple[RolloutBatch, float, float]:
         # Rollout loop relocated verbatim to OnlineSource.rollout (Phase 1).
         batch, ep_returns = self.experience_source.rollout(
@@ -175,6 +196,7 @@ class BenchmarkRunner:
         train_logger: CSVLogger,
         eval_logger: CSVLogger,
         critic_logger: CSVLogger | None = None,
+        aux_logger: CSVLogger | None = None,
     ) -> None:
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
@@ -183,6 +205,8 @@ class BenchmarkRunner:
             critic_losses = {}
             if self.critic_ablation is not None:
                 critic_losses = self.critic_ablation.update(batch)
+            if self.aux_models is not None:
+                self.aux_models.update(batch)
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
@@ -216,6 +240,20 @@ class BenchmarkRunner:
                         latest_losses=critic_losses,
                     ):
                         critic_logger.log(row)
+                self._log_aux_rows(aux_logger, batch, ep)
+
+    def _log_aux_rows(self, aux_logger, batch, episode: int) -> None:
+        # train_loss comes from the manager's last update (no extra batch /
+        # no extra RNG draw); mse/mae are computed fresh on the given batch.
+        if self.aux_models is None or aux_logger is None or batch is None:
+            return
+        for row in self.aux_models.checkpoint_rows(
+            batch=batch,
+            episode=episode,
+            algorithm=self.train_cfg.algorithm,
+            environment=self.env_cfg.env_id,
+        ):
+            aux_logger.log(row)
 
     def _save_checkpoint(self, episode: int):
         ckpt_dir = os.path.join(
@@ -325,6 +363,14 @@ class BenchmarkRunner:
                 if self.critic_ablation is not None
                 else nullcontext(None)
             )
+            aux_ctx = (
+                CSVLogger(
+                    os.path.join(self.run_dir, "aux_metrics.csv"),
+                    fieldnames=AUX_METRICS_COLUMNS,
+                )
+                if self.aux_models is not None
+                else nullcontext(None)
+            )
             with (
                 CSVLogger(
                     os.path.join(self.run_dir, "train_metrics.csv"),
@@ -335,33 +381,41 @@ class BenchmarkRunner:
                     fieldnames=EVAL_COLUMNS,
                 ) as eval_log,
                 critic_ctx as critic_log,
+                aux_ctx as aux_log,
             ):
                 if self.algo_spec.data_regime == "offline":
-                    self._train_offline(train_log, eval_log)
+                    self._train_offline(train_log, eval_log, aux_log)
                 elif self.algo_spec.kind == "on_policy":
-                    self._train_on_policy(train_log, eval_log, critic_log)
+                    self._train_on_policy(train_log, eval_log, critic_log, aux_log)
                 else:
-                    self._train_off_policy(train_log, eval_log)
+                    self._train_off_policy(train_log, eval_log, aux_log)
         finally:
             # Explicitly close vector envs to release EGL/GL contexts before interpreter shutdown.
             self.train_env.close()
             self.eval_env.close()
 
     def _train_off_policy(
-        self, train_logger: CSVLogger, eval_logger: CSVLogger
+        self,
+        train_logger: CSVLogger,
+        eval_logger: CSVLogger,
+        aux_logger: CSVLogger | None = None,
     ) -> None:
         assert self.replay_buffer is not None
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         obs, _ = self.train_env.reset()
         total_steps = self.env_cfg.rollout_len
         metrics_cache = None
+        last_batch = None
         for ep in tqdm(
             range(self.train_cfg.n_episodes),
             desc=self.progress_label,
         ):
             # Collection/update loop relocated verbatim to
-            # OnlineSource.collect_off_policy (Phase 1).
-            obs, metrics_cache = self.experience_source.collect_off_policy(
+            # OnlineSource.collect_off_policy (Phase 1). aux_models (if any)
+            # trains on each sampled batch inside the loop; last_batch is used
+            # for checkpoint logging (no re-sampling, so off-policy RNG/golden
+            # is unaffected).
+            obs, metrics_cache, last_batch = self.experience_source.collect_off_policy(
                 self.agent,
                 self.replay_buffer,
                 obs,
@@ -371,6 +425,7 @@ class BenchmarkRunner:
                 warmup=self.offpolicy_warmup,
                 batch_size=self.offpolicy_batch_size,
                 metrics_cache=metrics_cache,
+                aux_models=self.aux_models,
             )
 
             if ep in checkpoint_eps:
@@ -393,8 +448,14 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
+                self._log_aux_rows(aux_logger, last_batch, ep)
 
-    def _train_offline(self, train_logger: CSVLogger, eval_logger: CSVLogger) -> None:
+    def _train_offline(
+        self,
+        train_logger: CSVLogger,
+        eval_logger: CSVLogger,
+        aux_logger: CSVLogger | None = None,
+    ) -> None:
         """Offline (fixed-dataset) training.
 
         Offline has gradient steps, not env episodes, so two existing knobs are
@@ -431,10 +492,14 @@ class BenchmarkRunner:
         grad_steps_per_epoch = self.env_cfg.rollout_len
         batch_size = min(self.offpolicy_batch_size, len(self.replay_buffer))
         metrics_cache = None
+        last_batch = None
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
             for _ in range(grad_steps_per_epoch):
                 batch = self.replay_buffer.sample(batch_size)
                 metrics_cache = self.agent.update(batch)
+                if self.aux_models is not None:
+                    self.aux_models.update(batch)
+                last_batch = batch
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
@@ -456,3 +521,4 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
+                self._log_aux_rows(aux_logger, last_batch, ep)
