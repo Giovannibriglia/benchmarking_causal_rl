@@ -1,3 +1,66 @@
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "BenchmarkingCausalRL"
+version = "0.1.0"
+description = "Benchmarking Causal RL"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPLv3" }
+authors = [
+    { name = "Giovanni Briglia", email = "giovanni.briglia@phd.unipi.it" },
+]
+dependencies = [
+    # Hard-pinned (RNG / golden-bitwise sensitive); torch resolved from the cu130 index.
+    "torch==2.10.0",
+    # classic-control (pygame) is core: CartPole/Pendulum are default + test envs.
+    "gymnasium[classic-control]==1.2.3",
+    # numpy floored at 2.2 to keep Python 3.10 support (2.3 needs >=3.11);
+    # uv.lock pins the exact resolved version.
+    "numpy>=2.2",
+    # Lower-bounded; uv.lock pins the exact resolved versions.
+    # pandas floored at 2.2 to keep Python 3.10 support (3.0 needs >=3.11).
+    "pandas>=2.2",
+    "matplotlib>=3.10.8",
+    "pyyaml>=6.0.3",
+    "tqdm>=4.67.3",
+    "imageio[pyav]>=2.37.2",
+    "imageio-ffmpeg>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Giovannibriglia/benchmarking_causal_rl"
+
+[project.optional-dependencies]
+atari = ["ale-py==0.11.2"]
+minigrid = ["minigrid"]
+mujoco = ["mujoco==3.4.0"]
+robotics = ["gymnasium-robotics==1.4.2"]
+minari = ["minari==0.5.3"]
+# Offline RL stack (forward-looking; re-introduces minari removed in PR1, no d3rlpy).
+offline = ["minari==0.5.3"]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "black>24.3.0",
+    "ufmt==2.0.0",
+    "usort==1.0.4",
+    "flake8",
+    "pre-commit",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# Pin the PyTorch CUDA 13.0 wheel index so uv resolves torch 2.10.0+cu130
+# (the working build with CUDA available), not the CPU wheel.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }

@@ -182,6 +182,10 @@ def register_default_algorithms() -> None:
         return actor.to(device), agent
 
     registry.register("vanilla", AlgorithmSpec(builder=build_vanilla, kind="on_policy"))
+    # vanilla_ac: alias of vanilla (same builder/spec); keep the vanilla key.
+    registry.register(
+        "vanilla_ac", AlgorithmSpec(builder=build_vanilla, kind="on_policy")
+    )
     registry.register("a2c", AlgorithmSpec(builder=build_a2c, kind="on_policy"))
     registry.register("ppo", AlgorithmSpec(builder=build_ppo, kind="on_policy"))
     registry.register("trpo", AlgorithmSpec(builder=build_trpo, kind="on_policy"))
