@@ -61,6 +61,15 @@ def parse_args():
         default=None,
         help="JSON dict of kwargs for the env entry point.",
     )
+    p.add_argument(
+        "--offline-dataset",
+        type=str,
+        default=None,
+        help=(
+            "Minari dataset id for offline algorithms (data_regime='offline', "
+            "e.g. --algos offline_dqn). The live env is still built for eval."
+        ),
+    )
     p.add_argument("--n-train-envs", type=int, default=16)
     p.add_argument("--n-eval-envs", type=int, default=16)
     p.add_argument("--rollout-len", type=int, default=1024)
@@ -198,6 +207,10 @@ def main():
     rollout_len = env_cfg_src.get(
         "rollout_len", cfg_from_file.get("rollout_len", args.rollout_len)
     )
+    offline_dataset = env_cfg_src.get(
+        "offline_dataset",
+        cfg_from_file.get("offline_dataset", args.offline_dataset),
+    )
     env_kwargs = env_cfg_src.get("env_kwargs", cfg_from_file.get("env_kwargs", None))
     if env_kwargs is None and args.env_kwargs:
         env_kwargs = json.loads(args.env_kwargs)
@@ -309,6 +322,7 @@ def main():
             "env_set": env_set,
             "env_wrapper": env_wrapper,
             "env_entry_point": env_entry_point,
+            "offline_dataset": offline_dataset,
             "env_kwargs": env_kwargs,
             "n_train_envs": n_train_envs,
             "n_eval_envs": n_eval_envs,
@@ -350,6 +364,7 @@ def main():
                 env_wrapper=env_wrapper or "auto",
                 env_entry_point=env_entry_point,
                 env_kwargs=env_kwargs,
+                offline_dataset=offline_dataset,
             )
             train_cfg = TrainingConfig(
                 n_episodes=n_episodes,

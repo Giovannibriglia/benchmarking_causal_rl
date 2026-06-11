@@ -129,7 +129,7 @@ class BenchmarkRunner:
             action_space=act_space,
         )
         self.replay_buffer = None
-        self.behavior_policy = None
+        self.collection_policy = None
         self.offpolicy_batch_size = 128
         self.offpolicy_warmup = 1000
         if self.algo_spec.kind == "off_policy":
@@ -138,9 +138,13 @@ class BenchmarkRunner:
             # behavior). Stage B can inject a biased/logged BehaviorPolicy here.
             from src.rl.policies.behavior_policy import AgentBehaviorPolicy
 
-            self.behavior_policy = AgentBehaviorPolicy(self.agent)
+            self.collection_policy = AgentBehaviorPolicy(self.agent)
         self.experience_source = OnlineSource(self.train_env, self.device)
-        validate_pairing(self.algo_spec.kind, self.experience_source)
+        validate_pairing(
+            self.algo_spec.kind,
+            self.experience_source,
+            data_regime=self.algo_spec.data_regime,
+        )
         self.critic_ablation = None
         if critic_ablation_cfg is not None:
             if self.algo_spec.kind != "on_policy":
@@ -311,12 +315,6 @@ class BenchmarkRunner:
         return {col: full.get(col, "") for col in schema}
 
     def run(self) -> None:
-        if self.algo_spec.data_regime == "offline":
-            # Stage B fills this in; no offline spec is registered yet, so this
-            # branch is never reached and online behavior is unchanged.
-            raise NotImplementedError(
-                "offline training (data_regime='offline') arrives in Stage B."
-            )
         set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
         try:
             critic_ctx = (
@@ -338,7 +336,9 @@ class BenchmarkRunner:
                 ) as eval_log,
                 critic_ctx as critic_log,
             ):
-                if self.algo_spec.kind == "on_policy":
+                if self.algo_spec.data_regime == "offline":
+                    self._train_offline(train_log, eval_log)
+                elif self.algo_spec.kind == "on_policy":
                     self._train_on_policy(train_log, eval_log, critic_log)
                 else:
                     self._train_off_policy(train_log, eval_log)
@@ -365,13 +365,76 @@ class BenchmarkRunner:
                 self.agent,
                 self.replay_buffer,
                 obs,
-                collection_policy=self.behavior_policy,
+                collection_policy=self.collection_policy,
                 n_steps=total_steps,
                 n_envs=self.env_cfg.n_train_envs,
                 warmup=self.offpolicy_warmup,
                 batch_size=self.offpolicy_batch_size,
                 metrics_cache=metrics_cache,
             )
+
+            if ep in checkpoint_eps:
+                self._save_checkpoint(ep)
+                eval_metrics = self.evaluate(ep)
+                eval_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                eval_row = self._make_row(EVAL_COLUMNS, eval_metrics, ep)
+                train_metrics = (metrics_cache or {}).copy()
+                train_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
+                train_logger.log(train_row)
+                eval_logger.log(eval_row)
+
+    def _train_offline(self, train_logger: CSVLogger, eval_logger: CSVLogger) -> None:
+        """Offline (fixed-dataset) training.
+
+        Offline has gradient steps, not env episodes, so two existing knobs are
+        reinterpreted for this regime (deliberate semantic overload, kept to
+        avoid config/schema churn):
+
+          * ``n_episodes``  -> number of training EPOCHS (the outer loop and the
+            checkpoint/logging axis; the frozen ``episode`` CSV column carries
+            the epoch index, exactly as the online loops use it).
+          * ``rollout_len`` -> number of GRADIENT STEPS per epoch.
+
+        Behavior is the dataset, so the ``collection_policy`` seam is NOT used.
+        The buffer is filled once from the Minari dataset; the training hot path
+        stays batched (``sample`` -> ``agent.update``). ``train_return_*`` are
+        left blank (as online off-policy already does); eval runs in the live
+        env so returns stay comparable to online runs.
+        """
+        assert self.replay_buffer is not None
+        dataset_id = self.env_cfg.offline_dataset
+        if not dataset_id:
+            raise ValueError(
+                "offline training requires env_cfg.offline_dataset (a Minari "
+                "dataset id); pass --offline-dataset."
+            )
+        from src.envs.offline.minari_loader import fill_replay_buffer_from_minari
+
+        n_added = fill_replay_buffer_from_minari(
+            dataset_id, self.replay_buffer, self.device
+        )
+        if n_added == 0:
+            raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
+
+        checkpoint_eps = self.train_cfg.checkpoint_episodes()
+        grad_steps_per_epoch = self.env_cfg.rollout_len
+        batch_size = min(self.offpolicy_batch_size, len(self.replay_buffer))
+        metrics_cache = None
+        for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
+            for _ in range(grad_steps_per_epoch):
+                batch = self.replay_buffer.sample(batch_size)
+                metrics_cache = self.agent.update(batch)
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)

@@ -19,6 +19,9 @@ class EnvConfig:
     env_wrapper: str = "auto"
     env_entry_point: Optional[str] = None
     env_kwargs: dict = field(default_factory=dict)
+    # Minari dataset id for data_regime="offline" runs; the live env above is
+    # still built (offline eval runs in it). None for online runs.
+    offline_dataset: Optional[str] = None
 
 
 @dataclass

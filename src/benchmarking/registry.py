@@ -224,3 +224,14 @@ def register_default_algorithms() -> None:
     registry.register("dqn", AlgorithmSpec(builder=build_dqn, kind="off_policy"))
     registry.register("sac", AlgorithmSpec(builder=build_sac, kind="off_policy"))
     registry.register("ddpg", AlgorithmSpec(builder=build_ddpg, kind="off_policy"))
+
+    # Offline (fixed-dataset) algorithms: data_regime="offline" routes run() to
+    # _train_offline. Online dqn is left untouched.
+    from src.rl.offline.dqn import build_offline_dqn
+
+    registry.register(
+        "offline_dqn",
+        AlgorithmSpec(
+            builder=build_offline_dqn, kind="off_policy", data_regime="offline"
+        ),
+    )

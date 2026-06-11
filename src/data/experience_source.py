@@ -45,11 +45,16 @@ class ExperienceSource(abc.ABC):
         return None
 
 
-def validate_pairing(paradigm: str, source: ExperienceSource) -> None:
+def validate_pairing(
+    paradigm: str, source: ExperienceSource, *, data_regime: str = "online"
+) -> None:
     """Config-time check that an algorithm paradigm matches its source.
 
     Raises ValueError for invalid combinations, e.g. an on-policy algorithm
-    fed from an offline dataset.
+    fed from an offline dataset. ``data_regime`` ("online"/"offline") is the
+    spec's data-source axis: an offline regime requires an off-policy learner
+    (DQN/BCQ/CQL/IQL), so ``data_regime="offline"`` with an ``on_policy``
+    paradigm is rejected. Default leaves existing two-arg calls unchanged.
     """
     if paradigm == "on_policy" and not source.is_online:
         raise ValueError(
@@ -60,6 +65,11 @@ def validate_pairing(paradigm: str, source: ExperienceSource) -> None:
         raise ValueError(
             "offline algorithms must consume an offline dataset source; "
             f"got {type(source).__name__}."
+        )
+    if data_regime == "offline" and paradigm == "on_policy":
+        raise ValueError(
+            "data_regime='offline' requires an off_policy algorithm; "
+            "on_policy is incompatible with offline (fixed-dataset) training."
         )
 
 
@@ -159,28 +169,6 @@ class OfflineDatasetSource(ExperienceSource):
         if self.behavior_logprob is not None:
             batch["behavior_logprob"] = self.behavior_logprob[idx]
         return batch
-
-    def as_mdpdataset(self):
-        """d3rlpy MDPDataset adapter (built lazily; d3rlpy import deferred)."""
-        import numpy as np
-        from d3rlpy.dataset import MDPDataset
-
-        obs, acts, rews, terms, tos = [], [], [], [], []
-        for ep in self.episodes:
-            T = ep["rewards"].shape[0]
-            obs.append(ep["obs"][:T].cpu().numpy().astype(np.float32))
-            a = ep["actions"].cpu().numpy()
-            acts.append(a.reshape(T, -1) if a.ndim > 1 else a.reshape(T, 1))
-            rews.append(ep["rewards"].cpu().numpy().reshape(T, 1).astype(np.float32))
-            terms.append(ep["terminations"].cpu().numpy().astype(np.float32))
-            tos.append(ep["truncations"].cpu().numpy().astype(np.float32))
-        return MDPDataset(
-            observations=np.concatenate(obs),
-            actions=np.concatenate(acts),
-            rewards=np.concatenate(rews),
-            terminals=np.concatenate(terms),
-            timeouts=np.concatenate(tos),
-        )
 
 
 class OnlineSource(ExperienceSource):
