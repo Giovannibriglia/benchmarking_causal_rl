@@ -38,9 +38,10 @@ atari = ["ale-py==0.11.2"]
 minigrid = ["minigrid"]
 mujoco = ["mujoco==3.4.0"]
 robotics = ["gymnasium-robotics==1.4.2"]
-minari = ["minari==0.5.3"]
-# Offline RL stack (forward-looking; re-introduces minari removed in PR1, no d3rlpy).
-offline = ["minari==0.5.3"]
+minari = ["minari[hdf5]==0.5.3"]
+# Offline RL stack (re-introduces minari removed in PR1, no d3rlpy). The [hdf5]
+# extra pulls h5py, minari's default dataset storage backend.
+offline = ["minari[hdf5]==0.5.3"]
 
 [dependency-groups]
 dev = [
