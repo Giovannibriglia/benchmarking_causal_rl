@@ -67,6 +67,12 @@ ENV_SETS: Dict[str, List[str] | Callable[[], List[str]]] = {
         "Humanoid-v5",
         "HumanoidStandup-v5",
     ],
+    # Image-observation Atari (discrete); needs `uv sync --extra atari`.
+    # Run with a CNN-capable algo, e.g. --env-set atari --algos dqn.
+    "atari": [
+        "ALE/Pong-v5",
+        "ALE/Breakout-v5",
+    ],
     "gymnasium-robotics": [
         # Fetch (multi-goal, Dict obs)
         "FetchReach-v4",

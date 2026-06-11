@@ -1,4 +1,4 @@
-src/benchmarking/runner.py:356:        set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
+src/benchmarking/runner.py:362:        set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
 src/benchmarking/runner.py:81:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
 src/config/seeding.py:10:def set_seed(seed: int, deterministic: bool = False) -> None:
 src/config/seeding.py:15:    random.seed(seed)
