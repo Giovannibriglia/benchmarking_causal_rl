@@ -186,7 +186,7 @@ dev = [
     { name = "flake8" },
     { name = "pre-commit" },
     { name = "pytest" },
-    { name = "ufmt", specifier = "==2.0.0" },
+    { name = "ufmt", specifier = "==2.7.3" },
     { name = "usort", specifier = "==1.0.4" },
 ]
 
@@ -2458,7 +2458,7 @@ wheels = [
 
 [[package]]
 name = "ufmt"
-version = "2.0.0"
+version = "2.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "black" },
@@ -2470,9 +2470,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "usort" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/53/ab/71a6451c0c9ac1be2c63cd51f64fff714db0c77b914c300d6a775a2f23e2/ufmt-2.0.0.tar.gz", hash = "sha256:e5163bf728c1b48efd1ffe0759e8cce343738300aa6b355d6ad64175f5de792d", size = 69795, upload-time = "2022-08-09T02:28:46.309Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/24/8393cb5e96e640a858ac11c2ac65b28221b09c4a11f83210d2ab9d6108e5/ufmt-2.7.3.tar.gz", hash = "sha256:b661c575bfb95a617d04fa4fe5cde550d21eb848094b3f9c438165459bc04f77", size = 24425, upload-time = "2024-09-21T23:03:42.889Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/35/be861287bf40d1c63a92752816746369e1da13c950822ace27d54a63b95f/ufmt-2.0.0-py3-none-any.whl", hash = "sha256:69a7821119381241bc30c5fef305f8d647230e15979b71f90ebb71add3103407", size = 21003, upload-time = "2022-08-09T02:28:43.021Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/35/df52ce427d847396a3574887fef32f11f169834523493010b32b5600867c/ufmt-2.7.3-py3-none-any.whl", hash = "sha256:1a3d2515e3108ba7a68425ebdeb4cbb1fdfbcffbd031dac8f56a1f386a7b396e", size = 28186, upload-time = "2024-09-21T23:03:41.214Z" },
 ]
 
 [[package]]
