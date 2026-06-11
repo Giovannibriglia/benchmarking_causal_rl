@@ -227,11 +227,18 @@ def register_default_algorithms() -> None:
 
     # Offline (fixed-dataset) algorithms: data_regime="offline" routes run() to
     # _train_offline. Online dqn is left untouched.
+    from src.rl.offline.bcq import build_bcq
+    from src.rl.offline.cql import build_cql
     from src.rl.offline.dqn import build_offline_dqn
+    from src.rl.offline.iql import build_iql
 
-    registry.register(
-        "offline_dqn",
-        AlgorithmSpec(
-            builder=build_offline_dqn, kind="off_policy", data_regime="offline"
-        ),
-    )
+    for _name, _builder in (
+        ("offline_dqn", build_offline_dqn),
+        ("bcq", build_bcq),
+        ("cql", build_cql),
+        ("iql", build_iql),
+    ):
+        registry.register(
+            _name,
+            AlgorithmSpec(builder=_builder, kind="off_policy", data_regime="offline"),
+        )
