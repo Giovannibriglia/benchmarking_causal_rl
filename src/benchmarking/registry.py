@@ -5,7 +5,7 @@ from typing import Callable, Dict, List
 import torch
 import torch.nn as nn
 
-from src.rl.nets.mlp import MLP
+from src.rl.models.backbone import select_backbone
 from src.rl.off_policy.ddpg import DDPG
 from src.rl.off_policy.dqn import DQN
 from src.rl.off_policy.replay_buffer import ReplayBuffer
@@ -108,6 +108,7 @@ def register_default_algorithms() -> None:
             kwargs["action_dim"],
             kwargs["action_type"],
             kwargs["device"],
+            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
         )
         agent = VanillaPolicyGradient(policy, device=kwargs["device"])
         return policy, agent
@@ -118,6 +119,7 @@ def register_default_algorithms() -> None:
             kwargs["action_dim"],
             kwargs["action_type"],
             kwargs["device"],
+            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
         )
         agent = A2C(policy, device=kwargs["device"])
         return policy, agent
@@ -128,6 +130,7 @@ def register_default_algorithms() -> None:
             kwargs["action_dim"],
             kwargs["action_type"],
             kwargs["device"],
+            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
         )
         agent = PPO(policy, device=kwargs["device"])
         return policy, agent
@@ -138,6 +141,7 @@ def register_default_algorithms() -> None:
             kwargs["action_dim"],
             kwargs["action_type"],
             kwargs["device"],
+            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
         )
         agent = TRPO(policy, device=kwargs["device"])
         return policy, agent
@@ -147,8 +151,9 @@ def register_default_algorithms() -> None:
         obs_dim = kwargs["obs_dim"]
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
-        q_net = MLP(obs_dim, action_dim)
-        target_net = MLP(obs_dim, action_dim)
+        obs_shape = kwargs.get("obs_shape", (obs_dim,))
+        q_net = select_backbone(obs_shape, obs_dim, action_dim)
+        target_net = select_backbone(obs_shape, obs_dim, action_dim)
         buffer = ReplayBuffer(capacity=100_000, device=device)
         agent = DQN(q_net.to(device), target_net.to(device), buffer, device=device)
         return q_net.to(device), agent
@@ -158,10 +163,17 @@ def register_default_algorithms() -> None:
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
         action_space = kwargs["action_space"]
-        actor = MLP(obs_dim, action_dim, output_activation=nn.Tanh)
-        critic = MLP(obs_dim + action_dim, 1)
-        target_actor = MLP(obs_dim, action_dim, output_activation=nn.Tanh)
-        target_critic = MLP(obs_dim + action_dim, 1)
+        obs_shape = kwargs.get("obs_shape", (obs_dim,))
+        actor = select_backbone(
+            obs_shape, obs_dim, action_dim, output_activation=nn.Tanh
+        )
+        critic = select_backbone((obs_dim + action_dim,), obs_dim + action_dim, 1)
+        target_actor = select_backbone(
+            obs_shape, obs_dim, action_dim, output_activation=nn.Tanh
+        )
+        target_critic = select_backbone(
+            (obs_dim + action_dim,), obs_dim + action_dim, 1
+        )
         buffer = ReplayBuffer(capacity=100_000, device=device)
         agent = DDPG(
             actor.to(device),
@@ -197,9 +209,16 @@ def register_default_algorithms() -> None:
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
         action_space = kwargs["action_space"]
-        actor = SquashedGaussianActor(obs_dim, action_dim).to(device)
-        mk_q = lambda: MLP(  # noqa: E731
-            obs_dim + action_dim, 1, hidden_dims=(256, 256), activation=nn.ReLU
+        obs_shape = kwargs.get("obs_shape", (obs_dim,))
+        actor = SquashedGaussianActor(obs_dim, action_dim, obs_shape=obs_shape).to(
+            device
+        )
+        mk_q = lambda: select_backbone(  # noqa: E731
+            (obs_dim + action_dim,),
+            obs_dim + action_dim,
+            1,
+            hidden_dims=(256, 256),
+            activation=nn.ReLU,
         )
         q1, q2, q1t, q2t = (mk_q().to(device) for _ in range(4))
         # SAC needs a large buffer for million-step reference training

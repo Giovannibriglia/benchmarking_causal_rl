@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..base import ActionOutput
-from ..nets.mlp import MLP
+from ..models.backbone import select_backbone
 from .base_off_policy import BaseOffPolicy
 from .replay_buffer import ReplayBuffer
 
@@ -28,9 +28,14 @@ class SquashedGaussianActor(nn.Module):
     """Standard SAC actor: ReLU trunk (tanh trunks saturate on MuJoCo and
     cost a large fraction of final return - measured: 3.2k vs target 12k)."""
 
-    def __init__(self, obs_dim: int, action_dim: int, hidden_dims=(256, 256)):
+    def __init__(
+        self, obs_dim: int, action_dim: int, hidden_dims=(256, 256), obs_shape=None
+    ):
         super().__init__()
-        self.trunk = MLP(
+        # Trunk routed through the shared selector; obs_shape defaults to
+        # (obs_dim,) -> rank-1 -> the identical MLP (bitwise).
+        self.trunk = select_backbone(
+            obs_shape if obs_shape is not None else (obs_dim,),
             obs_dim,
             hidden_dims[-1],
             hidden_dims=hidden_dims[:-1],

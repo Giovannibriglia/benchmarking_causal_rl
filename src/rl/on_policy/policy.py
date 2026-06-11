@@ -7,7 +7,7 @@ import torch.distributions as dist
 import torch.nn as nn
 
 from ..base_policy import BasePolicy
-from ..nets.mlp import MLP
+from ..models.backbone import select_backbone
 
 
 class ActorCriticMLP(BasePolicy):
@@ -20,10 +20,15 @@ class ActorCriticMLP(BasePolicy):
         action_type: str,
         device: torch.device,
         hidden_dims=(64, 64),
+        obs_shape=None,
     ) -> None:
         super().__init__(device)
         self.action_type = action_type
-        self.encoder = MLP(
+        # Encoder routed through the shared rank->backbone selector. obs_shape
+        # defaults to (obs_dim,) -> rank-1 -> the identical MLP (bitwise); the
+        # image (rank-3) path is wired by the runner in Stage B.
+        self.encoder = select_backbone(
+            obs_shape if obs_shape is not None else (obs_dim,),
             obs_dim,
             hidden_dims[-1],
             hidden_dims=hidden_dims[:-1] if len(hidden_dims) > 1 else (),
