@@ -363,20 +363,50 @@ You can extend:
 
 ## Development Setup
 
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management
+(PEP 621 `pyproject.toml` + `uv.lock`). Install uv via the official standalone
+installer:
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pre-commit install
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Create the environment and install the locked dependencies:
+
+```bash
+uv sync                       # base runtime + dev tooling, into ./.venv
+uv run pre-commit install
+```
+
+The PyTorch CUDA 13.0 wheel index is pinned in `pyproject.toml`, so `uv sync`
+resolves the `torch==2.10.0+cu130` build (CUDA) rather than the CPU wheel.
+
+Optional environment families are exposed as extras:
+
+```bash
+uv sync --extra mujoco        # also: atari, minigrid, robotics, minari, offline
+```
+
+Common workflows:
+
+```bash
+uv run python main.py --envs CartPole-v1 --algos ppo   # run inside the env
+uv add <package>                                       # add a dependency
+uv lock                                                # re-resolve the lockfile
 ```
 
 Run formatting checks:
 
 ```bash
-pre-commit run --all-files
+uv run pre-commit run --all-files
 ```
 
 All pull requests should pass pre-commit checks before merging.
+
+> **pip fallback.** `requirements.txt` is a generated export of the base
+> runtime (`uv export --no-dev --no-hashes --emit-index-url`) for environments
+> without uv (e.g. the deployment server). Regenerate it after changing
+> dependencies; do not edit it by hand.
 
 ---
 
