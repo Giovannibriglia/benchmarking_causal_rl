@@ -147,10 +147,24 @@ class BenchmarkRunner:
         if self.algo_spec.kind == "off_policy":
             self.replay_buffer = self.agent.buffer  # type: ignore[attr-defined]
             # Default collection seam: delegates to agent.act (exact pre-seam
-            # behavior). Stage B can inject a biased/logged BehaviorPolicy here.
-            from src.rl.policies.behavior_policy import AgentBehaviorPolicy
+            # behavior). Opt-in A1 policies (anti_reward/bias_*) plug in here;
+            # the "agent" branch is byte-identical to the pre-A1 path so the
+            # off-policy golden stays bitwise.
+            behavior_policy = getattr(self.env_cfg, "behavior_policy", "agent")
+            if behavior_policy == "agent":
+                from src.rl.policies.behavior_policy import AgentBehaviorPolicy
 
-            self.collection_policy = AgentBehaviorPolicy(self.agent)
+                self.collection_policy = AgentBehaviorPolicy(self.agent)
+            else:
+                from src.rl.policies.behavior_policy import build_collection_policy
+
+                self.collection_policy = build_collection_policy(
+                    behavior_policy,
+                    self.agent,
+                    self.action_type,
+                    act_space,
+                    getattr(self.env_cfg, "behavior_strength", None),
+                )
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(
             self.algo_spec.kind,

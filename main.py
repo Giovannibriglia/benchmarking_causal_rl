@@ -71,6 +71,27 @@ def parse_args():
             "e.g. --algos offline_dqn). The live env is still built for eval."
         ),
     )
+    p.add_argument(
+        "--behavior-policy",
+        type=str,
+        default="agent",
+        choices=["agent", "anti_reward", "bias_skew", "bias_suboptimal"],
+        help=(
+            "Off-policy online collection behavior policy (opt-in; default "
+            "'agent' is byte-identical to the standard agent.act collection). "
+            "anti_reward = critic-pessimal (argmin-Q); bias_skew = prob-p fixed "
+            "preferred action; bias_suboptimal = prob-beta agent else uniform."
+        ),
+    )
+    p.add_argument(
+        "--behavior-strength",
+        type=float,
+        default=None,
+        help=(
+            "Primary knob for --behavior-policy: anti_reward=epsilon, "
+            "bias_skew=p, bias_suboptimal=beta. None keeps the policy default."
+        ),
+    )
     p.add_argument("--n-train-envs", type=int, default=16)
     p.add_argument("--n-eval-envs", type=int, default=16)
     p.add_argument("--rollout-len", type=int, default=1024)
@@ -233,6 +254,14 @@ def main():
     offline_dataset = env_cfg_src.get(
         "offline_dataset",
         cfg_from_file.get("offline_dataset", args.offline_dataset),
+    )
+    behavior_policy = env_cfg_src.get(
+        "behavior_policy",
+        cfg_from_file.get("behavior_policy", args.behavior_policy),
+    )
+    behavior_strength = env_cfg_src.get(
+        "behavior_strength",
+        cfg_from_file.get("behavior_strength", args.behavior_strength),
     )
     env_kwargs = env_cfg_src.get("env_kwargs", cfg_from_file.get("env_kwargs", None))
     if env_kwargs is None and args.env_kwargs:
@@ -400,6 +429,8 @@ def main():
                 env_entry_point=env_entry_point,
                 env_kwargs=env_kwargs,
                 offline_dataset=offline_dataset,
+                behavior_policy=behavior_policy,
+                behavior_strength=behavior_strength,
             )
             train_cfg = TrainingConfig(
                 n_episodes=n_episodes,

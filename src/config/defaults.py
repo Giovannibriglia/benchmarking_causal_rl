@@ -22,6 +22,13 @@ class EnvConfig:
     # Minari dataset id for data_regime="offline" runs; the live env above is
     # still built (offline eval runs in it). None for online runs.
     offline_dataset: Optional[str] = None
+    # Off-policy online collection behavior policy (opt-in; default "agent" =
+    # AgentBehaviorPolicy, byte-identical to the pre-A1 path). One of: agent,
+    # anti_reward, bias_skew, bias_suboptimal. behavior_strength maps to each
+    # policy's primary param (anti_reward=epsilon, bias_skew=p,
+    # bias_suboptimal=beta); None keeps the policy default.
+    behavior_policy: str = "agent"
+    behavior_strength: Optional[float] = None
 
 
 @dataclass
