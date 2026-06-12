@@ -73,6 +73,13 @@ ENV_SETS: Dict[str, List[str] | Callable[[], List[str]]] = {
         "ALE/Pong-v5",
         "ALE/Breakout-v5",
     ],
+    # Image-observation MiniGrid (discrete); needs `uv sync --extra minigrid`.
+    # RGB partial render -> (3, 84, 84), runs through the same CNN path as Atari.
+    # Run with a CNN-capable algo, e.g. --env-set minigrid --algos ppo.
+    "minigrid": [
+        "MiniGrid-Empty-5x5-v0",
+        "MiniGrid-DoorKey-5x5-v0",
+    ],
     "gymnasium-robotics": [
         # Fetch (multi-goal, Dict obs)
         "FetchReach-v4",

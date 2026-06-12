@@ -237,8 +237,13 @@ class OnlineSource(ExperienceSource):
             rew_buf, done_buf, val_buf, next_val_buf
         )
         batch = RolloutBatch(
-            obs=torch.stack(obs_buf).reshape(T * N, -1),
-            next_obs=torch.stack(next_obs_buf).reshape(T * N, -1),
+            # flatten(0, 1) collapses (T, N) -> (T*N) while PRESERVING the obs
+            # feature dims: for vector obs (T, N, D) -> (T*N, D), byte-identical
+            # to the previous reshape(T*N, -1) (golden bitwise); for image obs
+            # (T, N, C, H, W) -> (T*N, C, H, W), so the CNN encoder gets proper
+            # (B, C, H, W) tensors instead of a flattened (B, C*H*W).
+            obs=torch.stack(obs_buf).flatten(0, 1),
+            next_obs=torch.stack(next_obs_buf).flatten(0, 1),
             actions=(
                 torch.stack(act_buf).reshape(T * N, -1)
                 if act_buf[0].ndim > 1
