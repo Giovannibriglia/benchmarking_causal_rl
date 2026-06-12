@@ -42,6 +42,7 @@ from gymnasium.spaces import Space
 from gymnasium.spaces.utils import flatten, flatten_space
 
 from ..base import BaseEnv
+from .atari import make_atari_env, normalize_image_obs
 from .video import SingleVideoRecorder
 
 
@@ -71,20 +72,10 @@ class GymnasiumEnv(BaseEnv):
                 _maybe_import_robotics(self.env_id)
                 render_mode = "rgb_array" if self.render else None
                 if self.env_id.startswith("ALE/"):
-                    import ale_py  # noqa: F401  (registers the ALE/* env ids)
-
-                    # frameskip=1 so AtariPreprocessing owns the single source
-                    # of frameskip (ALE/*-v5 defaults to 4; stacking both would
-                    # give an effective 16-frame skip).
-                    env = gym.make(self.env_id, frameskip=1, render_mode=render_mode)
-                    env = gym.wrappers.AtariPreprocessing(
-                        env,
-                        frame_skip=4,
-                        screen_size=84,
-                        grayscale_obs=True,
-                        scale_obs=False,
-                    )
-                    env = gym.wrappers.FrameStackObservation(env, stack_size=4)
+                    # Shared single source of the Atari preprocessing chain
+                    # (also used by the offline fixture generator) so offline
+                    # frames can't drift from the online representation.
+                    env = make_atari_env(self.env_id, render_mode)
                 else:
                     env = gym.make(self.env_id, render_mode=render_mode)
                 env.reset(seed=self.base_seed + rank)
@@ -109,10 +100,9 @@ class GymnasiumEnv(BaseEnv):
             self.video_recorder = SingleVideoRecorder(self.video_path)
 
     def _image_obs(self, obs) -> torch.Tensor:
-        # Frame-stacked obs are already channels-first (N, C, H, W) uint8;
-        # convert to float CHW normalized to [0, 1] on the device.
-        arr = np.asarray(obs)
-        return torch.from_numpy(arr).to(self.device).float().div_(255.0)
+        # Delegates to the shared single-source normalizer so offline frames
+        # (Minari loader) are byte-identical to what the online path delivers.
+        return normalize_image_obs(obs, self.device)
 
     def _obs_to_tensor(self, obs) -> torch.Tensor:
         return self._image_obs(obs) if self._is_image else self._flatten_obs(obs)

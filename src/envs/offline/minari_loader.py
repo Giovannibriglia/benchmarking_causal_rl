@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
+
+from src.envs.wrappers.atari import normalize_image_obs
 
 
 def fill_replay_buffer_from_minari(
@@ -25,7 +28,15 @@ def fill_replay_buffer_from_minari(
     dataset = minari.load_dataset(dataset_id)
     n_added = 0
     for episode in dataset.iterate_episodes():
-        obs = torch.as_tensor(episode.observations, dtype=torch.float32)
+        raw_obs = np.asarray(episode.observations)
+        # Image obs ((T+1, C, H, W) uint8) go through the SAME normalizer the
+        # online wrapper uses (float CHW /255), so an offline frame is
+        # byte-identical to the online representation. Vector obs ((T+1, D))
+        # keep the original float path unchanged.
+        if raw_obs.ndim == 4:
+            obs = normalize_image_obs(raw_obs, device).cpu()
+        else:
+            obs = torch.as_tensor(raw_obs, dtype=torch.float32)
         actions = torch.as_tensor(episode.actions)
         rewards = torch.as_tensor(episode.rewards, dtype=torch.float32)
         terminations = torch.as_tensor(episode.terminations, dtype=torch.bool)
