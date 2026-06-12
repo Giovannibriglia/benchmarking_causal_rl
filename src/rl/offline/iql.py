@@ -140,6 +140,12 @@ class IQL(BaseOffPolicy):
 
 
 def build_iql(**kwargs):
+    if kwargs.get("action_type", "discrete") != "discrete":
+        raise ValueError(
+            "iql is discrete-only; use iql_continuous (Gaussian AWR policy) for "
+            "continuous action spaces. (Without this guard a continuous env would "
+            "silently build a single-output discrete Q-net.)"
+        )
     obs_dim = kwargs["obs_dim"]
     action_dim = kwargs["action_dim"]
     device = kwargs["device"]

@@ -15,6 +15,12 @@ def build_offline_dqn(**kwargs):
     the learning rule. This module is the seam for later offline-only algorithms
     (BCQ / CQL / IQL), which will subclass or replace the update here.
     """
+    if kwargs.get("action_type", "discrete") != "discrete":
+        raise ValueError(
+            "offline_dqn is discrete-only; use cql_continuous or iql_continuous "
+            "for continuous action spaces. (Without this guard a continuous env "
+            "would silently build a single-output discrete Q-net.)"
+        )
     obs_dim = kwargs["obs_dim"]
     action_dim = kwargs["action_dim"]
     device = kwargs["device"]
