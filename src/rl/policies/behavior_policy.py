@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import abc
+import math
 
 import torch
+import torch.nn.functional as F
 
 from src.rl.base import ActionOutput, Algorithm
+from src.rl.models.transition_model import TransitionModel
 
 
 class BehaviorPolicy(abc.ABC):
@@ -202,6 +205,146 @@ class SuboptimalBehaviorPolicy(BehaviorPolicy):
         )
 
 
+class CuriosityBehaviorPolicy(BehaviorPolicy):
+    """Curiosity-driven collection: steer toward NOVEL transitions via ensemble
+    disagreement (the Disagreement / Plan2Explore route).
+
+    A single point-predictor cannot rank actions before observing s' (the
+    novelty IS the prediction error, which needs the true next state), so this
+    uses a small ENSEMBLE of forward models: the variance across members'
+    predictions for ``(s, a_candidate)`` is an epistemic-novelty score
+    computable BEFORE acting. N self-supervised dynamics models — no
+    intrinsic-reward value/policy head (no second policy learner).
+
+    Online-trains its own ensemble on throttled ``agent.buffer`` samples inside
+    ``act`` — reusing the buffer the collection loop already fills, so no
+    collection-loop / seam change. The buffer-sampling-for-training draws from
+    an ISOLATED generator (``self._gen``), so the agent's own update-sampling
+    stream (``random.sample`` in ReplayBuffer) is NOT coupled to how often the
+    ensemble trains — curiosity's effect is attributable to the data it
+    collects, not an RNG side-channel. The selection draws (continuous sample-K,
+    the mixture coin) stay in the main stream: those genuinely are the behavior.
+
+    ``strength`` is the curiosity intensity: with probability ``strength`` emit
+    the max-disagreement candidate, else the agent's action (1 = pure curiosity,
+    0 = agent). Vector obs only; image-obs (feature-space ICM) is deferred.
+    """
+
+    def __init__(
+        self,
+        agent: Algorithm,
+        action_type: str,
+        action_space,
+        *,
+        strength: float = 0.5,
+        n_models: int = 5,
+        n_candidates: int = 10,
+        lr: float = 1e-3,
+        train_every: int = 4,
+        train_batch: int = 128,
+        min_buffer: int = 256,
+        seed: int = 0,
+    ) -> None:
+        self.agent = agent
+        self.action_type = action_type
+        self.action_space = action_space
+        self.strength = float(strength)
+        self.n_models = int(n_models)
+        self.n_candidates = int(n_candidates)
+        self.lr = float(lr)
+        self.train_every = max(1, int(train_every))
+        self.train_batch = int(train_batch)
+        self.min_buffer = int(min_buffer)
+        self.models: list[TransitionModel] | None = None
+        self.opts: list = []
+        self.action_dim = 0
+        self._step = 0
+        # Isolated stream for the training-buffer sampling ONLY (see class doc).
+        self._gen = torch.Generator(device="cpu")
+        self._gen.manual_seed(int(seed))
+
+    def _build(self, obs: torch.Tensor) -> None:
+        """Lazily construct the ensemble from the first ``act`` obs — so the
+        factory signature stays unchanged (no obs_dim plumbed through the runner
+        call => no snapshot line-shift)."""
+        device = obs.device
+        obs_shape = tuple(obs.shape[1:]) or (1,)
+        obs_dim = int(math.prod(obs_shape))
+        self.action_dim = (
+            int(self.action_space.n)
+            if self.action_type == "discrete"
+            else int(self.action_space.shape[0])
+        )
+        self.models = [
+            TransitionModel(obs_dim, self.action_dim, self.action_type, obs_shape).to(
+                device
+            )
+            for _ in range(self.n_models)
+        ]
+        self.opts = [torch.optim.Adam(m.parameters(), lr=self.lr) for m in self.models]
+
+    def _disagreement(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Per-env epistemic novelty = variance across the ensemble's predicted
+        next-states for ``(obs, actions)`` (shape ``[B]``)."""
+        preds = torch.stack([m(obs, actions) for m in self.models], dim=0)
+        return preds.var(dim=0, unbiased=False).mean(dim=-1)
+
+    def _maybe_train(self) -> None:
+        buf = getattr(self.agent, "buffer", None)
+        if buf is None or len(buf) < self.min_buffer or self._step % self.train_every:
+            return
+        storage = list(buf.storage)
+        idx = torch.randint(
+            0, len(storage), (self.train_batch,), generator=self._gen
+        ).tolist()
+        device = next(self.models[0].parameters()).device
+        obs = torch.stack([storage[i]["obs"] for i in idx]).to(device).float()
+        actions = torch.stack([storage[i]["actions"] for i in idx]).to(device)
+        next_obs = torch.stack([storage[i]["next_obs"] for i in idx]).to(device).float()
+        for m, opt in zip(self.models, self.opts):
+            loss = F.mse_loss(m(obs, actions), next_obs)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+
+    def _most_novel(self, obs: torch.Tensor) -> torch.Tensor:
+        """The max-disagreement candidate action per env."""
+        b = obs.shape[0]
+        if self.action_type == "discrete":
+            dis = torch.stack(
+                [
+                    self._disagreement(
+                        obs, torch.full((b,), a, device=obs.device, dtype=torch.long)
+                    )
+                    for a in range(self.action_dim)
+                ],
+                dim=0,
+            )  # [n_actions, B]
+            return dis.argmax(dim=0)
+        # Continuous: sample-K candidates from the agent (main-stream behavior).
+        cands = torch.stack(
+            [self.agent.act(obs).action for _ in range(self.n_candidates)], dim=0
+        )  # [K, B, A]
+        dis = torch.stack(
+            [self._disagreement(obs, cands[k]) for k in range(cands.shape[0])], dim=0
+        )  # [K, B]
+        idx = dis.argmax(dim=0)
+        return cands[idx, torch.arange(b, device=obs.device)]
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        if self.models is None:
+            self._build(obs)
+        self._maybe_train()
+        self._step += 1
+        agent_a = self.agent.act(obs).action
+        with torch.no_grad():
+            novel = self._most_novel(obs)
+        take = torch.rand(obs.shape[0], device=obs.device) < self.strength
+        if self.action_type == "discrete":
+            return ActionOutput(action=torch.where(take, novel, agent_a))
+        return ActionOutput(action=torch.where(take.unsqueeze(-1), novel, agent_a))
+
+
 # Collection-policy registry. The "agent" entry is handled by the runner with
 # the original AgentBehaviorPolicy(self.agent) construction (byte-identical to
 # the pre-A1 path), so the off-policy golden is untouched; this factory only
@@ -210,6 +353,7 @@ _STRENGTH_PARAM = {
     "anti_reward": "epsilon",  # epsilon-greedy exploration over argmin-Q
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
+    "curiosity": "strength",  # probability of emitting the max-disagreement action
 }
 
 
@@ -231,7 +375,9 @@ def build_collection_policy(
         return SkewBehaviorPolicy(agent, action_type, action_space, **kw)
     if name == "bias_suboptimal":
         return SuboptimalBehaviorPolicy(agent, action_type, action_space, **kw)
+    if name == "curiosity":
+        return CuriosityBehaviorPolicy(agent, action_type, action_space, **kw)
     raise ValueError(
         f"Unknown behavior policy '{name}'. Choose from: agent, "
-        "anti_reward, bias_skew, bias_suboptimal."
+        "anti_reward, bias_skew, bias_suboptimal, curiosity."
     )

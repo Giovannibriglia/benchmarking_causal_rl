@@ -75,12 +75,12 @@ def parse_args():
         "--behavior-policy",
         type=str,
         default="agent",
-        choices=["agent", "anti_reward", "bias_skew", "bias_suboptimal"],
+        choices=["agent", "anti_reward", "bias_skew", "bias_suboptimal", "curiosity"],
         help=(
             "Off-policy online collection behavior policy (opt-in; default "
             "'agent' is byte-identical to the standard agent.act collection). "
-            "anti_reward = critic-pessimal (argmin-Q); bias_skew = prob-p fixed "
-            "preferred action; bias_suboptimal = prob-beta agent else uniform."
+            "anti_reward=critic-pessimal; bias_skew=prob-p preferred action; "
+            "bias_suboptimal=prob-beta agent else random; curiosity=novelty."
         ),
     )
     p.add_argument(
@@ -88,8 +88,8 @@ def parse_args():
         type=float,
         default=None,
         help=(
-            "Primary knob for --behavior-policy: anti_reward=epsilon, "
-            "bias_skew=p, bias_suboptimal=beta. None keeps the policy default."
+            "Primary knob for --behavior-policy: anti_reward=epsilon, bias_skew=p, "
+            "bias_suboptimal=beta, curiosity=strength. None keeps the policy default."
         ),
     )
     p.add_argument("--n-train-envs", type=int, default=16)
