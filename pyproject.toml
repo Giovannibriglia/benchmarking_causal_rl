@@ -41,9 +41,12 @@ minigrid = ["minigrid"]
 mujoco = ["mujoco==3.4.0"]
 robotics = ["gymnasium-robotics==1.4.2"]
 minari = ["minari[hdf5]==0.5.3"]
-# Offline RL stack (re-introduces minari removed in PR1, no d3rlpy). The [hdf5]
-# extra pulls h5py, minari's default dataset storage backend.
-offline = ["minari[hdf5]==0.5.3"]
+# Offline RL stack (re-introduces minari removed in PR1, no d3rlpy). [hdf5] pulls
+# h5py (minari's default storage backend); [hf] pulls huggingface_hub, the
+# download backend for HOSTED datasets (B1's load path) — without it
+# download-if-absent raises a clear "install minari[hf]" error. Local fixtures
+# (make_cartpole_offline etc.) need only [hdf5].
+offline = ["minari[hdf5,hf]==0.5.3"]
 
 [dependency-groups]
 dev = [

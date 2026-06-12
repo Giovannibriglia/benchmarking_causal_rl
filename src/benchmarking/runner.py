@@ -500,8 +500,20 @@ class BenchmarkRunner:
                 "offline training requires env_cfg.offline_dataset (a Minari "
                 "dataset id); pass --offline-dataset."
             )
-        from src.envs.offline.minari_loader import fill_replay_buffer_from_minari
+        from src.envs.offline.minari_loader import (
+            assert_dataset_matches_algo,
+            fill_replay_buffer_from_minari,
+            load_minari_dataset,
+        )
 
+        # Resolve the dataset (download-if-absent) and verify its action space
+        # matches the consuming algo BEFORE filling — catches a continuous
+        # dataset paired with a discrete offline algo (or vice versa) from the
+        # dataset's metadata, not as a tensor crash mid-fill.
+        dataset = load_minari_dataset(dataset_id)
+        assert_dataset_matches_algo(
+            dataset, self.action_type, dataset_id, self.train_cfg.algorithm
+        )
         n_added = fill_replay_buffer_from_minari(
             dataset_id, self.replay_buffer, self.device
         )
