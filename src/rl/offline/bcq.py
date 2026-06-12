@@ -126,10 +126,9 @@ class DiscreteBCQ(BaseOffPolicy):
 def build_bcq(**kwargs):
     if kwargs.get("action_type", "discrete") != "discrete":
         raise ValueError(
-            "bcq is discrete-only. Continuous BCQ (CVAE) is not yet implemented; "
-            "for continuous action spaces use cql_continuous or iql_continuous. "
-            "(Without this guard a continuous env would silently build a "
-            "single-output discrete Q-net — action_dim = act_space.shape[0].)"
+            "bcq is discrete-only; use bcq_continuous (CVAE-BCQ) for continuous "
+            "action spaces. (Without this guard a continuous env would silently "
+            "build a single-output discrete Q-net — action_dim = act_space.shape[0].)"
         )
     obs_dim = kwargs["obs_dim"]
     action_dim = kwargs["action_dim"]
