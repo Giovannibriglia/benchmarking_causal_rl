@@ -40,9 +40,13 @@ def select_backbone(
             "seam; not implemented."
         )
     if rank == 3:
-        raise NotImplementedError(
-            "CNN backbone for rank-3 (image) observations: PR6 Stage B."
-        )
+        # Image obs -> Nature-CNN. The CNN derives channels/spatial dims from
+        # obs_shape and carries its own 512 feature width, so input_dim and the
+        # MLP-only **mlp_kwargs (hidden_dims/activation/output_activation) are
+        # vestigial here; only output_dim (the head) is used.
+        from src.rl.nets.cnn import NatureCNN
+
+        return NatureCNN(tuple(obs_shape), output_dim)
     raise NotImplementedError(
         f"No backbone for observation rank {rank} (shape {tuple(obs_shape)})."
     )

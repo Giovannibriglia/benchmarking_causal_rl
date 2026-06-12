@@ -119,6 +119,11 @@ class BenchmarkRunner:
             self.obs_dim = int(
                 torch.tensor(self.train_env.obs_space.shape).prod().item()
             )
+        # Real observation shape for the backbone selector. Vector envs flatten
+        # to (obs_dim,) in the env wrapper, so this is byte-identical to the
+        # builders' default and keeps the vector golden bitwise; image envs
+        # expose (C, H, W) and route to the CNN.
+        self.obs_shape = tuple(self.train_env.obs_space.shape)
         act_space = self.train_env.act_space
         if hasattr(act_space, "n"):
             self.action_type = "discrete"
@@ -133,6 +138,7 @@ class BenchmarkRunner:
             action_type=self.action_type,
             device=self.device,
             action_space=act_space,
+            obs_shape=self.obs_shape,
         )
         self.replay_buffer = None
         self.collection_policy = None

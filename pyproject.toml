@@ -34,7 +34,9 @@ dependencies = [
 Homepage = "https://github.com/Giovannibriglia/benchmarking_causal_rl"
 
 [project.optional-dependencies]
-atari = ["ale-py==0.11.2"]
+# ale-py provides the ALE/* envs + bundled ROMs; opencv is AtariPreprocessing's
+# resize backend.
+atari = ["ale-py==0.11.2", "opencv-python"]
 minigrid = ["minigrid"]
 mujoco = ["mujoco==3.4.0"]
 robotics = ["gymnasium-robotics==1.4.2"]

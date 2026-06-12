@@ -69,21 +69,53 @@ class GymnasiumEnv(BaseEnv):
         def make_env(rank: int) -> Callable[[], gym.Env]:
             def _thunk():
                 _maybe_import_robotics(self.env_id)
-                env = gym.make(
-                    self.env_id, render_mode="rgb_array" if self.render else None
-                )
+                render_mode = "rgb_array" if self.render else None
+                if self.env_id.startswith("ALE/"):
+                    import ale_py  # noqa: F401  (registers the ALE/* env ids)
+
+                    # frameskip=1 so AtariPreprocessing owns the single source
+                    # of frameskip (ALE/*-v5 defaults to 4; stacking both would
+                    # give an effective 16-frame skip).
+                    env = gym.make(self.env_id, frameskip=1, render_mode=render_mode)
+                    env = gym.wrappers.AtariPreprocessing(
+                        env,
+                        frame_skip=4,
+                        screen_size=84,
+                        grayscale_obs=True,
+                        scale_obs=False,
+                    )
+                    env = gym.wrappers.FrameStackObservation(env, stack_size=4)
+                else:
+                    env = gym.make(self.env_id, render_mode=render_mode)
                 env.reset(seed=self.base_seed + rank)
                 return env
 
             return _thunk
 
         self.env = gym.vector.SyncVectorEnv([make_env(i) for i in range(self.n_envs)])
-        self.obs_space: Space = flatten_space(self.env.single_observation_space)
+        single_obs_space = self.env.single_observation_space
+        # Image (rank-3) obs take a disjoint branch: keep (C, H, W) and deliver
+        # float CHW frames. Everything else flattens to (obs_dim,) exactly as
+        # before, so the vector path is byte-identical.
+        self._is_image = len(single_obs_space.shape) == 3
+        if self._is_image:
+            self.obs_space: Space = single_obs_space
+        else:
+            self.obs_space = flatten_space(single_obs_space)
         self.act_space: Space = self.env.single_action_space
 
         self.video_recorder: Optional[SingleVideoRecorder] = None
         if self.record_video and self.video_path:
             self.video_recorder = SingleVideoRecorder(self.video_path)
+
+    def _image_obs(self, obs) -> torch.Tensor:
+        # Frame-stacked obs are already channels-first (N, C, H, W) uint8;
+        # convert to float CHW normalized to [0, 1] on the device.
+        arr = np.asarray(obs)
+        return torch.from_numpy(arr).to(self.device).float().div_(255.0)
+
+    def _obs_to_tensor(self, obs) -> torch.Tensor:
+        return self._image_obs(obs) if self._is_image else self._flatten_obs(obs)
 
     def _flatten_obs(self, obs) -> torch.Tensor:
         # Handle structured observations by flattening per environment
@@ -138,7 +170,7 @@ class GymnasiumEnv(BaseEnv):
             for i, env in enumerate(self.env.envs):
                 env.reset(seed=seed + i)
         obs, info = self.env.reset()
-        obs_tensor = self._flatten_obs(obs)
+        obs_tensor = self._obs_to_tensor(obs)
         return obs_tensor, info
 
     def step(
@@ -156,7 +188,7 @@ class GymnasiumEnv(BaseEnv):
         # silently corrupting every subsequent transition of surviving envs
         # (state/obs mismatch verified empirically — Phase-2 finding).
 
-        obs_tensor = self._flatten_obs(obs)
+        obs_tensor = self._obs_to_tensor(obs)
         reward_tensor = torch.as_tensor(reward, dtype=torch.float32, device=self.device)
         term_tensor = torch.as_tensor(terminated, dtype=torch.bool, device=self.device)
         trunc_tensor = torch.as_tensor(truncated, dtype=torch.bool, device=self.device)
