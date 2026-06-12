@@ -102,6 +102,18 @@ class BenchmarkRunner:
             env_entry_point=env_cfg.env_entry_point,
             env_kwargs=env_cfg.env_kwargs,
         )
+        # Confounded collection wraps the TRAIN env only (eval stays clean): a
+        # per-episode latent U biases the action AND perturbs the reward while
+        # never entering the obs -> unobserved confounding. Opt-in; default
+        # leaves train_env byte-identical (off-policy golden bitwise).
+        if getattr(env_cfg, "behavior_policy", "agent") == "bias_confounded":
+            from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
+
+            _sigma = getattr(env_cfg, "behavior_strength", None)
+            _sigma = 1.0 if _sigma is None else float(_sigma)
+            self.train_env = ConfoundedCollectionWrapper(
+                self.train_env, c_a=_sigma, c_r=_sigma
+            )
         self.eval_env = build_env(
             env_id=env_cfg.env_id,
             n_envs=env_cfg.n_eval_envs,
@@ -164,6 +176,7 @@ class BenchmarkRunner:
                     self.action_type,
                     act_space,
                     getattr(self.env_cfg, "behavior_strength", None),
+                    env=self.train_env,
                 )
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(

@@ -75,12 +75,20 @@ def parse_args():
         "--behavior-policy",
         type=str,
         default="agent",
-        choices=["agent", "anti_reward", "bias_skew", "bias_suboptimal", "curiosity"],
+        choices=[
+            "agent",
+            "anti_reward",
+            "bias_skew",
+            "bias_suboptimal",
+            "curiosity",
+            "bias_confounded",
+        ],
         help=(
             "Off-policy online collection behavior policy (opt-in; default "
             "'agent' is byte-identical to the standard agent.act collection). "
             "anti_reward=critic-pessimal; bias_skew=prob-p preferred action; "
-            "bias_suboptimal=prob-beta agent else random; curiosity=novelty."
+            "bias_suboptimal=prob-beta agent else random; curiosity=novelty; "
+            "bias_confounded=per-episode latent U biases action and reward."
         ),
     )
     p.add_argument(

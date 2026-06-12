@@ -345,6 +345,48 @@ class CuriosityBehaviorPolicy(BehaviorPolicy):
         return ActionOutput(action=torch.where(take.unsqueeze(-1), novel, agent_a))
 
 
+class ConfoundedBehaviorPolicy(BehaviorPolicy):
+    """Confounded collection: bias the action by the env wrapper's per-episode
+    latent ``U`` (read from ``env.current_u``), which ALSO perturbs the reward —
+    so action and reward share an unobserved common cause. Pairs with
+    ``ConfoundedCollectionWrapper`` on the train env.
+
+      * continuous: ``agent_action + c_a * U``.
+      * discrete: with prob ``min(c_a, 1)`` take the U-indexed preferred action
+        (``round(U)`` clamped to the action set), else the agent's action.
+
+    ``c_a = base_c_a * strength`` (the single confounding-strength dial scales
+    both this and the wrapper's ``c_r``). U sampling lives in the wrapper (main
+    RNG stream); the per-env mixture coin here is the behavior.
+    """
+
+    def __init__(
+        self,
+        agent: Algorithm,
+        action_type: str,
+        action_space,
+        env,
+        *,
+        strength: float = 1.0,
+        base_c_a: float = 1.0,
+    ) -> None:
+        self.agent = agent
+        self.action_type = action_type
+        self.action_space = action_space
+        self.env = env  # the ConfoundedCollectionWrapper (exposes current_u)
+        self.c_a = float(base_c_a) * float(strength)
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        agent_a = self.agent.act(obs).action
+        u = self.env.current_u.to(obs.device)
+        if self.action_type == "discrete":
+            n = int(self.action_space.n)
+            pref = u.round().long().clamp(0, n - 1)
+            take = torch.rand(obs.shape[0], device=obs.device) < min(self.c_a, 1.0)
+            return ActionOutput(action=torch.where(take, pref, agent_a))
+        return ActionOutput(action=agent_a + self.c_a * u.unsqueeze(-1))
+
+
 # Collection-policy registry. The "agent" entry is handled by the runner with
 # the original AgentBehaviorPolicy(self.agent) construction (byte-identical to
 # the pre-A1 path), so the off-policy golden is untouched; this factory only
@@ -354,6 +396,7 @@ _STRENGTH_PARAM = {
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
+    "bias_confounded": "strength",  # confounding-strength dial (scales c_a, c_r)
 }
 
 
@@ -363,9 +406,13 @@ def build_collection_policy(
     action_type: str,
     action_space,
     strength: float | None = None,
+    env=None,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
-    primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default."""
+    primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
+    ``env`` is the (confounded) train-env handle, used only by
+    ``bias_confounded`` to read ``current_u`` (default ``None``, so the existing
+    policies build unchanged)."""
     if name == "agent":
         return AgentBehaviorPolicy(agent)
     kw = {} if strength is None else {_STRENGTH_PARAM[name]: float(strength)}
@@ -377,7 +424,9 @@ def build_collection_policy(
         return SuboptimalBehaviorPolicy(agent, action_type, action_space, **kw)
     if name == "curiosity":
         return CuriosityBehaviorPolicy(agent, action_type, action_space, **kw)
+    if name == "bias_confounded":
+        return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
     raise ValueError(
-        f"Unknown behavior policy '{name}'. Choose from: agent, "
-        "anti_reward, bias_skew, bias_suboptimal, curiosity."
+        f"Unknown behavior policy '{name}'. Choose from: agent, anti_reward, "
+        "bias_skew, bias_suboptimal, curiosity, bias_confounded."
     )
