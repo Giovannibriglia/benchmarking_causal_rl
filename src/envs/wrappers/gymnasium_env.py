@@ -43,6 +43,7 @@ from gymnasium.spaces.utils import flatten, flatten_space
 
 from ..base import BaseEnv
 from .atari import make_atari_env, normalize_image_obs
+from .minigrid import make_minigrid_env
 from .video import SingleVideoRecorder
 
 
@@ -76,6 +77,10 @@ class GymnasiumEnv(BaseEnv):
                     # (also used by the offline fixture generator) so offline
                     # frames can't drift from the online representation.
                     env = make_atari_env(self.env_id, render_mode)
+                elif self.env_id.startswith("MiniGrid-"):
+                    # RGB-render image branch -> (3, 84, 84), reuses the same
+                    # rank-3 image path as Atari.
+                    env = make_minigrid_env(self.env_id, render_mode)
                 else:
                     env = gym.make(self.env_id, render_mode=render_mode)
                 env.reset(seed=self.base_seed + rank)
