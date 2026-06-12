@@ -105,6 +105,12 @@ class CQL(BaseOffPolicy):
 
 
 def build_cql(**kwargs):
+    if kwargs.get("action_type", "discrete") != "discrete":
+        raise ValueError(
+            "cql is discrete-only (CQL-on-DQN); use cql_continuous (CQL-on-SAC) "
+            "for continuous action spaces. (Without this guard a continuous env "
+            "would silently build a single-output discrete Q-net.)"
+        )
     obs_dim = kwargs["obs_dim"]
     action_dim = kwargs["action_dim"]
     device = kwargs["device"]
