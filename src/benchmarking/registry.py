@@ -253,6 +253,7 @@ def register_default_algorithms() -> None:
     # Offline (fixed-dataset) algorithms: data_regime="offline" routes run() to
     # _train_offline. Online dqn is left untouched.
     from src.rl.offline.bcq import build_bcq
+    from src.rl.offline.bcq_continuous import build_bcq_continuous
     from src.rl.offline.cql import build_cql
     from src.rl.offline.cql_continuous import build_cql_continuous
     from src.rl.offline.dqn import build_offline_dqn
@@ -264,9 +265,10 @@ def register_default_algorithms() -> None:
         ("bcq", build_bcq),
         ("cql", build_cql),
         ("iql", build_iql),
-        # Continuous offline (CQL-on-SAC, IQL-Gaussian); CVAE-BCQ deferred.
+        # Continuous offline (CQL-on-SAC, IQL-Gaussian, CVAE-BCQ).
         ("cql_continuous", build_cql_continuous),
         ("iql_continuous", build_iql_continuous),
+        ("bcq_continuous", build_bcq_continuous),
     ):
         registry.register(
             _name,
