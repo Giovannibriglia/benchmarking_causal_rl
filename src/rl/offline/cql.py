@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.rl.base import ActionOutput
-from src.rl.nets.mlp import MLP
+from src.rl.models.backbone import select_backbone
 from src.rl.off_policy.base_off_policy import BaseOffPolicy
 from src.rl.off_policy.replay_buffer import ReplayBuffer
 
@@ -108,8 +108,11 @@ def build_cql(**kwargs):
     obs_dim = kwargs["obs_dim"]
     action_dim = kwargs["action_dim"]
     device = kwargs["device"]
-    q_net = MLP(obs_dim, action_dim).to(device)
-    target_net = MLP(obs_dim, action_dim).to(device)
+    # Backbone by obs rank: vector -> MLP (bitwise-identical to the previous
+    # MLP(obs_dim, action_dim)); image -> Nature-CNN.
+    obs_shape = kwargs.get("obs_shape", (obs_dim,))
+    q_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
+    target_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
     agent = CQL(q_net, target_net, buffer, device=device)
     return q_net, agent
