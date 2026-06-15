@@ -62,6 +62,7 @@ def fill_replay_buffer_from_minari(
     dataset_id: str,
     buffer,
     device: torch.device,
+    mask_indices: tuple[int, ...] | None = None,
 ) -> int:
     """Load a Minari dataset and fill ``buffer`` with its transitions.
 
@@ -70,6 +71,13 @@ def fill_replay_buffer_from_minari(
     — the same dict shape the online off-policy collector produces, so the
     agent's batched ``update`` is identical offline. ``next_obs`` is the
     episode's next observation; ``dones = terminations | truncations``.
+
+    ``mask_indices`` (Z-hidden axis, Cells 4/8): when set, those positions are
+    dropped from the LAST axis of every transition's ``obs``/``next_obs`` in
+    memory at load time, so the same on-disk dataset serves both the unmasked
+    (Cell 3) and masked (Cell 4) regimes. The dataset on disk is never modified.
+    Masking is for vector obs only and runs AFTER the action-type assertion in
+    the runner (that assertion is on actions, not observations).
 
     This is a one-time setup loop (per-transition Python is fine here); the
     training hot path stays batched (``buffer.sample`` -> ``agent.update``).
@@ -86,6 +94,8 @@ def fill_replay_buffer_from_minari(
         if raw_obs.ndim == 4:
             obs = normalize_image_obs(raw_obs, device).cpu()
         else:
+            if mask_indices:
+                raw_obs = np.delete(raw_obs, list(mask_indices), axis=-1)
             obs = torch.as_tensor(raw_obs, dtype=torch.float32)
         actions = torch.as_tensor(episode.actions)
         rewards = torch.as_tensor(episode.rewards, dtype=torch.float32)

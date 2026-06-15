@@ -85,6 +85,23 @@ def register_default_env_wrappers() -> None:
             env_kwargs=kwargs.get("env_kwargs"),
         )
 
+    def build_masked(**kwargs) -> BaseEnv:
+        # Builds a gymnasium env and drops the configured observation indices.
+        # ``mask_indices`` arrives via ``env_kwargs``; the primary CLI path
+        # (``--mask-indices``) wraps in the runner so masking composes on the
+        # OUTSIDE of any train-env confounding (see MaskedObservationWrapper).
+        from .wrappers.masked import MaskedObservationWrapper
+
+        env_kwargs = kwargs.get("env_kwargs") or {}
+        indices = env_kwargs.get("mask_indices")
+        if not indices:
+            raise ValueError(
+                "env-wrapper 'masked' requires env_kwargs['mask_indices'] "
+                "(a non-empty list of integer observation indices)."
+            )
+        base = build_gymnasium(**kwargs)
+        return MaskedObservationWrapper(base, tuple(int(i) for i in indices))
+
     registry.register(
         EnvWrapperSpec(
             name="custom",
@@ -97,6 +114,16 @@ def register_default_env_wrappers() -> None:
         EnvWrapperSpec(
             name="gymnasium",
             builder=build_gymnasium,
+            match=None,
+            requires_entry_point=False,
+        )
+    )
+    # Opt-in observation masking (Z-hidden axis). ``match=None`` -> never
+    # auto-selected; reachable only via an explicit ``--env-wrapper masked``.
+    registry.register(
+        EnvWrapperSpec(
+            name="masked",
+            builder=build_masked,
             match=None,
             requires_entry_point=False,
         )

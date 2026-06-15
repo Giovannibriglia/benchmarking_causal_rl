@@ -100,6 +100,14 @@ def parse_args():
             "bias_suboptimal=beta, curiosity=strength. None keeps the policy default."
         ),
     )
+    p.add_argument(
+        "--mask-indices",
+        type=str,
+        default=None,
+        help="Comma-separated integer indices to drop from the flat observation vector. "
+        "When set on an online run, wraps the env. When set on an offline run, "
+        "projects loaded transitions. None = no masking.",
+    )
     p.add_argument("--n-train-envs", type=int, default=16)
     p.add_argument("--n-eval-envs", type=int, default=16)
     p.add_argument("--rollout-len", type=int, default=1024)
@@ -206,6 +214,20 @@ def main():
             return val.split()
         return list(val)
 
+    def _parse_mask_indices(raw) -> tuple[int, ...] | None:
+        # Accepts a comma/space-separated string (CLI) or a list (reproduce YAML);
+        # returns a tuple of ints, or None when unset/empty.
+        if raw is None:
+            return None
+        if isinstance(raw, (list, tuple)):
+            vals = [int(x) for x in raw]
+        elif isinstance(raw, str):
+            normalized = raw.replace(",", " ")
+            vals = [int(x) for x in normalized.split() if x.strip()]
+        else:
+            vals = [int(raw)]
+        return tuple(vals) if vals else None
+
     def _parse_hidden_dims(raw) -> tuple[int, ...]:
         if isinstance(raw, (list, tuple)):
             dims = [int(x) for x in raw]
@@ -270,6 +292,12 @@ def main():
     behavior_strength = env_cfg_src.get(
         "behavior_strength",
         cfg_from_file.get("behavior_strength", args.behavior_strength),
+    )
+    mask_indices = _parse_mask_indices(
+        env_cfg_src.get(
+            "mask_indices",
+            cfg_from_file.get("mask_indices", args.mask_indices),
+        )
     )
     env_kwargs = env_cfg_src.get("env_kwargs", cfg_from_file.get("env_kwargs", None))
     if env_kwargs is None and args.env_kwargs:
@@ -396,6 +424,7 @@ def main():
             "env_entry_point": env_entry_point,
             "offline_dataset": offline_dataset,
             "env_kwargs": env_kwargs,
+            "mask_indices": list(mask_indices) if mask_indices else None,
             "n_train_envs": n_train_envs,
             "n_eval_envs": n_eval_envs,
             "rollout_len": rollout_len,
@@ -439,6 +468,7 @@ def main():
                 offline_dataset=offline_dataset,
                 behavior_policy=behavior_policy,
                 behavior_strength=behavior_strength,
+                mask_indices=mask_indices,
             )
             train_cfg = TrainingConfig(
                 n_episodes=n_episodes,
