@@ -49,6 +49,21 @@ EVAL_COLUMNS: List[str] = [
     "eval_return_std",
 ]
 
+# Per-context eval breakdown (docs/experimental_design.md §6.1), written only
+# when --mask-indices is set (Cell 2). Separate file/schema; the frozen
+# TRAIN_COLUMNS/EVAL_COLUMNS above are untouched.
+EVAL_PER_CONTEXT_COLUMNS: List[str] = [
+    "episode",
+    "algorithm",
+    "environment",
+    "context_bin",
+    "context_value_low",
+    "context_value_high",
+    "n_episodes_in_bin",
+    "return_iqm",
+    "return_iqr_std",
+]
+
 
 @dataclass
 class AlgorithmSpec:
@@ -85,6 +100,14 @@ class BenchmarkRunner:
         )
         self._env_tag = self.env_cfg.env_id.replace("/", "-")
         self.aggregation = self.train_cfg.aggregation
+        # Eval-per-context gate (Cell 2): non-empty iff --mask-indices was set.
+        # When open, evaluate() bins eval returns by the hidden Z component and
+        # writes eval_per_context.csv via the logger opened in run(). Empty =>
+        # no file, no extra work (default path byte-identical, goldens intact).
+        self._mask_indices: tuple[int, ...] = tuple(
+            int(i) for i in (env_cfg.mask_indices or ())
+        )
+        self._eval_per_context_logger: CSVLogger | None = None
 
         self.run_dir = run_cfg.resolve_run_dir()
         os.makedirs(self.run_dir, exist_ok=True)
@@ -355,6 +378,18 @@ class BenchmarkRunner:
         env.start_video(video_path)
         obs, _ = env.reset()
         total_rewards = torch.zeros(env.n_envs, device=self.device)
+        # Eval-per-context (Cell 2): accumulate the PRE-mask values of the hidden
+        # Z components over the rollout, per env. Gated; zero work when no mask.
+        gate_open = bool(self._mask_indices)
+        z_idx = (
+            torch.tensor(self._mask_indices, device=self.device) if gate_open else None
+        )
+        z_sum = (
+            torch.zeros(env.n_envs, len(self._mask_indices), device=self.device)
+            if gate_open
+            else None
+        )
+        z_steps = 0
         for _ in range(self.env_cfg.rollout_len):
             with torch.no_grad():
                 if self.algo_spec.kind == "off_policy":
@@ -370,9 +405,82 @@ class BenchmarkRunner:
             obs, reward, terminated, truncated, _ = env.step(action)
             done = torch.logical_or(terminated, truncated)
             total_rewards += reward * (~done)
+            if gate_open:
+                # env.last_unmasked_obs is the full obs vector (the mask wrapper
+                # exposes it); pick out the hidden components the agent can't see.
+                full_obs = env.last_unmasked_obs
+                z_sum += full_obs.index_select(-1, z_idx)
+                z_steps += 1
         env.stop_video()
+        if gate_open:
+            self._write_eval_per_context(
+                episode, z_sum / max(z_steps, 1), total_rewards
+            )
         mean, std = self._aggregate_returns(total_rewards)
         return {"eval_return_mean": mean, "eval_return_std": std}
+
+    def _write_eval_per_context(
+        self, episode: int, z_mean: torch.Tensor, returns: torch.Tensor
+    ) -> None:
+        """Bin per-env eval returns by the hidden Z component and write one row
+        per non-empty bin to eval_per_context.csv (docs/experimental_design.md
+        §6.1). ``z_mean`` is the per-env episode-mean of the masked components
+        ([n_envs, k]); the binning scalar is the signed mean for a single hidden
+        component, else the L2 norm across components.
+        """
+        logger = self._eval_per_context_logger
+        if logger is None:
+            return
+        if z_mean.shape[1] == 1:
+            z_scalar = z_mean[:, 0]
+        else:
+            z_scalar = torch.linalg.norm(z_mean, dim=1)
+        z = z_scalar.detach().cpu()
+        r = returns.detach().cpu()
+
+        n_bins = 10
+        zmin = float(z.min())
+        zmax = float(z.max())
+        if zmax <= zmin:
+            # Degenerate range (all envs identical) -> widen so bins have
+            # positive width and context_value_low < context_value_high holds.
+            zmax = zmin + 1e-8
+        edges = torch.linspace(zmin, zmax, n_bins + 1)
+        # np.searchsorted(edges, z, side="right") - 1, clamped to a valid bin.
+        bin_idx = torch.clamp(
+            torch.bucketize(z, edges, right=True) - 1, min=0, max=n_bins - 1
+        )
+        for b in sorted({int(x) for x in bin_idx.tolist()}):
+            in_bin = bin_idx == b
+            bin_returns = r[in_bin]
+            iqm, iqr_std = self._bin_stats(bin_returns)
+            logger.log(
+                {
+                    "episode": episode,
+                    "algorithm": self.train_cfg.algorithm,
+                    "environment": self.env_cfg.env_id,
+                    "context_bin": b,
+                    "context_value_low": float(edges[b]),
+                    "context_value_high": float(edges[b + 1]),
+                    "n_episodes_in_bin": int(in_bin.sum()),
+                    "return_iqm": iqm,
+                    "return_iqr_std": iqr_std,
+                }
+            )
+
+    @staticmethod
+    def _bin_stats(values: torch.Tensor) -> Tuple[float, float]:
+        """IQM ± IQR-STD over a bin's returns; mean ± std fallback when fewer
+        than 3 episodes (IQM is ill-defined on tiny samples). Population std
+        (unbiased=False), matching ``_aggregate_returns``."""
+        n = values.numel()
+        if n < 3:
+            return float(values.mean()), float(values.std(unbiased=False))
+        sorted_vals = torch.sort(values).values
+        lower = int(0.25 * (n - 1))
+        upper = int(0.75 * (n - 1))
+        mid = sorted_vals[lower : upper + 1]
+        return float(mid.mean()), float(mid.std(unbiased=False))
 
     def _aggregate_returns(self, returns: torch.Tensor) -> Tuple[float, float]:
         if returns.numel() == 0:
@@ -421,6 +529,16 @@ class BenchmarkRunner:
                 if self.aux_models is not None
                 else nullcontext(None)
             )
+            # Eval-per-context writer (Cell 2): opened only when --mask-indices
+            # is set, so a no-mask run never creates the file.
+            per_context_ctx = (
+                CSVLogger(
+                    os.path.join(self.run_dir, "eval_per_context.csv"),
+                    fieldnames=EVAL_PER_CONTEXT_COLUMNS,
+                )
+                if self._mask_indices
+                else nullcontext(None)
+            )
             with (
                 CSVLogger(
                     os.path.join(self.run_dir, "train_metrics.csv"),
@@ -432,7 +550,10 @@ class BenchmarkRunner:
                 ) as eval_log,
                 critic_ctx as critic_log,
                 aux_ctx as aux_log,
+                per_context_ctx as per_context_log,
             ):
+                # evaluate() reads this to emit per-context rows when gated open.
+                self._eval_per_context_logger = per_context_log
                 if self.algo_spec.data_regime == "offline":
                     self._train_offline(train_log, eval_log, aux_log)
                 elif self.algo_spec.kind == "on_policy":
@@ -440,6 +561,7 @@ class BenchmarkRunner:
                 else:
                     self._train_off_policy(train_log, eval_log, aux_log)
         finally:
+            self._eval_per_context_logger = None
             # Explicitly close vector envs to release EGL/GL contexts before interpreter shutdown.
             self.train_env.close()
             self.eval_env.close()
