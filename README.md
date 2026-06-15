@@ -1,4 +1,3 @@
-
 # Benchmarking Causal Reinforcement Learning
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
@@ -8,450 +7,336 @@
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen.svg)](https://pre-commit.com/)
 
-A modular, PyTorch-first benchmarking framework for single- and multi-agent reinforcement learning — designed for reproducibility, extensibility, and causal augmentation.
-
-This repository provides a clean architectural scaffold to evaluate standard (MA)RL algorithms under a unified, vectorized, and research-oriented pipeline, with built-in support for reproducible experiments and structured evaluation.
+A PyTorch reinforcement-learning benchmarking framework whose purpose is to vary the data-generating mechanism along five independent axes — algorithm, environment, data regime, dataset tier, and collection behavior policy — and measure what changes in the resulting learner. The same vectorized runner trains online, loads fixed offline datasets, or generates tiered offline datasets, while behavior policies and an optional unobserved confounder let you control the provenance of the data each algorithm sees. Outputs are CSVs with a frozen schema and bitwise-reproducible golden runs, so two executions of the same configuration produce byte-identical metrics.
 
 ---
 
-# Why This Framework?
+## Installation
 
-Most RL benchmarking codebases grow organically and become difficult to extend, reproduce, or adapt for research-level experimentation.
-
-This project enforces:
-
-- Strict actor–critic separation
-- Single-device propagation (CUDA-first, CPU fallback)
-- Vectorized environments as a first-class abstraction
-- Deterministic experiment reproducibility
-- Structured checkpointing and evaluation
-- Clean modular extension for causal components
-
-The goal is not just to run (MA)RL — but to **benchmark it rigorously**.
-
-### Planned features:
-- insert *Neural Bayesian Network"
-- train and load baselines
-- environment wrapper for other and general usage: at the moment there is only GymnasiumEnv
-
----
-
-# Core Features
-
-## Architecture
-
-- PyTorch-first implementation (all tensors live on one detected device).
-- Vectorized Gymnasium environments.
-- Automatic flattening of arbitrary observation spaces (Box, Dict, Tuple, MultiDiscrete, nested).
-- Modular environment wrapper system.
-- Clear separation between:
-  - `rl/` (single-agent)
-  - `marl/` (future multi-agent)
-  - `benchmarking/` (runner, evaluation, registry)
-
----
-
-## Implemented Algorithms
-
-The names below are the exact `--algos` keys (from `register_default_algorithms`).
-
-### On-Policy (online)
-
-- `vanilla` — **Vanilla Policy Gradient**
-- `vanilla_ac` — alias of `vanilla` (same builder/spec)
-- `a2c` — **A2C**
-- `ppo` — **PPO**
-- `trpo` — **TRPO** (KL-penalized trust-region variant)
-
-### Off-Policy (online)
-
-- `dqn` — **DQN** — **discrete** action spaces only
-- `ddpg` — **DDPG** — **continuous** action spaces only
-- `sac` — **SAC** — **continuous** action spaces only
-
-### Offline (fixed dataset)
-
-- `offline_dqn` — **DQN over a fixed Minari dataset** (discrete); requires `--offline-dataset`. Eval still runs in the live env. See the offline workflow under [Running Experiments](#running-experiments).
-
-All implementations maintain strict separation between actor and critic modules.
-
----
-
-# Supported Environments
-
-The framework currently supports **Gymnasium environments** through a unified vectorized wrapper.
-It also supports **custom user environments** via a dedicated wrapper.
-
-### Observation Spaces Supported
-
-- `Box`
-- `Discrete`
-- `MultiDiscrete`
-- `Tuple`
-- `Dict`
-- Nested combinations
-
-Observations are automatically flattened into a tensor representation.
-
-### Environment Sets (`--env-set`)
-
-Named environment groups, defined in `registry.py` and easily extendable, can be used:
-
-- `gymnasium`
-- `mujoco`
-- `gymnasium-robotics`
-
----
-
-### Custom Environments
-
-You can plug in a custom environment by providing a Python entry point that builds a single env.
-The custom env must expose `observation_space` and `action_space` (Gymnasium spaces) and implement
-`reset()` and `step()` following the Gymnasium API.
-
-Use one of the following patterns:
+The canonical toolchain is [uv](https://docs.astral.sh/uv/) (PEP 621 `pyproject.toml` + `uv.lock`). The development interpreter is Python 3.13; `python` is not on `PATH`, so every command below goes through `uv run` (which uses the project `./.venv`).
 
 ```bash
-# Use custom wrapper for all envs in the run
+curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv (skip if already installed)
+uv sync                                           # base runtime + dev tooling into ./.venv
+uv run pre-commit install                         # enable formatting/lint hooks
+```
+
+The PyTorch CUDA 13.0 wheel index is pinned in `pyproject.toml`, so `uv sync` resolves `torch==2.10.0+cu130` (CUDA build) rather than the CPU wheel.
+
+Optional environment families are opt-in extras:
+
+```bash
+uv sync --extra atari      # ALE/* Atari envs (ale-py + opencv)
+uv sync --extra minigrid   # MiniGrid envs
+uv sync --extra mujoco     # MuJoCo envs
+uv sync --extra robotics   # gymnasium-robotics (Fetch/Hand)
+uv sync --extra offline    # Minari offline stack (load + generate)
+```
+
+If you cannot use uv, `requirements.txt` is a generated export of the base runtime for a plain virtualenv:
+
+```bash
+python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+```
+
+Regenerate `requirements.txt` after changing dependencies; do not edit it by hand.
+
+---
+
+## Quick start
+
+```bash
+# 1. Online: one algorithm on a discrete classic-control env.
+uv run python main.py --envs CartPole-v1 --algos ppo
+
+# 2. Online: continuous control on the whole MuJoCo set with SAC (needs: uv sync --extra mujoco).
+uv run python main.py --env-set mujoco --algos sac
+
+# 3. Offline (B1): build a small discrete dataset, then load it with CQL (needs: uv sync --extra offline).
+uv run python tools/make_cartpole_offline.py --dataset-id cartpole/random-v0
+uv run python main.py --envs CartPole-v1 --algos cql --offline-dataset cartpole/random-v0
+```
+
+The first offline command builds a small local Minari dataset; the second trains CQL on it (you cannot `--offline-dataset` an id that does not exist locally or hosted yet).
+
+---
+
+## Algorithms
+
+The `--algos` values are the keys registered in `src/benchmarking/registry.py`. There is no `argparse choices=` list; values are validated against the registry at runtime.
+
+| `--algos` key    | File                                | Action space | Regime  | Bitwise golden |
+| ---------------- | ----------------------------------- | ------------ | ------- | -------------- |
+| `vanilla`        | `src/rl/on_policy/vanilla.py`       | both         | on      | —              |
+| `vanilla_ac`     | `src/rl/on_policy/vanilla.py`       | both         | on      | —              |
+| `a2c`            | `src/rl/on_policy/a2c.py`           | both         | on      | —              |
+| `ppo`            | `src/rl/on_policy/ppo.py`           | both         | on      | ✅ `test_regression.py` |
+| `trpo`           | `src/rl/on_policy/trpo.py`          | both         | on      | —              |
+| `dqn`            | `src/rl/off_policy/dqn.py`          | discrete     | off     | ✅ `test_regression_offpolicy.py` |
+| `sac`            | `src/rl/off_policy/sac.py`          | continuous   | off     | ✅ `test_sac.py` |
+| `ddpg`           | `src/rl/off_policy/ddpg.py`         | continuous   | off     | —              |
+| `offline_dqn`    | `src/rl/offline/dqn.py`             | discrete     | offline | —              |
+| `bcq`            | `src/rl/offline/bcq.py`             | discrete     | offline | —              |
+| `cql`            | `src/rl/offline/cql.py`             | discrete     | offline | —              |
+| `iql`            | `src/rl/offline/iql.py`             | discrete     | offline | —              |
+| `cql_continuous` | `src/rl/offline/cql_continuous.py`  | continuous   | offline | —              |
+| `iql_continuous` | `src/rl/offline/iql_continuous.py`  | continuous   | offline | —              |
+| `bcq_continuous` | `src/rl/offline/bcq_continuous.py`  | continuous   | offline | —              |
+
+`vanilla_ac` is an alias of `vanilla` (same builder). On-policy algorithms accept both discrete and continuous action spaces; the action type is derived from the environment and dispatched at runtime. `dqn` is discrete-only and `ddpg`/`sac` are continuous-only. The offline algorithms split discrete (`offline_dqn`, `bcq`, `cql`, `iql`) from continuous (`cql_continuous`, `iql_continuous`, `bcq_continuous`) by class, and the loader rejects a dataset whose action type does not match the chosen algorithm.
+
+---
+
+## Environments
+
+Named environment sets are defined in `src/benchmarking/registry.py` (`ENV_SETS`, lines 38–98). `--env-set` overrides `--envs`.
+
+| `--env-set`          | Resolved environment IDs |
+| -------------------- | ------------------------ |
+| `gymnasium`          | Blackjack-v1, CartPole-v1, MountainCar-v0, MountainCarContinuous-v0, Pendulum-v1, Acrobot-v1, LunarLander-v3, LunarLanderContinuous-v3, FrozenLake-v1, FrozenLake8x8-v1, CliffWalking-v1, Taxi-v3, BipedalWalker-v3, BipedalWalkerHardcore-v3 |
+| `mujoco`             | Ant-v5, Reacher-v5, Pusher-v5, InvertedPendulum-v5, InvertedDoublePendulum-v5, HalfCheetah-v5, Hopper-v5, Swimmer-v5, Walker2d-v5, Humanoid-v5, HumanoidStandup-v5 |
+| `atari`              | ALE/Pong-v5, ALE/Breakout-v5 (needs `uv sync --extra atari`) |
+| `minigrid`           | MiniGrid-Empty-5x5-v0, MiniGrid-DoorKey-5x5-v0 (needs `uv sync --extra minigrid`) |
+| `gymnasium-robotics` | FetchReach-v4, FetchPush-v4, FetchSlide-v4, FetchPickAndPlace-v4, HandReach-v3, HandManipulateBlock-v1, HandManipulateEgg-v1, HandManipulatePen-v1 |
+
+Environment infrastructure:
+
+- **Custom envs** — supply a Python entry point that builds a single Gymnasium-API env via `--env-entry-point module:callable` (or a `custom:`/`user:` prefix on the env id), with `--env-kwargs` accepting a JSON dict of constructor kwargs.
+- **Image observations** — a Nature-style CNN backbone is selected automatically from the observation shape, so Atari and MiniGrid run through the same code path as vector-observation envs.
+- **MiniGrid** — an RGB partial-render wrapper exposes a `(3, 84, 84)` image observation.
+
+MuJoCo is wired through the `mujoco` env-set and the standard continuous-control algorithms, but the only continuous-control end-to-end test in CI runs on **Pendulum-v1** (classic-control). MuJoCo itself is not exercised by an automated end-to-end test.
+
+```bash
+# Custom env for all envs in the run.
 uv run python main.py --env-wrapper custom --env-entry-point my_pkg.envs:make_env --envs CustomEnv-v0 --algos ppo
 
-# Mixed envs: prefix only the custom ones
+# Mixed run: prefix only the custom env id.
 uv run python main.py --envs CartPole-v1 custom:my_pkg.envs:make_env --algos ppo
 ```
 
-You can pass JSON kwargs to the entry point with `--env-kwargs`.
+---
 
-# Main Training Script (`main.py`)
+## Data regimes
 
-## Running Experiments
+### Online (default)
 
-Command reference (all forms use `uv run`, consistent with the install section).
-Registered `--algos`: on-policy `vanilla` `vanilla_ac` `a2c` `ppo` `trpo`; online off-policy `dqn` `sac` `ddpg`; offline `offline_dqn`. Named `--env-set`: `gymnasium`, `mujoco`, `gymnasium-robotics`.
+Vectorized live interaction. No extra flags; this is the path used by the quick-start examples.
 
 ```bash
-# --- setup ---
-uv sync                                 # base runtime + dev tooling
-uv sync --extra mujoco                  # add an env family: atari | minigrid | mujoco | robotics | minari | offline
-
-# --- online benchmark (vectorized envs) ---
-uv run python main.py --envs CartPole-v1 --algos ppo dqn          # discrete env
-uv run python main.py --envs Pendulum-v1 --algos ppo ddpg sac     # continuous env
-uv run python main.py --env-set gymnasium --algos ppo             # whole named set
-uv run python main.py --env-set mujoco --algos sac ddpg           # needs: uv sync --extra mujoco
-
-# --- common knobs ---
-uv run python main.py --envs CartPole-v1 --algos ppo \
-    --n-train-envs 16 --n-eval-envs 16 --rollout-len 1024 \
-    --n-episodes 250 --n-checkpoints 25 --seed 42 \
-    --deterministic --aggregation iqm                            # deterministic = bitwise-reproducible
-
-# --- critic-ablation mode (on-policy only) ---
-uv run python main.py --envs CartPole-v1 --algos ppo --ablation   # == --mode critic_ablation
-
-# --- offline training (fixed dataset; eval still runs in the live env) ---
-uv sync --extra offline
-uv run python tools/make_cartpole_offline.py --dataset-id cartpole/random-v0   # build a tiny dataset
-uv run python main.py --envs CartPole-v1 --algos offline_dqn \
-    --offline-dataset cartpole/random-v0
-
-# --- auxiliary reward/next-state models (opt-in; any algo/regime; logged to aux_metrics.csv, not in the RL loss) ---
-uv run python main.py --envs CartPole-v1 --algos ppo --aux-models --aux-lr 3e-4 --aux-hidden-dims 64,64
-
-# --- reproduce a pinned config ---
-uv run python main.py --reproduce <name>.yaml    # reads reproducibility/<name>.yaml
-
-# --- plots + LaTeX tables from a run ---
-uv run python plot.py --run <run_name>           # see the Plotting section / plot.py --help
+uv run python main.py --envs CartPole-v1 --algos ppo dqn      # discrete
+uv run python main.py --envs Pendulum-v1 --algos ddpg sac     # continuous
 ```
 
-Outputs: per-run CSVs and checkpoints land in `runs/<run>/`; plots and LaTeX tables in `outputs/<run>/` (see [Run Artifacts](#run-artifacts) and [Plotting and Tables](#plotting-and-tables-plotpy)).
+### Offline-load (B1)
 
-> **Note:** `atari` and `minigrid` are installable extras but are **not** yet runnable `--env-set`s — image/grid observation backbones arrive in PR6.
+`--offline-dataset <minari-id>` routes an offline algorithm to train on a fixed Minari dataset; the live env is still built for evaluation. The loader checks the local Minari cache first and downloads only if absent. Before filling the buffer it asserts that the dataset action type matches the algorithm (`src/envs/offline/minari_loader.py:40-56`), rejecting e.g. a continuous dataset paired with a discrete offline algorithm.
 
-The `--algos` list runs each `(algorithm, environment, seed)` combination independently; multiple algorithms and environments can be passed together (e.g. `--envs CartPole-v1 HalfCheetah-v5 --algos ppo trpo`). Custom critics for ablation: `--ablation-critics standard_mlp residual_reward_model`.
+```bash
+uv sync --extra offline
+uv run python tools/make_cartpole_offline.py --dataset-id cartpole/random-v0
+uv run python main.py --envs CartPole-v1 --algos cql --offline-dataset cartpole/random-v0
+```
 
----
+For offline algorithms, the two training knobs are reinterpreted: `--n-episodes` becomes the number of training **epochs** and `--rollout-len` becomes the number of **gradient steps per epoch** (offline has gradient steps, not env episodes).
 
-## CLI Parameters
+### Offline-generate (B2)
 
-### Environment Selection
+`tools/generate_offline.py` produces a tiered Minari dataset by training an online generator (`dqn`/`sac`/`ddpg`), snapshotting a checkpoint by episode return, and rolling it out. Tiers are `random`, `medium`, and `expert`; the medium target is range-based, `R_random + (1/3)·(R_expert − R_random)`, and `--tier-fraction` overrides the `1/3`. The generated id is consumed via B1's `--offline-dataset`. `--offline-tier` lives only in this tool, not in `main.py`.
 
-| Flag        | Description                                      |
-| ----------- | ------------------------------------------------ |
-| `--envs`    | List of environment IDs                          |
-| `--env-set` | Named group of environments (overrides `--envs`) |
-| `--env-wrapper` | Env wrapper to use (`auto`, `gymnasium`, `custom`, or a registered name) |
-| `--env-entry-point` | Python entry point for custom envs (`module:callable`) |
-| `--env-kwargs` | JSON dict of kwargs for the env entry point |
-| `--offline-dataset` | Minari dataset id for offline algorithms (`--algos offline_dqn`); the live env is still built for eval |
+```bash
+uv sync --extra offline
+uv run python tools/generate_offline.py --env CartPole-v1 --algo dqn --offline-tier expert
+uv run python main.py --envs CartPole-v1 --algos offline_dqn --offline-dataset generated/cartpole/expert-v0
+```
 
-Precedence:
-`--reproduce` > `--env-set` > `--envs`
-
----
-
-### Algorithm Selection
-
-| Flag      | Description                     |
-| --------- | ------------------------------- |
-| `--algos` | List of algorithms to benchmark |
-
-Each `(algorithm, environment, seed)` combination runs independently.
+For canonical per-env fixtures, `tools/make_{atari,cartpole,pendulum}_offline.py` build small ready-made datasets consumed the same way through `--offline-dataset`.
 
 ---
 
-### Training Configuration
+## Behavior policies
 
-| Flag              | Description                                              |Default|
-| ----------------- | -------------------------------------------------------- |-------|
-| `--n-episodes`    | Number of training episodes                              |250    |
-| `--rollout-len`   | Steps per episode                                        |1024   |
-| `--n-train-envs`  | Parallel training environments                           |16     |
-| `--n-eval-envs`   | Parallel evaluation environments                         |16     |
-| `--n-checkpoints` | Number of checkpoint evaluations (min=2, max=n_episodes) |25     |
-| `--seed`          | Random seed                                              |42     |
-| `--aggregation`   | Reported-stat aggregation: `iqm` or `mean`              |iqm    |
+`--behavior-policy` selects the policy that chooses actions during off-policy online collection (defined in `src/rl/policies/behavior_policy.py`). The default `agent` is byte-identical to the standard `agent.act` collection, so it leaves the off-policy golden values unchanged. `--behavior-strength` is the single primary knob; its meaning depends on the policy.
 
-For offline algorithms (`offline_dqn`), `--n-episodes` is reinterpreted as the number of training **epochs** and `--rollout-len` as **gradient steps per epoch** (offline has gradient steps, not env episodes).
+| `--behavior-policy` | Mechanism                                                        | Strength (`--behavior-strength`) | Action spaces |
+| ------------------- | ---------------------------------------------------------------- | -------------------------------- | ------------- |
+| `agent`             | Delegates to the agent's own `act` (collection baseline)         | — (no knob)                      | both          |
+| `anti_reward`       | Critic-pessimal: picks the lowest-`Q` action the agent values    | ε (epsilon)                      | both (off-policy) |
+| `bias_skew`         | With prob. `p` emits a fixed preferred action, else the agent's  | p                                | both          |
+| `bias_suboptimal`   | With prob. `β` uses the agent, else a uniform-random action      | β (beta)                         | both          |
+| `curiosity`         | Steers toward novel transitions via ensemble disagreement        | intensity                        | both (vector obs only) |
+| `bias_confounded`   | Per-episode latent `U` biases the action (and perturbs reward)   | σ (sigma)                        | both          |
 
-### Experiment Mode
-
-| Flag              | Description                                                                 |
-| ----------------- | --------------------------------------------------------------------------- |
-| `--mode`          | `benchmark` (default) or `critic_ablation`                                 |
-| `--ablation`      | Shortcut to run ablation mode (`critic_ablation`)                          |
-| `--ablation-critics` | Optional override for critics to compare; default is `standard_mlp` |
-| `--ablation-lr`   | Learning rate for auxiliary critics                                         |
-| `--ablation-hidden-dims` | Comma-separated hidden dimensions for auxiliary critics (`--ablation-hidded-dims` also accepted) |
-| `--ablation-bins` | Histogram bins used for MI/KL/JS distribution metrics                       |
-
-In `critic_ablation` mode, the run writes `critic_ablation_metrics.csv` with checkpointed metrics for each auxiliary critic.
-It tracks value-quality metrics and reward-model metrics (real environment reward vs critic-implied reward), including:
-`advantage_mean`, `explained_variance`, `pearson`, `spearman`, `mutual_information`, `kl`, `js_normalized`, `mse`, `td_error_mean`, `real_reward_mean`, `pred_reward_mean`, `reward_explained_variance`, `reward_pearson`, `reward_spearman`, `reward_mutual_information`, `reward_kl`, `reward_js_normalized`, `reward_mse`, `reward_error_mean`.
-If you add a new critic to the critic registry, pass it in `--ablation-critics` to compare it against `standard_mlp`.
-
-Checkpoints are:
-
-* Uniformly distributed
-* Include episode 0 and final episode
-* The only points where metrics, models, and videos are saved
-
-### Auxiliary Models (opt-in)
-
-Optional learned reward `r(s,a)` and next-state `s'(s,a)` models, trained alongside RL on its existing batch and **logged, not folded into the RL loss**. Off by default; composes with any algorithm/regime. When enabled, the run writes a separate `aux_metrics.csv` (`episode, algorithm, environment, model, train_loss, mse, mae`); the frozen train/eval schema is unchanged.
-
-| Flag                 | Description                                              |Default |
-| -------------------- | -------------------------------------------------------- |------- |
-| `--aux-models`       | Train the auxiliary reward + next-state models           |off     |
-| `--aux-lr`           | Learning rate for the auxiliary models                   |3e-4    |
-| `--aux-hidden-dims`  | Comma-separated hidden layer sizes for the aux models    |64,64   |
+`bias_confounded` injects unobserved confounding: a per-episode latent `U` biases the action and, paired with `ConfoundedCollectionWrapper` on the train env, also perturbs the reward, so action and reward share a common cause that is **absent from the observation**. It requires the confounded wrapper on the train env because the policy reads the current `U` from the wrapper (`env.current_u`) while `U` never enters the observation; the strength `σ` scales both the action bias and the reward perturbation. The confounding signature — non-zero marginal `Corr(A, R)` but near-zero partial `Corr(A, R | U)` — is enforced by the gate test at `tests/test_confounded_collection.py::test_confounding_signature_marginal_nonzero_partial_zero`.
 
 ---
 
-### Device & Determinism
+## Auxiliary models
 
-The device is **auto-detected** (CUDA if available, else CPU) via a single `detect_device()` — there is no device flag.
+`--aux-models` trains a learned reward model `r̂(s, a)` and next-state model `ŝ′(s, a)` alongside RL on the same batches the agent already uses. Their losses are **logged, never folded into the RL loss**; metrics go to a separate `aux_metrics.csv` (`episode, algorithm, environment, model, train_loss, mse, mae`) and the frozen train/eval schema is unchanged. It is off by default and composes with any algorithm and any data regime. Learning rate and hidden sizes are set with `--aux-lr` and `--aux-hidden-dims`.
 
-| Flag              | Description                           |
-| ----------------- | ------------------------------------- |
-| `--deterministic` | Enable deterministic PyTorch behavior (bitwise-reproducible runs) |
+```bash
+uv run python main.py --envs CartPole-v1 --algos ppo --aux-models --aux-lr 3e-4 --aux-hidden-dims 64,64
+```
 
-Default:
+---
 
-* Auto-detect CUDA
-* Determinism disabled unless specified
+## CLI reference
+
+Defaults are taken directly from `main.py` argparse.
+
+### Environment selection
+
+| Flag                | Default  | Description |
+| ------------------- | -------- | ----------- |
+| `--envs`            | `None`   | One or more environment IDs |
+| `--env-set`         | `None`   | Named environment set; overrides `--envs` |
+| `--env-wrapper`     | `auto`   | Wrapper to use (`auto`, `gymnasium`, `custom`, or a registered name) |
+| `--env-entry-point` | `None`   | Python entry point for custom envs (`module:callable`) |
+| `--env-kwargs`      | `None`   | JSON dict of kwargs for the env entry point |
+
+### Algorithm selection
+
+| Flag      | Default | Description |
+| --------- | ------- | ----------- |
+| `--algos` | `None`  | One or more algorithm keys from the registry |
+
+### Training configuration
+
+| Flag              | Default | Description |
+| ----------------- | ------- | ----------- |
+| `--n-train-envs`  | `16`    | Parallel training environments |
+| `--n-eval-envs`   | `16`    | Parallel evaluation environments |
+| `--rollout-len`   | `1024`  | Steps per rollout |
+| `--n-episodes`    | `250`   | Training episodes |
+| `--n-checkpoints` | `25`    | Checkpoint evaluations (clamped to `[2, n_episodes]`) |
+| `--seed`          | `42`    | Random seed |
+| `--aggregation`   | `iqm`   | Reported-stat aggregation: `iqm` or `mean` |
+
+### Data regime (B1 load)
+
+| Flag                | Default | Description |
+| ------------------- | ------- | ----------- |
+| `--offline-dataset` | `None`  | Minari dataset id for offline algorithms; live env still built for eval |
+
+### Behavior policy
+
+| Flag                  | Default | Description |
+| --------------------- | ------- | ----------- |
+| `--behavior-policy`   | `agent` | Collection policy: `agent`, `anti_reward`, `bias_skew`, `bias_suboptimal`, `curiosity`, `bias_confounded` |
+| `--behavior-strength` | `None`  | Primary knob for the behavior policy; `None` keeps the policy default |
+
+### Auxiliary models
+
+| Flag                | Default | Description |
+| ------------------- | ------- | ----------- |
+| `--aux-models`      | off     | Train logged `r̂(s,a)` + `ŝ′(s,a)` models (not in the RL loss) |
+| `--aux-lr`          | `3e-4`  | Learning rate for the auxiliary models |
+| `--aux-hidden-dims` | `64,64` | Comma-separated hidden layer sizes for the auxiliary models |
+
+### Mode
+
+| Flag                     | Default     | Description |
+| ------------------------ | ----------- | ----------- |
+| `--mode`                 | `benchmark` | `benchmark` or `critic_ablation` |
+| `--ablation`             | off         | Shortcut for `--mode critic_ablation` (on-policy only) |
+| `--ablation-critics`     | `standard_mlp` | Auxiliary critics to compare in ablation mode |
+| `--ablation-lr`          | `3e-4`      | Learning rate for auxiliary critics |
+| `--ablation-hidden-dims` | `64,64`     | Hidden sizes for auxiliary critics (`--ablation-hidded-dims` also accepted) |
+| `--ablation-bins`        | `32`        | Histogram bins for MI/KL/JS metrics |
+
+### Device
+
+The device is auto-detected (CUDA if available, else CPU); there is no device flag.
+
+| Flag              | Default | Description |
+| ----------------- | ------- | ----------- |
+| `--deterministic` | off     | Enable deterministic PyTorch (bitwise-reproducible runs) |
+
+### Reproducibility
+
+| Flag          | Default | Description |
+| ------------- | ------- | ----------- |
+| `--reproduce` | `None`  | Name of a YAML in `reproducibility/` (with or without extension) |
 
 ---
 
 ## Reproducibility
 
-Reproducibility configs live in: ```reproducibility/```
+Pinned configurations live in `reproducibility/<name>.yaml`. Values from a reproduce file take precedence over CLI flags; among environment sources the precedence is:
 
-Run:
-
-```bash
-uv run python main.py --reproduce <config_name>
+```
+--reproduce  >  --env-set  >  --envs
 ```
 
-This will:
+```bash
+uv run python main.py --reproduce comoreai26
+```
 
-* Load `reproducibility/<config_name>.yaml`
-* Override CLI parameters
-* Save the effective configuration in the run folder
-
-Precedence:
-
-1. `--reproduce`
-2. `--env-set`
-3. `--envs`
+This loads `reproducibility/comoreai26.yaml`, applies it over the CLI defaults, and saves the effective configuration in the run folder.
 
 ---
 
-# Plotting and Tables (`plot.py`)
+## Run artifacts
 
-Generate publication-ready plots and LaTeX tables:
+Each execution creates a timestamped run directory:
+
+```
+runs/benchmark_<datetime>/
+    config.yaml
+    metadata.json
+    train_metrics.csv
+    eval_metrics.csv
+    checkpoints/<env>_<algo>_seed<seed>/
+    videos/<env>_<algo>_seed<seed>_ckptXXXX.mp4
+```
+
+`train_metrics.csv` and `eval_metrics.csv` follow the frozen schemas `TRAIN_COLUMNS` and `EVAL_COLUMNS` defined in `src/benchmarking/runner.py`; both carry explicit `algorithm` and `environment` columns. The schema is pinned by `tests/test_characterization.py`, and identical configurations produce byte-identical CSVs (see [Testing](#testing)).
+
+---
+
+## Plotting
+
+`plot.py` renders plots and LaTeX tables from a run directory.
 
 ```bash
 uv run python plot.py --run benchmark_YYYYMMDD_HHMMSS --split eval --x-axis frames --aggregation iqm
+uv run python plot.py --run benchmark_YYYYMMDD_HHMMSS --split critic --x-axis episodes
 ```
 
-```bash
-uv run python plot.py --run <run_name> --split critic --x-axis episodes
-```
----
-
-## Plot Parameters
-
-| Flag            | Description                    |
-| --------------- | ------------------------------ |
+| Flag            | Description |
+| --------------- | ----------- |
 | `--run`         | Run folder name inside `runs/` |
 | `--split`       | `train`, `eval`, `critic`, `both`, or `all` |
-| `--x-axis`      | `episodes` or `frames`         |
-| `--aggregation` | `mean` or `iqm`                |
-| `--formats`     | Output formats (e.g. png pdf)  |
+| `--x-axis`      | `episodes` or `frames` |
+| `--aggregation` | `mean` or `iqm` |
+| `--formats`     | Output formats (e.g. `png pdf`) |
 
-Notes:
-* `--split both` keeps the original behavior (`train` + `eval`), and if the run is in `critic_ablation` mode it also plots critic metrics automatically.
-* `--split critic` plots only `critic_ablation_metrics.csv`.
-* `--split all` plots `train`, `eval`, and `critic` when available.
-* If `critic_ablation_metrics.csv` is missing, `--split critic` falls back to `train_metrics.csv` and plots a single critic line named `standard`.
+`--split both` plots `train` + `eval` (plus critic metrics if the run was in `critic_ablation` mode); `--split critic` plots only `critic_ablation_metrics.csv`; `--split all` plots all available splits. Aggregation is either `mean` (mean ± standard deviation) or `iqm` (interquartile mean ± IQR-STD). Outputs land in `outputs/<run_name>/plots/` and `outputs/<run_name>/tables/`.
 
 ---
 
-## Aggregation Modes
+## Testing
 
-### Mean Mode
-
-* Center: Mean
-* Spread: Standard deviation
-
-### IQM Mode (default)
-
-* Center: Interquartile Mean
-* Spread: IQR-STD
-
----
-
-## Generated Outputs
-
-```
-outputs/<run_name>/
-    plots/
-    tables/
-```
-
-Each metric produces:
-
-* Per-environment plots
-* Overall aggregated plot
-* One LaTeX table per metric
-
-Figures:
-
-* High-resolution PNG (≥300 dpi)
-* Vector PDF
-* Consistent algorithm color mapping
-
----
-
-# Run Artifacts
-
-Each execution creates:```runs/benchmark_<datetime>/```
-
-Contains:
-
-* `config.yaml`
-* `metadata.json`
-* `train_metrics.csv`
-* `eval_metrics.csv`
-* `checkpoints/<env>_<algo>_seed<seed>/`
-* `videos/<env>_<algo>_seed<seed>_ckptXXXX.mp4`
-
-CSV files include explicit `algorithm` and `environment` columns.
-
----
-
-# Design Philosophy
-
-This framework prioritizes:
-
-* Research reproducibility
-* Modular structure
-* Clean abstraction boundaries
-* Minimal code duplication
-* Extensibility toward causal RL
-
-It is designed as long-term research infrastructure, not a one-off script.
-
----
-
-# Contributing
-
-Contributions are welcome.
-
-You can extend:
-
-* Algorithms (inherit from base classes in `rl/`)
-* Environment wrappers
-* Environment sets
-* Evaluation metrics
-* MARL components
-* Causal critic modules
-
----
-
-## Development Setup
-
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management
-(PEP 621 `pyproject.toml` + `uv.lock`). Install uv via the official standalone
-installer:
+Three bitwise-golden tests pin exact RNG behavior: PPO (`tests/test_regression.py`), DQN (`tests/test_regression_offpolicy.py`), and SAC (`tests/test_sac.py::test_sac_deterministic_bitwise`) — two runs of a fixed configuration must produce byte-identical CSVs. A grep-snapshot drift detector in `tests/test_characterization.py` guards seeding call-sites and other pinned references against silent moves, alongside the frozen CSV-schema tests. Run the suite with:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+uv run pytest tests/
 ```
-
-Create the environment and install the locked dependencies:
-
-```bash
-uv sync                       # base runtime + dev tooling, into ./.venv
-uv run pre-commit install
-```
-
-The PyTorch CUDA 13.0 wheel index is pinned in `pyproject.toml`, so `uv sync`
-resolves the `torch==2.10.0+cu130` build (CUDA) rather than the CPU wheel.
-
-Optional environment families are exposed as extras:
-
-```bash
-uv sync --extra mujoco        # also: atari, minigrid, robotics, minari, offline
-```
-
-Common workflows:
-
-```bash
-uv run python main.py --envs CartPole-v1 --algos ppo   # run inside the env
-uv add <package>                                       # add a dependency
-uv lock                                                # re-resolve the lockfile
-```
-
-Run formatting checks:
-
-```bash
-uv run pre-commit run --all-files
-```
-
-All pull requests should pass pre-commit checks before merging.
-
-> **pip fallback.** `requirements.txt` is a generated export of the base
-> runtime (`uv export --no-dev --no-hashes --emit-index-url`) for environments
-> without uv (e.g. the deployment server). Regenerate it after changing
-> dependencies; do not edit it by hand.
 
 ---
 
-# Published Works
+## Roadmap
 
-This framework supports experiments presented in:
+These are not implemented:
+
+- **NeuralBayesianNetworks integration** — a causal critic / reward-model component (currently absent from the codebase).
+- **Generic POMDP / observation-masking wrapper** — partial observability beyond the existing image and confounded paths.
+- **Multi-agent (MARL) extension** — the `src/marl/` package is a placeholder.
+
+---
+
+## Published works
 
 ```bibtex
 @inproceedings{briglia2026pervasive,
@@ -464,4 +349,8 @@ This framework supports experiments presented in:
 }
 ```
 
-Reproduce with:```bash python main.py --reproduce comoreai26```
+---
+
+## License
+
+GPLv3 — see [LICENSE](LICENSE).
