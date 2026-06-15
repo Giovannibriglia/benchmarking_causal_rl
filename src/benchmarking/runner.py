@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
@@ -64,6 +65,17 @@ EVAL_PER_CONTEXT_COLUMNS: List[str] = [
     "return_iqr_std",
 ]
 
+# Apparent-training-value trace (docs/experimental_design.md §6.2), written only
+# for confounded offline runs (Cells 7-8). Separate file/schema; the frozen
+# TRAIN_COLUMNS/EVAL_COLUMNS above are untouched.
+OFFLINE_VALUE_TRACE_COLUMNS: List[str] = [
+    "epoch",
+    "algorithm",
+    "environment",
+    "apparent_value_iqm",
+    "apparent_value_iqr_std",
+]
+
 
 @dataclass
 class AlgorithmSpec:
@@ -108,6 +120,16 @@ class BenchmarkRunner:
             int(i) for i in (env_cfg.mask_indices or ())
         )
         self._eval_per_context_logger: CSVLogger | None = None
+        # Offline-value-trace gate (Cells 7-8): open iff the collection regime is
+        # confounded AND the algorithm trains offline. When open, _train_offline
+        # reads the dataset's confounding-signature metadata (rejecting
+        # gate-failed/missing) and writes the critic's apparent Q per epoch to
+        # offline_value_trace.csv. Closed => no file, no work (goldens intact).
+        self._value_trace_gate_open: bool = (
+            getattr(env_cfg, "behavior_policy", "agent") == "bias_confounded"
+            and algo_spec.data_regime == "offline"
+        )
+        self._offline_value_trace_logger: CSVLogger | None = None
 
         self.run_dir = run_cfg.resolve_run_dir()
         os.makedirs(self.run_dir, exist_ok=True)
@@ -482,6 +504,64 @@ class BenchmarkRunner:
         mid = sorted_vals[lower : upper + 1]
         return float(mid.mean()), float(mid.std(unbiased=False))
 
+    def _apparent_value_unqueryable(self) -> bool:
+        """True if the agent's critic can't be queried at (s, a) for the
+        apparent-value trace — neither a discrete ``q_network`` nor a continuous
+        twin-Q (``q1``/``q2`` + ``_q_input``). All current offline algos are
+        queryable, so this only guards a future critic shape."""
+        agent = self.agent
+        discrete_q = hasattr(agent, "q_network")
+        twin_q = (
+            hasattr(agent, "q1") and hasattr(agent, "q2") and hasattr(agent, "_q_input")
+        )
+        return not (discrete_q or twin_q)
+
+    def _apparent_q(self, batch: Dict[str, torch.Tensor]) -> "torch.Tensor | None":
+        """Critic-predicted Q at the batch's data ``(s, a)`` pairs, shape ``[B]``.
+
+        Discrete (offline_dqn/cql/iql/bcq): gather ``Q(s, .)`` at the data action.
+        Continuous (cql/iql/bcq _continuous): ``min`` of the twin critics on
+        ``cat(s, a)`` — the value the conservative algorithms treat as Q (BCQ's
+        CVAE/perturbation net selects ACTIONS; Q itself is queried here directly).
+        ``None`` if the critic can't be queried.
+        """
+        agent = self.agent
+        obs = batch["obs"]
+        actions = batch["actions"]
+        with torch.no_grad():
+            if hasattr(agent, "q_network"):
+                q_all = agent.q_network(obs)
+                a_idx = actions.long().view(-1, 1)
+                return q_all.gather(1, a_idx).squeeze(-1)
+            if (
+                hasattr(agent, "q1")
+                and hasattr(agent, "q2")
+                and hasattr(agent, "_q_input")
+            ):
+                x = agent._q_input(obs, actions.float())
+                return torch.min(agent.q1(x), agent.q2(x)).squeeze(-1)
+        return None
+
+    def _log_offline_value_trace(
+        self, epoch: int, batch: Dict[str, torch.Tensor]
+    ) -> None:
+        logger = self._offline_value_trace_logger
+        if logger is None:
+            return
+        q_vals = self._apparent_q(batch)
+        if q_vals is None:
+            return
+        iqm, iqr_std = self._bin_stats(q_vals.reshape(-1))
+        logger.log(
+            {
+                "epoch": epoch,
+                "algorithm": self.train_cfg.algorithm,
+                "environment": self.env_cfg.env_id,
+                "apparent_value_iqm": iqm,
+                "apparent_value_iqr_std": iqr_std,
+            }
+        )
+
     def _aggregate_returns(self, returns: torch.Tensor) -> Tuple[float, float]:
         if returns.numel() == 0:
             return 0.0, 0.0
@@ -539,6 +619,16 @@ class BenchmarkRunner:
                 if self._mask_indices
                 else nullcontext(None)
             )
+            # Offline-value-trace writer (Cells 7-8): opened only for confounded
+            # offline runs, so other runs never create the file.
+            value_trace_ctx = (
+                CSVLogger(
+                    os.path.join(self.run_dir, "offline_value_trace.csv"),
+                    fieldnames=OFFLINE_VALUE_TRACE_COLUMNS,
+                )
+                if self._value_trace_gate_open
+                else nullcontext(None)
+            )
             with (
                 CSVLogger(
                     os.path.join(self.run_dir, "train_metrics.csv"),
@@ -551,9 +641,12 @@ class BenchmarkRunner:
                 critic_ctx as critic_log,
                 aux_ctx as aux_log,
                 per_context_ctx as per_context_log,
+                value_trace_ctx as value_trace_log,
             ):
                 # evaluate() reads this to emit per-context rows when gated open.
                 self._eval_per_context_logger = per_context_log
+                # _train_offline reads this to emit apparent-value rows per epoch.
+                self._offline_value_trace_logger = value_trace_log
                 if self.algo_spec.data_regime == "offline":
                     self._train_offline(train_log, eval_log, aux_log)
                 elif self.algo_spec.kind == "on_policy":
@@ -562,6 +655,7 @@ class BenchmarkRunner:
                     self._train_off_policy(train_log, eval_log, aux_log)
         finally:
             self._eval_per_context_logger = None
+            self._offline_value_trace_logger = None
             # Explicitly close vector envs to release EGL/GL contexts before interpreter shutdown.
             self.train_env.close()
             self.eval_env.close()
@@ -666,6 +760,26 @@ class BenchmarkRunner:
         assert_dataset_matches_algo(
             dataset, self.action_type, dataset_id, self.train_cfg.algorithm
         )
+        # Confounding gate (Cells 7-8): a confounded run must train on a dataset
+        # whose confounding signature held at generation (docs/experimental_design
+        # §7). Reject a missing signature (older dataset) or a failed gate before
+        # training starts, with distinct messages.
+        if self._value_trace_gate_open:
+            meta = dataset.storage.metadata
+            if "gate_test_passed" not in meta:
+                raise ValueError(
+                    f"Confounded offline run on dataset '{dataset_id}' requires "
+                    "the confounding-signature metadata, but none is present "
+                    "(likely generated before this metadata existed). Regenerate "
+                    "the dataset with tools/generate_offline.py."
+                )
+            if not bool(meta["gate_test_passed"]):
+                raise ValueError(
+                    f"Dataset '{dataset_id}' failed the confounding gate test "
+                    "(gate_test_passed=False): the confounding signature "
+                    "(non-zero marginal Corr(A,R), near-zero partial Corr(A,R|U)) "
+                    "did not hold at generation. Regenerate or inspect the dataset."
+                )
         # For offline masked runs (Cell 4 / Cell 8) the same indices are dropped
         # from the dataset's obs/next_obs at load time — the eval env is masked
         # above, so the agent (built for the reduced dim) matches both. The
@@ -679,6 +793,20 @@ class BenchmarkRunner:
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
 
+        # Apparent-value trace queryability (Cells 7-8): warn once at run start
+        # if the critic can't be queried at (s, a) so the curve is skipped rather
+        # than wrong. All current offline algos are queryable (discrete q_network
+        # / continuous twin-Q), so this is a defensive guard.
+        value_trace_on = self._offline_value_trace_logger is not None
+        if value_trace_on and self._apparent_value_unqueryable():
+            print(
+                f"[offline_value_trace] critic of '{self.train_cfg.algorithm}' "
+                "cannot be queried at (s, a); skipping offline_value_trace.csv "
+                "rows for this run.",
+                file=sys.stderr,
+            )
+            value_trace_on = False
+
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         grad_steps_per_epoch = self.env_cfg.rollout_len
         batch_size = min(self.offpolicy_batch_size, len(self.replay_buffer))
@@ -691,6 +819,12 @@ class BenchmarkRunner:
                 if self.aux_models is not None:
                     self.aux_models.update(batch)
                 last_batch = batch
+
+            # One apparent-value row per epoch (the Cell 7/8 training curve):
+            # the critic's predicted Q on the last sampled batch's (s, a) pairs.
+            # Reusing last_batch (vs a fresh sample) adds no extra RNG draw.
+            if value_trace_on and last_batch is not None:
+                self._log_offline_value_trace(ep, last_batch)
 
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
