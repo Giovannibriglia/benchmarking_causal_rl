@@ -62,6 +62,11 @@ class MaskedObservationWrapper:
 
         self.indices = indices
         self._keep = [i for i in range(obs_dim) if i not in seen]
+        # The most recent PRE-mask observation (full obs vector), updated on each
+        # reset/step. PR2's eval_per_context writer reads the masked indices off
+        # this to bin returns by the hidden Z component — the value the agent
+        # never sees. None until the first reset.
+        self.last_unmasked_obs = None
 
         low = np.delete(np.asarray(base_space.low), indices, axis=-1)
         high = np.delete(np.asarray(base_space.high), indices, axis=-1)
@@ -108,8 +113,10 @@ class MaskedObservationWrapper:
 
     def reset(self, seed=None):
         obs, info = self.env.reset(seed=seed)
+        self.last_unmasked_obs = obs
         return self.observation(obs), info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        self.last_unmasked_obs = obs
         return self.observation(obs), reward, terminated, truncated, info
