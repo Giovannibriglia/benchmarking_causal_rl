@@ -19,6 +19,65 @@ from src.config.device import detect_device
 from src.envs.registry import register_default_env_wrappers
 
 
+def _parse_mask_indices(raw) -> tuple[int, ...] | None:
+    # Accepts a comma/space-separated string (CLI) or a list (reproduce YAML);
+    # returns a tuple of ints, or None when unset/empty.
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        vals = [int(x) for x in raw]
+    elif isinstance(raw, str):
+        normalized = raw.replace(",", " ")
+        vals = [int(x) for x in normalized.split() if x.strip()]
+    else:
+        vals = [int(raw)]
+    return tuple(vals) if vals else None
+
+
+def _validate_mask_list(val, env_id: str, source: str) -> tuple[int, ...] | None:
+    # A single env's mask: must be a list of non-negative ints (no bools,
+    # strings, negatives, or nested lists). Empty -> None (no masking).
+    if not isinstance(val, (list, tuple)):
+        raise ValueError(
+            f"mask_indices for '{env_id}' in {source} must be a list of "
+            f"non-negative ints, got {type(val).__name__}."
+        )
+    out: list[int] = []
+    for x in val:
+        if isinstance(x, bool) or not isinstance(x, int) or x < 0:
+            raise ValueError(
+                f"mask_indices for '{env_id}' in {source} must be a list of "
+                f"non-negative ints; invalid entry {x!r}."
+            )
+        out.append(int(x))
+    return tuple(out) if out else None
+
+
+def _resolve_mask_indices_map(raw, env_ids, source: str) -> dict:
+    # Build {env_id: tuple|None} for every env in env_ids. Three input shapes:
+    #   None      -> no masking anywhere (default; YAMLs without the key are
+    #                byte-identical to pre-mask runs).
+    #   dict      -> strict per-env map (PR5 §5): EVERY env in env_ids must be a
+    #                key; a missing env raises (never silently unmask).
+    #   list/str  -> uniform: the same parsed indices for every env (CLI
+    #                --mask-indices and the ad-hoc YAML scalar form).
+    if raw is None:
+        return {e: None for e in env_ids}
+    if isinstance(raw, dict):
+        result = {}
+        for e in env_ids:
+            if e not in raw:
+                raise ValueError(
+                    f"mask_indices map in {source} is missing env '{e}': it is "
+                    "listed in 'envs' but absent from the mask_indices map. Add "
+                    f"'{e}: [..]' to the map, or remove '{e}' from 'envs'."
+                )
+            result[e] = _validate_mask_list(raw[e], e, source)
+        return result
+    uniform = _parse_mask_indices(raw)
+    return {e: uniform for e in env_ids}
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmarking Causal RL")
     p.add_argument(
@@ -193,6 +252,7 @@ def main():
     register_default_env_wrappers()
 
     cfg_from_file: dict = {}
+    repro_path = None
     if args.reproduce:
         repro_name = args.reproduce
         if not repro_name.endswith((".yaml", ".yml")):
@@ -213,20 +273,6 @@ def main():
         if isinstance(val, str):
             return val.split()
         return list(val)
-
-    def _parse_mask_indices(raw) -> tuple[int, ...] | None:
-        # Accepts a comma/space-separated string (CLI) or a list (reproduce YAML);
-        # returns a tuple of ints, or None when unset/empty.
-        if raw is None:
-            return None
-        if isinstance(raw, (list, tuple)):
-            vals = [int(x) for x in raw]
-        elif isinstance(raw, str):
-            normalized = raw.replace(",", " ")
-            vals = [int(x) for x in normalized.split() if x.strip()]
-        else:
-            vals = [int(raw)]
-        return tuple(vals) if vals else None
 
     def _parse_hidden_dims(raw) -> tuple[int, ...]:
         if isinstance(raw, (list, tuple)):
@@ -293,12 +339,15 @@ def main():
         "behavior_strength",
         cfg_from_file.get("behavior_strength", args.behavior_strength),
     )
-    mask_indices = _parse_mask_indices(
-        env_cfg_src.get(
-            "mask_indices",
-            cfg_from_file.get("mask_indices", args.mask_indices),
-        )
+    # mask_indices may be a per-env map ({env_id: [..]}), a uniform list, or a
+    # CLI string; resolve to a per-env {env_id: tuple|None} lookup. Strict for
+    # the map form (every env must be present); see _resolve_mask_indices_map.
+    mask_indices_raw = env_cfg_src.get(
+        "mask_indices",
+        cfg_from_file.get("mask_indices", args.mask_indices),
     )
+    mask_source = str(repro_path) if repro_path else "the config"
+    mask_by_env = _resolve_mask_indices_map(mask_indices_raw, envs or [], mask_source)
     env_kwargs = env_cfg_src.get("env_kwargs", cfg_from_file.get("env_kwargs", None))
     if env_kwargs is None and args.env_kwargs:
         env_kwargs = json.loads(args.env_kwargs)
@@ -424,7 +473,7 @@ def main():
             "env_entry_point": env_entry_point,
             "offline_dataset": offline_dataset,
             "env_kwargs": env_kwargs,
-            "mask_indices": list(mask_indices) if mask_indices else None,
+            "mask_indices": ({e: list(v) for e, v in mask_by_env.items() if v} or None),
             "n_train_envs": n_train_envs,
             "n_eval_envs": n_eval_envs,
             "rollout_len": rollout_len,
@@ -468,7 +517,7 @@ def main():
                 offline_dataset=offline_dataset,
                 behavior_policy=behavior_policy,
                 behavior_strength=behavior_strength,
-                mask_indices=mask_indices,
+                mask_indices=mask_by_env[env_id],
             )
             train_cfg = TrainingConfig(
                 n_episodes=n_episodes,

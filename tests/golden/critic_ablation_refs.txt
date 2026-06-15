@@ -1,16 +1,16 @@
 main.py:10:from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
-main.py:141:            "Auxiliary critics to train in critic_ablation mode. "
-main.py:149:        help="Learning rate for auxiliary critics in critic_ablation mode.",
-main.py:26:        choices=["benchmark", "critic_ablation"],
-main.py:337:        mode = "critic_ablation"
-main.py:338:    if mode not in {"benchmark", "critic_ablation"}:
-main.py:33:        help="Shortcut for --mode critic_ablation.",
-main.py:340:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
-main.py:442:                "critics": ablation_critics if mode == "critic_ablation" else [],
-main.py:481:            critic_ablation_cfg = None
-main.py:482:            if mode == "critic_ablation":
-main.py:483:                critic_ablation_cfg = CriticAblationConfig(
-main.py:500:                critic_ablation_cfg=critic_ablation_cfg,
+main.py:200:            "Auxiliary critics to train in critic_ablation mode. "
+main.py:208:        help="Learning rate for auxiliary critics in critic_ablation mode.",
+main.py:386:        mode = "critic_ablation"
+main.py:387:    if mode not in {"benchmark", "critic_ablation"}:
+main.py:389:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
+main.py:491:                "critics": ablation_critics if mode == "critic_ablation" else [],
+main.py:530:            critic_ablation_cfg = None
+main.py:531:            if mode == "critic_ablation":
+main.py:532:                critic_ablation_cfg = CriticAblationConfig(
+main.py:549:                critic_ablation_cfg=critic_ablation_cfg,
+main.py:85:        choices=["benchmark", "critic_ablation"],
+main.py:92:        help="Shortcut for --mode critic_ablation.",
 src/benchmarking/plotting.py:47:    critic_path = run_dir / "critic_ablation_metrics.csv"
 src/benchmarking/plotting.py:53:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/plotting.py:565:        split == "both" and mode == "critic_ablation"
