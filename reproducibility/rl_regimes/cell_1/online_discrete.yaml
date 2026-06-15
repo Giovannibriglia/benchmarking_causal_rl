@@ -1,0 +1,21 @@
+# Cell 1 — Crystal Clear Clinic, discrete arm.
+# Online, fully observed, no confounding. Baseline anchor for the eight-cell taxonomy.
+# Refs: docs/experimental_design.md §4 Cell 1, §3 common run settings.
+
+envs:
+  - CartPole-v1
+  - LunarLander-v3
+  - Acrobot-v1
+
+algos:
+  - ppo
+  - dqn
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
