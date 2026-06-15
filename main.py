@@ -78,6 +78,45 @@ def _resolve_mask_indices_map(raw, env_ids, source: str) -> dict:
     return {e: uniform for e in env_ids}
 
 
+def _validate_dataset_id(val, env_id: str, source: str) -> str:
+    # A single env's offline dataset id: must be a non-empty string.
+    if not isinstance(val, str) or not val.strip():
+        raise ValueError(
+            f"offline_dataset for '{env_id}' in {source} must be a non-empty "
+            f"dataset-id string; got {val!r}."
+        )
+    return val
+
+
+def _resolve_offline_dataset_map(raw, env_ids, source: str) -> dict:
+    # Build {env_id: dataset_id|None} for every env in env_ids. Three shapes,
+    # mirroring _resolve_mask_indices_map:
+    #   None  -> no offline dataset anywhere (default; online runs are unchanged).
+    #   dict  -> strict per-env map (Cell 3 tier sweep): EVERY env in env_ids must
+    #            be a key; a missing env raises (never silently train on no data).
+    #   str   -> uniform: the same dataset id for every env (CLI --offline-dataset
+    #            and the ad-hoc single-string YAML form).
+    if raw is None:
+        return {e: None for e in env_ids}
+    if isinstance(raw, dict):
+        result = {}
+        for e in env_ids:
+            if e not in raw:
+                raise ValueError(
+                    f"offline_dataset map in {source} is missing env '{e}': it is "
+                    "listed in 'envs' but absent from the offline_dataset map. Add "
+                    f"'{e}: <dataset-id>' to the map, or remove '{e}' from 'envs'."
+                )
+            result[e] = _validate_dataset_id(raw[e], e, source)
+        return result
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(
+            f"offline_dataset in {source} must be a dataset-id string or a "
+            f"per-env map; got {type(raw).__name__}."
+        )
+    return {e: raw for e in env_ids}
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmarking Causal RL")
     p.add_argument(
@@ -327,9 +366,16 @@ def main():
     rollout_len = env_cfg_src.get(
         "rollout_len", cfg_from_file.get("rollout_len", args.rollout_len)
     )
-    offline_dataset = env_cfg_src.get(
+    # offline_dataset may be a per-env map ({env_id: dataset_id}), a uniform
+    # string, or a CLI string; resolve to a per-env {env_id: id|None} lookup.
+    # Strict for the map form (every env must be present).
+    offline_dataset_raw = env_cfg_src.get(
         "offline_dataset",
         cfg_from_file.get("offline_dataset", args.offline_dataset),
+    )
+    offline_source = str(repro_path) if repro_path else "the config"
+    offline_by_env = _resolve_offline_dataset_map(
+        offline_dataset_raw, envs or [], offline_source
     )
     behavior_policy = env_cfg_src.get(
         "behavior_policy",
@@ -471,7 +517,7 @@ def main():
             "env_set": env_set,
             "env_wrapper": env_wrapper,
             "env_entry_point": env_entry_point,
-            "offline_dataset": offline_dataset,
+            "offline_dataset": ({e: d for e, d in offline_by_env.items() if d} or None),
             "env_kwargs": env_kwargs,
             "mask_indices": ({e: list(v) for e, v in mask_by_env.items() if v} or None),
             "n_train_envs": n_train_envs,
@@ -514,7 +560,7 @@ def main():
                 env_wrapper=env_wrapper or "auto",
                 env_entry_point=env_entry_point,
                 env_kwargs=env_kwargs,
-                offline_dataset=offline_dataset,
+                offline_dataset=offline_by_env[env_id],
                 behavior_policy=behavior_policy,
                 behavior_strength=behavior_strength,
                 mask_indices=mask_by_env[env_id],

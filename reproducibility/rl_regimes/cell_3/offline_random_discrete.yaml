@@ -1,0 +1,31 @@
+# Cell 3 — Perfect Archive, discrete arm, random tier.
+# Offline learning from a fully-observed random-tier B2 dataset. The
+# random/medium/expert sweep separates the coverage axis from the regime
+# axis. Datasets must be pre-generated; see commit message for the
+# generation commands.
+# Refs: docs/experimental_design.md §4 Cell 3, §3 common settings.
+
+envs:
+  - CartPole-v1
+  - LunarLander-v3
+  - Acrobot-v1
+
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-v0
+  LunarLander-v3: generated/lunarlander/random-v0
+  Acrobot-v1: generated/acrobot/random-v0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
