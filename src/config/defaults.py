@@ -29,6 +29,11 @@ class EnvConfig:
     # bias_suboptimal=beta); None keeps the policy default.
     behavior_policy: str = "agent"
     behavior_strength: Optional[float] = None
+    # Observation indices to drop from the flat obs vector (Z-hidden axis). For
+    # online runs the runner wraps train+eval with MaskedObservationWrapper; for
+    # offline runs the loader projects the same indices off the dataset's
+    # obs/next_obs. None = no masking (default behavior unchanged).
+    mask_indices: Optional[tuple] = None
 
 
 @dataclass

@@ -125,6 +125,23 @@ class BenchmarkRunner:
             env_entry_point=env_cfg.env_entry_point,
             env_kwargs=env_cfg.env_kwargs,
         )
+        # Observation masking (Z-hidden axis): drop the configured indices from
+        # the flat obs of BOTH train and eval, so the agent is built for the
+        # reduced dim and sees the same masked obs throughout. Applied on the
+        # OUTSIDE of any train-env confounding (base -> Confounded -> Masked,
+        # docs/experimental_design.md §8). Opt-in; default leaves envs untouched
+        # (off-policy/on-policy goldens stay bitwise). For offline runs the same
+        # indices are also projected off the dataset in the loader below.
+        if getattr(env_cfg, "mask_indices", None):
+            from src.envs.wrappers.masked import MaskedObservationWrapper
+
+            self.train_env = MaskedObservationWrapper(
+                self.train_env, env_cfg.mask_indices
+            )
+            self.eval_env = MaskedObservationWrapper(
+                self.eval_env, env_cfg.mask_indices
+            )
+
         if len(self.train_env.obs_space.shape) == 0:
             self.obs_dim = 1
         else:
@@ -527,8 +544,15 @@ class BenchmarkRunner:
         assert_dataset_matches_algo(
             dataset, self.action_type, dataset_id, self.train_cfg.algorithm
         )
+        # For offline masked runs (Cell 4 / Cell 8) the same indices are dropped
+        # from the dataset's obs/next_obs at load time — the eval env is masked
+        # above, so the agent (built for the reduced dim) matches both. The
+        # dataset on disk is unchanged; the projection is in-memory only.
         n_added = fill_replay_buffer_from_minari(
-            dataset_id, self.replay_buffer, self.device
+            dataset_id,
+            self.replay_buffer,
+            self.device,
+            mask_indices=getattr(self.env_cfg, "mask_indices", None),
         )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
