@@ -132,9 +132,20 @@ def _to_np(obs):
 def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=1000):
     """Roll out ``n_episodes`` (n_envs=1) into Minari EpisodeBuffers. Explicit
     per-episode reset + break-on-done keeps clean episode boundaries (and the
-    confounder's per-episode U resamples at each reset)."""
+    confounder's per-episode U resamples at each reset).
+
+    Returns ``(buffers, signature_samples)`` where ``signature_samples`` is a
+    dict of flat float arrays ``{a, r, u}`` over all transitions — the scalar
+    action (L2 norm for multi-dim), reward, and the per-transition latent ``U``
+    (read from the confounder via ``env.current_u`` BEFORE the step, i.e. the
+    ``U`` that this transition's action and reward share). It is ``None`` when
+    the env is not a confounder (``current_u`` absent), so the clean path is
+    unchanged.
+    """
     from minari.data_collector.episode_buffer import EpisodeBuffer
 
+    confounded = hasattr(env, "current_u")
+    sig_a, sig_r, sig_u = [], [], []
     buffers = []
     for ep in range(n_episodes):
         obs, _ = env.reset(seed=seed + 1000 + ep)
@@ -143,6 +154,9 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         done = False
         steps = 0
         while not done and steps < max_steps:
+            # current_u BEFORE the step is the latent this transition shares
+            # (the confounder resamples U at done, AFTER perturbing the reward).
+            u_t = float(env.current_u.reshape(-1)[0].item()) if confounded else None
             action = collection_policy.act(obs).action
             obs, reward, term, trunc, _ = env.step(action)
             obs_list.append(_to_np(obs))
@@ -150,9 +164,19 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             acts.append(
                 int(a[0]) if action_type == "discrete" else a.astype(np.float32)
             )
-            rews.append(float(reward.reshape(-1)[0].item()))
+            r_t = float(reward.reshape(-1)[0].item())
+            rews.append(r_t)
             terms.append(bool(term.reshape(-1)[0].item()))
             truncs.append(bool(trunc.reshape(-1)[0].item()))
+            if confounded:
+                # Scalar action: the index (discrete) or L2 norm (continuous).
+                sig_a.append(
+                    float(a[0])
+                    if action_type == "discrete"
+                    else float(np.linalg.norm(a))
+                )
+                sig_r.append(r_t)
+                sig_u.append(u_t)
             done = terms[-1] or truncs[-1]
             steps += 1
         adt = np.int64 if action_type == "discrete" else np.float32
@@ -165,7 +189,46 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 truncations=np.asarray(truncs, dtype=bool),
             )
         )
-    return buffers
+    samples = (
+        {
+            "a": np.asarray(sig_a, dtype=np.float64),
+            "r": np.asarray(sig_r, dtype=np.float64),
+            "u": np.asarray(sig_u, dtype=np.float64),
+        }
+        if confounded
+        else None
+    )
+    return buffers, samples
+
+
+def _pearson(x: np.ndarray, y: np.ndarray) -> float:
+    # Guard against a constant series (zero variance -> undefined corr -> 0).
+    if x.std() == 0 or y.std() == 0:
+        return 0.0
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def compute_confounding_signature(samples: dict, sigma: float | None) -> dict:
+    """Per-dataset confounding signature (docs/experimental_design.md §7).
+
+    ``corr_a_r_marginal`` = Corr(A, R); ``corr_a_r_partial_given_u`` is the
+    partial correlation of A and R given U via
+    ``(r_ar - r_au*r_ru) / sqrt((1-r_au^2)(1-r_ru^2))``. ``gate_test_passed``
+    uses the SAME thresholds as the existing gate test
+    (tests/test_confounded_collection.py): ``|marginal| > 0.2`` AND
+    ``|partial| < 0.05``.
+    """
+    a, r, u = samples["a"], samples["r"], samples["u"]
+    r_ar, r_au, r_ru = _pearson(a, r), _pearson(a, u), _pearson(r, u)
+    denom = np.sqrt((1 - r_au**2) * (1 - r_ru**2))
+    partial = float((r_ar - r_au * r_ru) / denom) if denom > 0 else 0.0
+    gate = bool(abs(r_ar) > 0.2 and abs(partial) < 0.05)
+    return {
+        "corr_a_r_marginal": float(r_ar),
+        "corr_a_r_partial_given_u": partial,
+        "gate_test_passed": gate,
+        "behavior_strength_sigma": float(sigma) if sigma is not None else None,
+    }
 
 
 def _read_eval_returns(run_dir: str) -> dict[int, float]:
@@ -267,7 +330,7 @@ def generate_offline_dataset(
             env=rollout_env,
         )
 
-    buffers = _rollout(
+    buffers, sig_samples = _rollout(
         rollout_env, collection_policy, rollout_episodes, seed, action_type
     )
     rollout_env.close()
@@ -275,12 +338,28 @@ def generate_offline_dataset(
     import minari
 
     name = dataset_id or dataset_name(env_id, tier, behavior_policy)
-    return minari.create_dataset_from_buffers(
+    ds = minari.create_dataset_from_buffers(
         dataset_id=name,
         buffer=buffers,
         env=gym.make(env_id),
         algorithm_name=f"{generator_algo}-{tier}-{behavior_policy}",
     )
+
+    # Confounding-signature metadata (docs/experimental_design.md §7): computed
+    # once per dataset and stored in the Minari metadata block. Written for every
+    # dataset for diagnostics; the four fields are None for non-confounded
+    # datasets (sig_samples is None unless the rollout env is the confounder).
+    if behavior_policy == "bias_confounded" and sig_samples is not None:
+        signature = compute_confounding_signature(sig_samples, behavior_strength)
+    else:
+        signature = {
+            "corr_a_r_marginal": None,
+            "corr_a_r_partial_given_u": None,
+            "gate_test_passed": None,
+            "behavior_strength_sigma": None,
+        }
+    ds.storage.update_metadata(signature)
+    return ds
 
 
 def _train_generator(env_id, algo, train_episodes, n_checkpoints, seed, run_dir, dev):
