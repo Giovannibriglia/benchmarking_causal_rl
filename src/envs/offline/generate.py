@@ -90,11 +90,35 @@ def assert_action_space_match(algo: str, env_action_type: str) -> None:
 # --------------------------------------------------------------------------
 # Naming + rollout env (provenance: confounded wraps the rollout env)
 # --------------------------------------------------------------------------
-def dataset_name(env_id: str, tier: str, behavior_policy: str = "agent") -> str:
-    """``generated/{env_slug}/{tier}[-{behavior}]-v0`` (behavior omitted for
-    the clean 'agent' rollout)."""
+def _sigma_suffix(behavior_strength: float) -> str:
+    """``-sigma{NNN}`` where NNN = round(sigma * 100) zero-padded to 3 digits.
+    ``round`` (not truncation) so 0.3 * 100 = 29.999... -> 030, not 029."""
+    return f"-sigma{int(round(behavior_strength * 100)):03d}"
+
+
+def dataset_name(
+    env_id: str,
+    tier: str,
+    behavior_policy: str = "agent",
+    behavior_strength: float | None = None,
+) -> str:
+    """``generated/{env_slug}/{tier}[-{behavior}][-sigma{NNN}]-v0``.
+
+    The behavior suffix is omitted for the clean 'agent' rollout. For
+    ``bias_confounded`` WITH a set ``behavior_strength`` the rollout strength
+    sigma is encoded as ``-sigma{NNN}`` (sigma x 100, 3-digit zero-padded) so
+    different sigma produce DISTINCT dataset ids — required for Cell 7's sigma
+    sweep. ``bias_confounded`` with ``behavior_strength=None`` falls back to the
+    bare ``-bias_confounded-v0`` form (the pre-PR8 placeholder, which no Cell
+    uses) so the existing convention is preserved.
+    """
     slug = env_id.split("-v")[0].lower().replace("/", "-")
-    suffix = "" if behavior_policy == "agent" else f"-{behavior_policy}"
+    if behavior_policy == "agent":
+        suffix = ""
+    elif behavior_policy == "bias_confounded" and behavior_strength is not None:
+        suffix = f"-bias_confounded{_sigma_suffix(float(behavior_strength))}"
+    else:
+        suffix = f"-{behavior_policy}"
     return f"generated/{slug}/{tier}{suffix}-v0"
 
 
@@ -337,7 +361,7 @@ def generate_offline_dataset(
 
     import minari
 
-    name = dataset_id or dataset_name(env_id, tier, behavior_policy)
+    name = dataset_id or dataset_name(env_id, tier, behavior_policy, behavior_strength)
     ds = minari.create_dataset_from_buffers(
         dataset_id=name,
         buffer=buffers,
