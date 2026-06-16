@@ -1,0 +1,35 @@
+# Cell 4 — Burned Files, discrete arm, medium tier.
+# Offline learning from a medium-tier B2 dataset with the hidden-Z layer of
+# Cell 2 applied on top: backdoor adjustment fails because the conditioning
+# variables are missing. Same dataset as Cell 3, masked at load time.
+# Refs: docs/experimental_design.md §4 Cell 4, §5 per-env masks, §3 common settings.
+
+envs:
+  - CartPole-v1
+  - LunarLander-v3
+  - Acrobot-v1
+
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/medium-v0
+  LunarLander-v3: generated/lunarlander/medium-v0
+  Acrobot-v1: generated/acrobot/medium-v0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+  LunarLander-v3: [2, 3, 5]
+  Acrobot-v1: [4, 5]
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
