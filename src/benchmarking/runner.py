@@ -773,7 +773,20 @@ class BenchmarkRunner:
                     "(likely generated before this metadata existed). Regenerate "
                     "the dataset with tools/generate_offline.py."
                 )
-            if not bool(meta["gate_test_passed"]):
+            # σ=0.0 anchor: the dataset is unconfounded BY CONSTRUCTION (marginal
+            # Corr(A,R) ≈ 0), so the gate test (which requires a non-zero marginal)
+            # is meaningless here — it is the unconfounded baseline of the σ-sweep.
+            # Skip the gate for σ=0.0 only. A missing σ field is treated as
+            # σ != 0.0 (gate must pass; no silent fallback), and every σ > 0 keeps
+            # the PR3 check unchanged. Exact == 0.0 is correct: σ is the operator's
+            # CLI float, written verbatim by PR3 — no arithmetic drift to round off.
+            if meta.get("behavior_strength_sigma") == 0.0:
+                print(
+                    "[runner] σ=0.0 anchor: skipping confounding gate test "
+                    "(dataset is the unconfounded baseline by construction).",
+                    file=sys.stderr,
+                )
+            elif not bool(meta["gate_test_passed"]):
                 raise ValueError(
                     f"Dataset '{dataset_id}' failed the confounding gate test "
                     "(gate_test_passed=False): the confounding signature "
