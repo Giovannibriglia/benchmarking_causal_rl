@@ -1,0 +1,38 @@
+# Cell 7 — Shadowed Vitals, continuous arm, σ = 0.50.
+# Offline learning from a CONFOUNDED B2 dataset rolled out under bias_confounded
+# at strength σ. Apparent training value inflates with σ while true eval return
+# decays with σ — the centerpiece of the eight-cell taxonomy.
+# Datasets must be pre-generated for THIS specific σ; see commit message.
+# Refs: docs/experimental_design.md §4 Cell 7, §7 confounding metadata, §3.
+
+envs:
+  - Pendulum-v1
+  - HalfCheetah-v5
+  - Hopper-v5
+  - Walker2d-v5
+
+algos:
+  - cql_continuous
+  - iql_continuous
+  - bcq_continuous
+
+offline_dataset:
+  Pendulum-v1: generated/pendulum/random-bias_confounded-sigma050-v0
+  HalfCheetah-v5: generated/halfcheetah/random-bias_confounded-sigma050-v0
+  Hopper-v5: generated/hopper/random-bias_confounded-sigma050-v0
+  Walker2d-v5: generated/walker2d/random-bias_confounded-sigma050-v0
+
+# Behavior config is informational here — the dataset was rolled out under
+# bias_confounded at σ=0.50; offline training reads the metadata to verify
+# the gate passed (rejecting ungate-tested datasets per §7).
+behavior_policy: bias_confounded
+behavior_strength: 0.5
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
