@@ -152,6 +152,14 @@ uv run python main.py --envs CartPole-v1 --algos offline_dqn --offline-dataset g
 
 For canonical per-env fixtures, `tools/make_{atari,cartpole,pendulum}_offline.py` build small ready-made datasets consumed the same way through `--offline-dataset`.
 
+**Bulk dataset generation.** The 56 datasets required for Cells 3/4/7/8 of the experimental matrix can be generated in a single resumable run from the repo root:
+
+```bash
+bash tools/generate_all_datasets.sh
+```
+
+It skips datasets already present in the local Minari cache, so it's safe to Ctrl-C and re-invoke (it picks up where it stopped); progress logs to `tools/.generation_progress.log`. Total wall-clock on a recent GPU laptop: ~30 minutes.
+
 ---
 
 ## Behavior policies

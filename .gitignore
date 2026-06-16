@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 d3rlpy_logs/
 references/
+# Per-operator generation logs (written by tools/generate_all_datasets.sh).
+tools/.generation_progress.log
