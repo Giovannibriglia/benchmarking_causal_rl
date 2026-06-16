@@ -1,0 +1,37 @@
+# Cell 4 — Burned Files, continuous arm, medium tier.
+# Offline learning from a medium-tier B2 dataset with the hidden-Z layer of
+# Cell 2 applied on top: backdoor adjustment fails because the conditioning
+# variables are missing. Same dataset as Cell 3, masked at load time.
+# Refs: docs/experimental_design.md §4 Cell 4, §5 per-env masks, §3 common settings.
+
+envs:
+  - Pendulum-v1
+  - HalfCheetah-v5
+  - Hopper-v5
+  - Walker2d-v5
+
+algos:
+  - cql_continuous
+  - iql_continuous
+  - bcq_continuous
+
+offline_dataset:
+  Pendulum-v1: generated/pendulum/medium-v0
+  HalfCheetah-v5: generated/halfcheetah/medium-v0
+  Hopper-v5: generated/hopper/medium-v0
+  Walker2d-v5: generated/walker2d/medium-v0
+
+mask_indices:
+  Pendulum-v1: [2]
+  HalfCheetah-v5: [8, 9]
+  Hopper-v5: [5, 6]
+  Walker2d-v5: [9, 10]
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
