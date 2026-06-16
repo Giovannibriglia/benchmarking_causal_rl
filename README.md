@@ -307,12 +307,12 @@ uv run python plot.py --run benchmark_YYYYMMDD_HHMMSS --split critic --x-axis ep
 | Flag            | Description |
 | --------------- | ----------- |
 | `--run`         | Run folder name inside `runs/` |
-| `--split`       | `train`, `eval`, `critic`, `per_context`, `both`, or `all` |
+| `--split`       | `train`, `eval`, `critic`, `per_context`, `per_context_final`, `value_trace`, `both`, or `all` |
 | `--x-axis`      | `episodes` or `frames` |
 | `--aggregation` | `mean` or `iqm` |
 | `--formats`     | Output formats (e.g. `png pdf`) |
 
-`--split both` plots `train` + `eval` (plus critic metrics if the run was in `critic_ablation` mode); `--split critic` plots only `critic_ablation_metrics.csv`; `--split per_context` renders per-context return bands from `eval_per_context.csv` for masked runs, skipped if the file is absent; `--split all` plots all available splits. For offline runs the checkpoint axis is labelled "Training epochs" (offline learners have gradient epochs, not env episodes). Aggregation is either `mean` (mean ± standard deviation) or `iqm` (interquartile mean ± IQR-STD). Outputs land in `outputs/<run_name>/plots/` and `outputs/<run_name>/tables/`.
+`--split both` plots `train` + `eval` (plus critic metrics if the run was in `critic_ablation` mode); `--split critic` plots only `critic_ablation_metrics.csv`; `--split per_context` renders per-context return bands from `eval_per_context.csv` for masked runs, skipped if the file is absent; `--split per_context_final` renders the final-checkpoint per-context return distribution from `eval_per_context.csv` (cleaner companion to `per_context`), skipped if the file is absent; `--split value_trace` renders per-config apparent-vs-true curves and a σ-sweep panel from `offline_value_trace.csv` for confounded offline runs, skipped if the file is absent; `--split all` plots all available splits. For offline runs the checkpoint axis is labelled "Training epochs" (offline learners have gradient epochs, not env episodes). Aggregation is either `mean` (mean ± standard deviation) or `iqm` (interquartile mean ± IQR-STD). Outputs land in `outputs/<run_name>/plots/` and `outputs/<run_name>/tables/`.
 
 ---
 

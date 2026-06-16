@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -215,6 +216,424 @@ def render_eval_per_context(
             fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
         plt.close(fig)
         _per_context_table(sub, env, algo, outdir)
+
+
+# ---------------------------------------------------------------------------
+# Cell 7/8 value-trace renderers (offline_value_trace.csv) + the per-context
+# final-checkpoint snapshot (eval_per_context.csv). All gated on file
+# existence; non-relevant runs are unaffected.
+# ---------------------------------------------------------------------------
+def _sigma_from_run(run_dir: Path) -> Optional[float]:
+    """The confounding strength σ for a run, or None.
+
+    Reads it from the run-dir name first (``confounded_sigma_050_*`` -> 0.50),
+    then falls back to the σ-encoded id in config.yaml's offline_dataset map
+    (``...-sigma050-v0`` -> 0.50). config.yaml does not store behavior_strength
+    directly, so these two encodings are the source of truth.
+    """
+    run_dir = Path(run_dir)
+    m = re.search(r"sigma_?(\d{3})", run_dir.name)
+    if m:
+        return int(m.group(1)) / 100.0
+    cfg_path = run_dir / "config.yaml"
+    if cfg_path.exists():
+        try:
+            cfg = yaml.safe_load(cfg_path.read_text())
+        except Exception:
+            cfg = None
+        if isinstance(cfg, dict):
+            ds = (cfg.get("env", {}) or {}).get("offline_dataset")
+            ids = list(ds.values()) if isinstance(ds, dict) else ([ds] if ds else [])
+            for did in ids:
+                mm = re.search(r"-sigma(\d{3})-", str(did))
+                if mm:
+                    return int(mm.group(1)) / 100.0
+    return None
+
+
+def _final_true_return(ev: pd.DataFrame, env: str, algo: str) -> float:
+    """Final-checkpoint true eval return for (env, algo) from eval_metrics, else NaN."""
+    if ev.empty or "eval_return_mean" not in ev.columns:
+        return float("nan")
+    esub = ev[(ev["environment"] == env) & (ev["algorithm"] == algo)]
+    if esub.empty:
+        return float("nan")
+    return float(esub.loc[esub["episode"].idxmax()]["eval_return_mean"])
+
+
+def _value_trace_table(
+    vt_sub: pd.DataFrame, ev: pd.DataFrame, env: str, algo: str, outdir: Path
+) -> None:
+    """Per-(env, algo) table: final apparent Q, final true return, their gap."""
+    vt_sub = vt_sub.sort_values("epoch")
+    final_apparent = float(vt_sub.iloc[-1]["apparent_value_iqm"])
+    final_true = _final_true_return(ev, env, algo)
+    gap = final_apparent - final_true if final_true == final_true else float("nan")
+
+    def fmt(x):
+        return f"{x:.3f}" if x == x else "--"
+
+    header = [
+        "\\textbf{final apparent Q}",
+        "\\textbf{final true return}",
+        "\\textbf{gap (app-true)}",
+        "\\textbf{n epochs}",
+    ]
+    lines = [
+        "\\begin{table}[!t]",
+        "\\centering",
+        f"\\caption{{value trace ({_escape_latex(env)}, {_escape_latex(algo)}, "
+        "final checkpoint)}}",
+        f"\\label{{tab:value_trace_{algo}_{env.replace('/', '-')}}}",
+        "\\begin{tabular}{rrrr}",
+        " & ".join(header) + " \\\\",
+        "\\hline\\hline",
+        " & ".join([fmt(final_apparent), fmt(final_true), fmt(gap), str(len(vt_sub))])
+        + " \\\\",
+        "\\end{tabular}",
+        "\\end{table}",
+    ]
+    table_dir = outdir / "tables" / "value_trace" / "per_config"
+    _ensure_dir(table_dir)
+    (table_dir / f"{algo}_{env.replace('/', '-')}.tex").write_text("\n".join(lines))
+
+
+def render_value_trace_per_config(
+    run_dir: Path,
+    outdir: Path,
+    x_axis: str,
+    formats: Iterable[str],
+    x_label: str,
+    rollout_len: int,
+) -> None:
+    """Per-config two-curve overlay (Cell 7/8): apparent Q (solid) vs true eval
+    return (dashed) over training epochs, one figure per (env, algo). The σ-wedge
+    is the gap between the curves. apparent Q is pre-aggregated by the runner;
+    true return is joined from eval_metrics.csv on (epoch == episode, algo, env).
+    Gated on offline_value_trace.csv existence — absent => skip with a log line.
+    """
+    from src.benchmarking.runner import OFFLINE_VALUE_TRACE_COLUMNS
+
+    csv_path = Path(run_dir) / "offline_value_trace.csv"
+    if not csv_path.exists():
+        print("[info] No value-trace data for this run; skipping value_trace split.")
+        return
+    vt = pd.read_csv(csv_path)
+    if vt.empty:
+        print("[info] offline_value_trace.csv is empty; skipping value_trace split.")
+        return
+    missing = [c for c in OFFLINE_VALUE_TRACE_COLUMNS if c not in vt.columns]
+    if missing:
+        print(f"[warn] offline_value_trace.csv missing columns {missing}; skipping.")
+        return
+
+    eval_path = Path(run_dir) / "eval_metrics.csv"
+    ev = pd.read_csv(eval_path) if eval_path.exists() else pd.DataFrame()
+    sigma = _sigma_from_run(run_dir)
+
+    for (env, algo), sub in vt.groupby(["environment", "algorithm"]):
+        sub = sub.sort_values("epoch")
+        x = sub["epoch"] * rollout_len if x_axis == "frames" else sub["epoch"]
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        ap = sub["apparent_value_iqm"].to_numpy()
+        ap_s = sub["apparent_value_iqr_std"].fillna(0).to_numpy()
+        c_ap = get_algo_color(f"{algo}:apparent")
+        ax.plot(x, ap, label="apparent Q", color=c_ap, linewidth=1.2)
+        if len(sub) >= 2:
+            ax.fill_between(x, ap - ap_s, ap + ap_s, color=c_ap, alpha=0.15)
+
+        true_plotted = False
+        if not ev.empty and {"episode", "eval_return_mean"}.issubset(ev.columns):
+            esub = ev[(ev["environment"] == env) & (ev["algorithm"] == algo)]
+            if not esub.empty:
+                merged = sub.merge(
+                    esub, left_on="epoch", right_on="episode", how="left"
+                )
+                xt = (
+                    merged["epoch"] * rollout_len
+                    if x_axis == "frames"
+                    else merged["epoch"]
+                )
+                tr = merged["eval_return_mean"].to_numpy()
+                c_tr = get_algo_color(f"{algo}:true")
+                ax.plot(
+                    xt,
+                    tr,
+                    label="true return",
+                    color=c_tr,
+                    linestyle="--",
+                    linewidth=1.2,
+                )
+                if "eval_return_std" in merged and len(merged) >= 2:
+                    tr_s = merged["eval_return_std"].fillna(0).to_numpy()
+                    ax.fill_between(xt, tr - tr_s, tr + tr_s, color=c_tr, alpha=0.10)
+                true_plotted = True
+        if not true_plotted:
+            print(
+                f"[info] No matching eval data for {env}/{algo}; plotting apparent Q only."
+            )
+
+        title = f"apparent Q vs true return - {env} - {algo}"
+        if sigma is not None:
+            title += f" (σ={sigma:g})"
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("value")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+        fig.tight_layout()
+        subdir = outdir / "plots" / "value_trace" / "per_config"
+        _ensure_dir(subdir)
+        fname = subdir / f"{algo}_{env.replace('/', '-')}"
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+        _value_trace_table(sub, ev, env, algo, outdir)
+
+
+def _collect_sigma_sweep(run_dir: Path):
+    """Walk the cell directory for sibling runs of the same arm, pick the latest
+    run per σ, and collect final-checkpoint (apparent Q, true return) per
+    (env, algo). Returns ``(records, sigma_dirs)`` where records maps
+    (env, algo) -> sorted list of (σ, apparent, true) and sigma_dirs maps σ -> dir.
+    Empty records when no sibling value-trace data exists.
+    """
+    run_dir = Path(run_dir)
+    name = run_dir.name
+    if "_discrete_" in name:
+        arm = "discrete"
+    elif "_continuous_" in name:
+        arm = "continuous"
+    else:
+        return {}, {}
+
+    sigma_dirs: Dict[float, Path] = {}
+    for d in sorted(run_dir.parent.glob(f"confounded_sigma_*_{arm}_*")):
+        if not (d / "offline_value_trace.csv").exists():
+            continue
+        s = _sigma_from_run(d)
+        if s is None:
+            continue
+        if s in sigma_dirs:
+            keep, drop = (
+                (d, sigma_dirs[s])
+                if d.name > sigma_dirs[s].name
+                else (sigma_dirs[s], d)
+            )
+            print(
+                f"[info] σ-sweep: multiple runs at σ={s:g}; using {keep.name}, "
+                f"skipping {drop.name}."
+            )
+            sigma_dirs[s] = keep
+        else:
+            sigma_dirs[s] = d
+
+    records: Dict[tuple, list] = {}
+    for s in sorted(sigma_dirs):
+        d = sigma_dirs[s]
+        vt = pd.read_csv(d / "offline_value_trace.csv")
+        ev = (
+            pd.read_csv(d / "eval_metrics.csv")
+            if (d / "eval_metrics.csv").exists()
+            else pd.DataFrame()
+        )
+        for (env, algo), sub in vt.groupby(["environment", "algorithm"]):
+            apparent = float(sub.loc[sub["epoch"].idxmax()]["apparent_value_iqm"])
+            records.setdefault((env, algo), []).append(
+                (s, apparent, _final_true_return(ev, env, algo))
+            )
+    for k in records:
+        records[k] = sorted(records[k])
+    return records, sigma_dirs
+
+
+def _plot_sigma_sweep_ax(ax, pts, algo: str) -> bool:
+    """Draw the σ-sweep curves (apparent Q + true return) on ``ax``. Returns True
+    iff the σ=0.0 unconfounded anchor was annotated (axvline at σ=0)."""
+    pts = sorted(pts)
+    xs = [p[0] for p in pts]
+    ax.plot(
+        xs,
+        [p[1] for p in pts],
+        marker="o",
+        label="apparent Q",
+        color=get_algo_color(f"{algo}:apparent"),
+    )
+    ax.plot(
+        xs,
+        [p[2] for p in pts],
+        marker="s",
+        label="true return",
+        color=get_algo_color(f"{algo}:true"),
+    )
+    anchor = 0.0 in xs
+    if anchor:
+        ax.axvline(0.0, linestyle="--", color="gray", alpha=0.6, linewidth=0.8)
+        ax.text(
+            0.0,
+            1.0,
+            " unconfounded anchor",
+            transform=ax.get_xaxis_transform(),
+            fontsize=7,
+            va="top",
+            color="gray",
+        )
+    if xs:
+        ax.set_xticks(xs)
+    return anchor
+
+
+def _sigma_sweep_table(pts, env: str, algo: str, outdir: Path) -> None:
+    def fmt(x):
+        return f"{x:.3f}" if x == x else "--"
+
+    header = [
+        "\\textbf{σ}",
+        "\\textbf{apparent Q}",
+        "\\textbf{true return}",
+        "\\textbf{gap}",
+    ]
+    lines = [
+        "\\begin{table}[!t]",
+        "\\centering",
+        f"\\caption{{σ-sweep ({_escape_latex(env)}, {_escape_latex(algo)})}}",
+        f"\\label{{tab:sigma_sweep_{algo}_{env.replace('/', '-')}}}",
+        "\\begin{tabular}{rrrr}",
+        " & ".join(header) + " \\\\",
+        "\\hline\\hline",
+    ]
+    for s, ap, tr in sorted(pts):
+        gap = ap - tr if tr == tr else float("nan")
+        lines.append(" & ".join([f"{s:g}", fmt(ap), fmt(tr), fmt(gap)]) + " \\\\")
+    lines += ["\\end{tabular}", "\\end{table}"]
+    table_dir = outdir / "tables" / "value_trace" / "sigma_sweep"
+    _ensure_dir(table_dir)
+    (table_dir / f"{algo}_{env.replace('/', '-')}.tex").write_text("\n".join(lines))
+
+
+def render_value_trace_sigma_sweep(
+    run_dir: Path, outdir: Path, formats: Iterable[str]
+) -> None:
+    """σ-sweep panel (Cell 7/8 paper figure): final-checkpoint apparent Q and true
+    return as a function of σ across sibling runs in the same cell directory, one
+    figure per (env, algo). σ=0.0 is annotated as the unconfounded anchor. Renders
+    partial sweeps (with a log line) and does not error on incomplete sweeps. No
+    cross-env figure (envs have different return scales)."""
+    records, sigma_dirs = _collect_sigma_sweep(run_dir)
+    if not records:
+        print("[info] value_trace σ-sweep: no sibling value-trace runs; skipping.")
+        return
+    if len(sigma_dirs) == 1:
+        print("[info] Only 1 σ-value found in sibling runs; σ-sweep is incomplete.")
+
+    for (env, algo), pts in records.items():
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        _plot_sigma_sweep_ax(ax, pts, algo)
+        ax.set_title(f"σ-sweep: apparent Q vs true return - {env} - {algo}")
+        ax.set_xlabel("σ (confounding strength)")
+        ax.set_ylabel("final-checkpoint value")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+        fig.tight_layout()
+        subdir = outdir / "plots" / "value_trace" / "sigma_sweep"
+        _ensure_dir(subdir)
+        fname = subdir / f"{algo}_{env.replace('/', '-')}"
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+        _sigma_sweep_table(pts, env, algo, outdir)
+
+
+def _per_context_final_table(
+    fin: pd.DataFrame, env: str, algo: str, outdir: Path
+) -> None:
+    header = [
+        "\\textbf{bin}",
+        "\\textbf{midpoint}",
+        "\\textbf{n}",
+        "\\textbf{IQM}",
+        "\\textbf{IQR-STD}",
+    ]
+    lines = [
+        "\\begin{table}[!t]",
+        "\\centering",
+        f"\\caption{{final-checkpoint per-context return ({_escape_latex(env)}, "
+        f"{_escape_latex(algo)})}}",
+        f"\\label{{tab:per_context_final_{algo}_{env.replace('/', '-')}}}",
+        "\\begin{tabular}{rrrrr}",
+        " & ".join(header) + " \\\\",
+        "\\hline\\hline",
+    ]
+    for _, r in fin.iterrows():
+        lines.append(
+            " & ".join(
+                [
+                    str(int(r["context_bin"])),
+                    f"{float(r['context_midpoint']):.3f}",
+                    str(int(r["n_episodes_in_bin"])),
+                    f"{float(r['return_iqm']):.3f}",
+                    f"{float(r['return_iqr_std']):.3f}",
+                ]
+            )
+            + " \\\\"
+        )
+    lines += ["\\end{tabular}", "\\end{table}"]
+    table_dir = outdir / "tables" / "per_context_final"
+    _ensure_dir(table_dir)
+    (table_dir / f"{algo}_{env.replace('/', '-')}.tex").write_text("\n".join(lines))
+
+
+def render_eval_per_context_final(
+    run_dir: Path, outdir: Path, formats: Iterable[str]
+) -> None:
+    """Final-checkpoint per-context snapshot (Cell 2/4): return vs context-value
+    midpoint at the LAST checkpoint only, one figure per (env, algo). Unlike the
+    over-training per_context view, bins are fixed at one checkpoint so the x-axis
+    is a meaningful context-value space. Gated on eval_per_context.csv existence.
+    """
+    from src.benchmarking.runner import EVAL_PER_CONTEXT_COLUMNS
+
+    csv_path = Path(run_dir) / "eval_per_context.csv"
+    if not csv_path.exists():
+        print(
+            "[info] No per-context data for this run; skipping per_context_final split."
+        )
+        return
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        print("[info] eval_per_context.csv is empty; skipping per_context_final split.")
+        return
+    missing = [c for c in EVAL_PER_CONTEXT_COLUMNS if c not in df.columns]
+    if missing:
+        print(f"[warn] eval_per_context.csv missing columns {missing}; skipping.")
+        return
+
+    df["context_midpoint"] = (df["context_value_low"] + df["context_value_high"]) / 2.0
+    for (env, algo), sub in df.groupby(["environment", "algorithm"]):
+        ep_max = sub["episode"].max()
+        fin = sub[sub["episode"] == ep_max].sort_values("context_midpoint")
+        if fin.empty:
+            continue
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        x = fin["context_midpoint"].to_numpy()
+        y = fin["return_iqm"].to_numpy()
+        spread = fin["return_iqr_std"].fillna(0).to_numpy()
+        color = get_algo_color(algo)
+        ax.plot(x, y, marker="o", color=color, label=algo)
+        ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.15)
+        ax.set_title(f"final-checkpoint per-context return - {env} - {algo}")
+        ax.set_xlabel("context value (bin midpoint)")
+        ax.set_ylabel("return (IQM ± IQR-STD)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+        fig.tight_layout()
+        subdir = outdir / "plots" / "per_context_final"
+        _ensure_dir(subdir)
+        fname = subdir / f"{algo}_{env.replace('/', '-')}"
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+        _per_context_final_table(fin, env, algo, outdir)
 
 
 def discover_metrics(df: pd.DataFrame) -> List[Tuple[str, str, Optional[str]]]:
@@ -746,6 +1165,19 @@ def run_plotting(
             rollout_len,
         )
 
+    # Value trace (Cells 7-8): per-config apparent-vs-true overlay + σ-sweep
+    # panel. Gated on offline_value_trace.csv existence (confounded offline runs).
+    if split in ("value_trace", "all"):
+        render_value_trace_per_config(
+            Path("runs") / run_name, outdir, x_axis, formats, x_label, rollout_len
+        )
+        render_value_trace_sigma_sweep(Path("runs") / run_name, outdir, formats)
+
+    # Final-checkpoint per-context snapshot (Cells 2/4): the clean companion to
+    # the over-training per_context view. Gated on eval_per_context.csv.
+    if split in ("per_context_final", "all"):
+        render_eval_per_context_final(Path("runs") / run_name, outdir, formats)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -754,7 +1186,16 @@ def main():
     parser.add_argument("--run", required=True, help="Run folder name under runs/")
     parser.add_argument(
         "--split",
-        choices=["train", "eval", "critic", "per_context", "both", "all"],
+        choices=[
+            "train",
+            "eval",
+            "critic",
+            "per_context",
+            "per_context_final",
+            "value_trace",
+            "both",
+            "all",
+        ],
         default="both",
         help="Which split(s) to plot",
     )
