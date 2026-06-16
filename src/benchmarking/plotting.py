@@ -78,6 +78,145 @@ def _get_rollout_len(cfg: dict) -> int:
     return 1
 
 
+def _resolve_x_label(x_axis: str, train_df: pd.DataFrame) -> str:
+    """X-axis label, offline-aware.
+
+    Offline runs (the PR3 signature: ``train_return_mean`` is all-empty because
+    offline learners have gradient EPOCHS, not env episodes) plot the epoch index
+    on the ``episode`` axis, so the label reads "Training epochs", not "Episodes".
+    Online runs are unchanged. ``frames`` is regime-agnostic. Missing
+    train_metrics.csv (empty df) falls back to the online label without crashing.
+    """
+    if x_axis == "frames":
+        return "Frames"
+    is_offline = (
+        not train_df.empty
+        and "train_return_mean" in train_df.columns
+        and train_df["train_return_mean"].isna().all()
+    )
+    return "Training epochs" if is_offline else "Episodes"
+
+
+def _per_context_table(sub: pd.DataFrame, env: str, algo: str, outdir: Path) -> None:
+    """One LaTeX table per (env, algo): the per-context return distribution at the
+    final checkpoint (columns from EVAL_PER_CONTEXT_COLUMNS)."""
+    ep_max = sub["episode"].max()
+    fin = sub[sub["episode"] == ep_max].sort_values("context_bin")
+    if fin.empty:
+        return
+    header = [
+        "\\textbf{bin}",
+        "\\textbf{low}",
+        "\\textbf{high}",
+        "\\textbf{n}",
+        "\\textbf{IQM}",
+        "\\textbf{IQR-STD}",
+    ]
+    lines = [
+        "\\begin{table}[!t]",
+        "\\centering",
+        f"\\caption{{per-context return ({_escape_latex(env)}, "
+        f"{_escape_latex(algo)}, final checkpoint)}}",
+        f"\\label{{tab:per_context_{algo}_{env.replace('/', '-')}}}",
+        "\\begin{tabular}{rrrrrr}",
+        " & ".join(header) + " \\\\",
+        "\\hline\\hline",
+    ]
+    for _, r in fin.iterrows():
+        lines.append(
+            " & ".join(
+                [
+                    str(int(r["context_bin"])),
+                    f"{float(r['context_value_low']):.3f}",
+                    f"{float(r['context_value_high']):.3f}",
+                    str(int(r["n_episodes_in_bin"])),
+                    f"{float(r['return_iqm']):.3f}",
+                    f"{float(r['return_iqr_std']):.3f}",
+                ]
+            )
+            + " \\\\"
+        )
+    lines += ["\\end{tabular}", "\\end{table}"]
+    table_dir = outdir / "tables" / "per_context"
+    _ensure_dir(table_dir)
+    with (table_dir / f"{algo}_{env.replace('/', '-')}.tex").open("w") as f:
+        f.write("\n".join(lines))
+
+
+def render_eval_per_context(
+    run_dir: Path,
+    outdir: Path,
+    x_axis: str,
+    aggregation: str,
+    formats: Iterable[str],
+    x_label: str,
+    rollout_len: int,
+) -> None:
+    """Render the Cell-2 per-context return bands from ``eval_per_context.csv``.
+
+    One figure per (algorithm, environment): one line+band per ``context_bin``
+    (center = ``return_iqm``, shaded spread = ``return_iqr_std``) over the
+    checkpoint axis. The CSV is pre-aggregated by the runner, so ``aggregation``
+    is informational here, not computational. Gated on file existence — absent =>
+    a no-op with a log line (no fallback; this schema has no sensible substitute).
+
+    No cross-env "overall" figure: bins are per-checkpoint empirical ranges that
+    differ by env (each env masks different velocity components on different
+    scales), so there is no common bin axis to aggregate over. Per-env figures
+    are the Cell-2 deliverable.
+    """
+    import matplotlib
+
+    from src.benchmarking.runner import EVAL_PER_CONTEXT_COLUMNS
+
+    csv_path = Path(run_dir) / "eval_per_context.csv"
+    if not csv_path.exists():
+        print("[info] No per-context data for this run; skipping per_context split.")
+        return
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        print("[info] eval_per_context.csv is empty; skipping per_context split.")
+        return
+    missing = [c for c in EVAL_PER_CONTEXT_COLUMNS if c not in df.columns]
+    if missing:
+        print(f"[warn] eval_per_context.csv missing columns {missing}; skipping.")
+        return
+
+    df["x"] = df["episode"] * rollout_len if x_axis == "frames" else df["episode"]
+    n_bins = int(df["context_bin"].max()) + 1
+    cmap = matplotlib.colormaps["viridis"]
+
+    for (env, algo), sub in df.groupby(["environment", "algorithm"]):
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        for b in sorted(sub["context_bin"].unique()):
+            bsub = sub[sub["context_bin"] == b].sort_values("x")
+            x = bsub["x"].to_numpy()
+            y = bsub["return_iqm"].to_numpy()
+            spread = bsub["return_iqr_std"].fillna(0).to_numpy()
+            color = cmap(int(b) / max(1, n_bins - 1))
+            ax.plot(x, y, label=f"bin {int(b)}", color=color, linewidth=1.0)
+            if len(bsub) >= 2:
+                ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.15)
+        ax.set_title(f"per-context return - {env} - {algo}")
+        ax.set_xlabel(x_label)
+        ax.set_ylabel("return (IQM ± IQR-STD)")
+        ax.grid(True, alpha=0.3)
+        ax.legend(
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            fontsize=7,
+            title="context_bin",
+        )
+        fig.tight_layout()
+        subdir = outdir / "plots" / "per_context" / "per_env"
+        _ensure_dir(subdir)
+        fname = subdir / f"{algo}_{env.replace('/', '-')}"
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+        _per_context_table(sub, env, algo, outdir)
+
+
 def discover_metrics(df: pd.DataFrame) -> List[Tuple[str, str, Optional[str]]]:
     """Return list of (logical_metric, mean_col, std_col_or_None)."""
     if df.empty:
@@ -497,7 +636,8 @@ def run_plotting(
     config, train_df, eval_df, critic_df = load_run(run_name)
     rollout_len = _get_rollout_len(config)
     outdir = Path(outdir) / run_name
-    x_label = "Frames" if x_axis == "frames" else "Episodes"
+    # Offline-aware: offline runs label the checkpoint axis "Training epochs".
+    x_label = _resolve_x_label(x_axis, train_df)
     mode = (
         config.get("training", {}).get("mode", "benchmark")
         if isinstance(config, dict)
@@ -593,6 +733,19 @@ def run_plotting(
                 overall, metric_name, outdir, formats, x_label, overall=True
             )
 
+    # Per-context (Cell 2): gated on eval_per_context.csv existence. Skips
+    # silently for non-masked runs (no file). Included in the "all" umbrella.
+    if split in ("per_context", "all"):
+        render_eval_per_context(
+            Path("runs") / run_name,
+            outdir,
+            x_axis,
+            aggregation,
+            formats,
+            x_label,
+            rollout_len,
+        )
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -601,7 +754,7 @@ def main():
     parser.add_argument("--run", required=True, help="Run folder name under runs/")
     parser.add_argument(
         "--split",
-        choices=["train", "eval", "critic", "both", "all"],
+        choices=["train", "eval", "critic", "per_context", "both", "all"],
         default="both",
         help="Which split(s) to plot",
     )
