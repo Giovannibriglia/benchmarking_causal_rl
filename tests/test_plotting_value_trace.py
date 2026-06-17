@@ -199,6 +199,37 @@ def test_per_algo_y_axes_are_independent():
     matplotlib.pyplot.close(fig)
 
 
+def test_sigma_sweep_filters_by_arm_tag(tmp_path, capsys):
+    # A cell dir holding both gated runs (the post-PR#34 Cell 7/8 case) and stray
+    # non-gated runs (leftovers from the original sweep). They share the arm token
+    # but have different env sets, so the σ-sweep must never aggregate across arms.
+    cell = tmp_path / "runs" / "rl_regimes" / "cell_7"
+    nnn = {0.0: "000", 0.25: "025", 0.5: "050", 0.75: "075", 1.0: "100"}
+    gated = {}
+    for i, s in enumerate([0.0, 0.25, 0.5, 0.75, 1.0]):
+        d = cell / f"confounded_sigma_{nnn[s]}_discrete_gated_2026061700000{i}"
+        _write_run(d, value_trace=True, eval_=True)
+        gated[s] = d
+    nongated = {}
+    for i, s in enumerate([0.25, 0.5, 0.75]):
+        d = cell / f"confounded_sigma_{nnn[s]}_discrete_2026061600000{i}"
+        _write_run(d, value_trace=True, eval_=True)
+        nongated[s] = d
+
+    # current run gated -> only the 5 gated σ values aggregate
+    _, sigma_dirs = _collect_sigma_sweep(gated[0.5])
+    assert sorted(sigma_dirs) == [0.0, 0.25, 0.5, 0.75, 1.0]
+    assert all("_gated_" in d.name for d in sigma_dirs.values())
+    assert not any(d in sigma_dirs.values() for d in nongated.values())
+    assert "excluding 3 non-gated siblings" in capsys.readouterr().out
+
+    # current run non-gated -> only the 3 non-gated σ values aggregate
+    _, sigma_dirs = _collect_sigma_sweep(nongated[0.5])
+    assert sorted(sigma_dirs) == [0.25, 0.5, 0.75]
+    assert all("_gated_" not in d.name for d in sigma_dirs.values())
+    assert "excluding 5 gated siblings" in capsys.readouterr().out
+
+
 # --------------------------------------------------------------------------
 # Renderer C — final-checkpoint per-context snapshot
 # --------------------------------------------------------------------------
