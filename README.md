@@ -27,11 +27,18 @@ Optional environment families are opt-in extras:
 
 ```bash
 uv sync --extra atari      # ALE/* Atari envs (ale-py + opencv)
+uv sync --extra box2d      # Box2D envs (LunarLander, BipedalWalker)
 uv sync --extra minigrid   # MiniGrid envs
-uv sync --extra mujoco     # MuJoCo envs
+uv sync --extra mujoco     # MuJoCo envs (HalfCheetah, Hopper, Walker2d, …)
 uv sync --extra robotics   # gymnasium-robotics (Fetch/Hand)
 uv sync --extra offline    # Minari offline stack (load + generate)
 ```
+
+Combine extras as needed, e.g. `uv sync --extra box2d --extra mujoco` for the full
+continuous-control surface. Box2D additionally needs `swig` at build time when no
+`box2d-py` wheel exists for your platform; it is declared in the `box2d` extra, but
+if the build still fails install it from your system package manager first
+(`sudo apt-get install -y swig`, or the equivalent) before re-running `uv sync`.
 
 If you cannot use uv, `requirements.txt` is a generated export of the base runtime for a plain virtualenv:
 

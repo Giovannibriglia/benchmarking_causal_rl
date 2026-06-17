@@ -37,6 +37,10 @@ Homepage = "https://github.com/Giovannibriglia/benchmarking_causal_rl"
 # ale-py provides the ALE/* envs + bundled ROMs; opencv is AtariPreprocessing's
 # resize backend.
 atari = ["ale-py==0.11.2", "opencv-python"]
+# Box2D envs (LunarLander, BipedalWalker). gymnasium[box2d] pulls box2d-py +
+# pygame; swig is box2d-py's build-time dependency (only needed when no wheel is
+# available for the platform, but declared so the extra is self-sufficient).
+box2d = ["gymnasium[box2d]==1.2.3", "swig"]
 minigrid = ["minigrid"]
 mujoco = ["mujoco==3.4.0"]
 robotics = ["gymnasium-robotics==1.4.2"]
