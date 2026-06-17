@@ -405,9 +405,20 @@ def _collect_sigma_sweep(run_dir: Path):
     else:
         return {}, {}
 
+    # Arm-tag filter (recon §1): gated runs aggregate only with gated siblings and
+    # non-gated only with non-gated. Gated/non-gated runs of the same arm share the
+    # arm token (e.g. ``..._discrete_gated_<ts>`` and ``..._discrete_<ts>`` both
+    # match the glob) but have different env sets, so mixing them in one σ-sweep
+    # panel is empirically wrong. Symmetric in both directions.
+    is_gated = "_gated_" in name
+
     sigma_dirs: Dict[float, Path] = {}
+    excluded = 0
     for d in sorted(run_dir.parent.glob(f"confounded_sigma_*_{arm}_*")):
         if not (d / "offline_value_trace.csv").exists():
+            continue
+        if ("_gated_" in d.name) != is_gated:
+            excluded += 1
             continue
         s = _sigma_from_run(d)
         if s is None:
@@ -425,6 +436,14 @@ def _collect_sigma_sweep(run_dir: Path):
             sigma_dirs[s] = keep
         else:
             sigma_dirs[s] = d
+
+    if excluded:
+        tag = "gated" if is_gated else "non-gated"
+        other = "non-gated" if is_gated else "gated"
+        print(
+            f"[info] σ-sweep: excluding {excluded} {other} siblings (current run "
+            f"is {tag}; only {tag} sibling runs are aggregated)."
+        )
 
     records: Dict[tuple, list] = {}
     for s in sorted(sigma_dirs):
