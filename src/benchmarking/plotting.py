@@ -750,6 +750,42 @@ def _iqr_std(values: np.ndarray) -> float:
     return float((q3 - q1) / 1.349)
 
 
+def _collapse_envs(
+    df: pd.DataFrame, group_cols: List[str], aggregation: str
+) -> pd.DataFrame:
+    """Collapse the dimension(s) not in ``group_cols`` by aggregating per group.
+
+    A single flag-aware reducer for every cross-dimension collapse outside the
+    cross-seed step. Two distinct uses share it:
+
+    - Cross-environment "overall" collapse (train / eval / critic overall
+      views, and the LaTeX "Overall" table row): ``group_cols`` keeps
+      ``algorithm`` (and ``critic`` where present) plus ``x``; the
+      ``environment`` dimension is collapsed.
+    - Critic-dimension averaging (critic views): ``group_cols`` keeps
+      ``environment, algorithm, x`` and the ``critic`` dimension is collapsed.
+
+    For the critic *overall* figure the two are applied in order — average
+    critics within ``(environment, algorithm, x)`` first, then collapse the
+    environment dimension — so the env collapse operates on already
+    critic-averaged centers.
+
+    Under ``aggregation='iqm'`` the per-group center is the IQM of the input
+    centers; under ``'mean'`` it is their arithmetic mean. The spread is the
+    mean of the per-group spreads regardless of the flag, matching
+    ``compute_aggregates``'s cross-seed spread convention (mean of per-seed
+    stds). The center stat honors ``--aggregation``; the spread does not.
+    """
+    if df.empty:
+        return df
+    center_fn = _iqm if aggregation == "iqm" else "mean"
+    return (
+        df.groupby(group_cols)
+        .agg({"center": center_fn, "spread": "mean"})
+        .reset_index()
+    )
+
+
 def compute_aggregates(
     df: pd.DataFrame,
     metric_name: str,
@@ -759,6 +795,27 @@ def compute_aggregates(
     aggregation: str,
     rollout_len: int,
 ) -> pd.DataFrame:
+    """Cross-seed aggregate per ``(environment, algorithm, x)`` -> center+spread.
+
+    The ``center`` honors ``--aggregation``: IQM under ``iqm``, arithmetic mean
+    under ``mean``.
+
+    The ``spread`` is deliberately NOT symmetric with the center when a
+    ``std_col`` is available (the train/eval case): it is the mean of the
+    per-seed recorded stds, regardless of the flag. This is intentional — the
+    runner records a per-seed std (within-seed return variability), which is the
+    quantity the band is meant to convey, so the band reads as "typical
+    within-seed spread" rather than the dispersion of the IQM estimator across
+    seeds. It is *not* the IQR-std of pooled raw returns, because the raw
+    returns are not retained at this stage — only the per-seed (mean, std)
+    summaries are. When no ``std_col`` exists (the critic case), the spread does
+    follow the flag (std under ``mean``, IQR-std under ``iqm``) to stay matched
+    with the center.
+
+    If a future change wants center+spread to share a statistical method
+    (IQR-std under ``iqm``), it requires retaining raw returns or a schema
+    change — see the follow-up issue forward-referenced from the PR description.
+    """
     if df.empty or mean_col not in df.columns:
         return pd.DataFrame()
 
@@ -906,46 +963,63 @@ def plot_critic_metric(
     formats: Iterable[str],
     x_label: str,
     overall: bool = False,
+    aggregation: str = "iqm",
+    n_envs: int = 0,
 ):
+    """Critic-ablation renderer — algos overlaid as colored lines.
+
+    The ``critic`` dimension is averaged out *upstream* by the caller (via
+    ``_collapse_envs`` over ``(environment, algorithm, x)``), so ``aggregated``
+    carries one curve per algorithm, not per critic.
+
+    per_env (``overall=False``): one figure per ``(metric, environment)``;
+    ``aggregated`` is indexed by ``(environment, algorithm, x)``. Filename
+    ``plots/critic/per_env/<metric>/<env>.png``.
+
+    overall (``overall=True``): one figure per ``metric``; ``aggregated`` is the
+    env-collapsed frame indexed by ``(algorithm, x)``. Filename
+    ``plots/critic/overall/<metric>.png``. A subtitle records how many
+    environments were averaged and under which ``--aggregation`` flag.
+    """
     if aggregated.empty:
         print(
             f"[warn] no critic data to plot for {metric} ({'overall' if overall else 'per-env'})"
         )
         return
 
-    if overall:
-        keys = [("overall", algo) for algo in sorted(aggregated["algorithm"].unique())]
-    else:
-        keys = sorted(
-            {
-                (env, algo)
-                for env, algo in aggregated[["environment", "algorithm"]].values
-            }
-        )
-
-    for env, algo in keys:
-        if overall:
-            data = aggregated[aggregated["algorithm"] == algo]
-        else:
-            data = aggregated[
-                (aggregated["environment"] == env) & (aggregated["algorithm"] == algo)
-            ]
+    envs = ["overall"] if overall else sorted(aggregated["environment"].unique())
+    for env in envs:
+        data = aggregated if overall else aggregated[aggregated["environment"] == env]
         if data.empty:
             continue
 
         fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
-        for critic in sorted(data["critic"].unique()):
-            sub = data[data["critic"] == critic]
+        for algo in sorted(data["algorithm"].unique()):
+            sub = data[data["algorithm"] == algo].sort_values("x")
+            if sub.empty:
+                continue
             x = sub["x"].to_numpy()
             y = sub["center"].to_numpy()
             spread = sub["spread"].fillna(0).to_numpy()
-            color = get_algo_color(f"{algo}:{critic}")
-            ax.plot(x, y, label=critic, color=color, marker="o")
+            color = get_algo_color(algo)
+            ax.plot(x, y, label=algo, color=color, marker="o")
             if len(sub) >= 2:
                 ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.2)
 
         title_env = "overall" if overall else env
-        ax.set_title(f"{metric} - {title_env} - {algo}")
+        ax.set_title(f"{metric} - {title_env}", pad=18 if overall else None)
+        if overall:
+            method = "iqm" if aggregation == "iqm" else "mean"
+            ax.text(
+                0.5,
+                1.0,
+                f"averaged across {n_envs} environments ({method})",
+                transform=ax.transAxes,
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                color="gray",
+            )
         ax.set_xlabel(x_label)
         ax.set_ylabel(metric)
         ax.grid(True, alpha=0.3)
@@ -953,12 +1027,14 @@ def plot_critic_metric(
         fig.tight_layout()
 
         split_dir = outdir / "plots" / "critic"
-        subdir = split_dir / ("overall" if overall else "per_env") / metric
-        _ensure_dir(subdir)
         if overall:
-            fname = subdir / algo
+            subdir = split_dir / "overall"
+            _ensure_dir(subdir)
+            fname = subdir / metric
         else:
-            fname = subdir / f"{algo}_{env.replace('/', '-')}"
+            subdir = split_dir / "per_env" / metric
+            _ensure_dir(subdir)
+            fname = subdir / env.replace("/", "-")
         for fmt in formats:
             fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
         plt.close(fig)
@@ -997,7 +1073,10 @@ def make_latex_table(
             row.append(f"${fmt.format(center)} \\pm {fmt.format(spread)}$")
         rows.append(row)
 
-    # overall row: mean of centers/spreads across envs where present
+    # overall row: cross-env collapse of centers/spreads where present. Center
+    # honors --aggregation (IQM under iqm, mean under mean); spread is the mean
+    # of per-env spreads regardless of flag — matching _collapse_envs and
+    # compute_aggregates's cross-seed spread convention.
     overall_row = ["Overall"]
     for algo in algos:
         vals = []
@@ -1010,8 +1089,13 @@ def make_latex_table(
         if len(vals) == 0:
             overall_row.append("--")
         else:
+            center = (
+                _iqm(np.asarray(vals, dtype=float))
+                if aggregation == "iqm"
+                else float(np.mean(vals))
+            )
             overall_row.append(
-                f"${fmt.format(np.mean(vals))} \\pm {fmt.format(np.mean(spreads))}$"
+                f"${fmt.format(center)} \\pm {fmt.format(np.mean(spreads))}$"
             )
     rows.append(overall_row)
 
@@ -1133,12 +1217,8 @@ def run_plotting(
             plot_metric(
                 agg, metric_name, "train", outdir, formats, x_label, overall=False
             )
-            # overall figure
-            overall = (
-                agg.groupby(["algorithm", "x"])
-                .agg({"center": "mean", "spread": "mean"})
-                .reset_index()
-            )
+            # overall figure: collapse the environment dimension, flag-aware.
+            overall = _collapse_envs(agg, ["algorithm", "x"], aggregation)
             overall["environment"] = "overall"
             plot_metric(
                 overall, metric_name, "train", outdir, formats, x_label, overall=True
@@ -1162,11 +1242,8 @@ def run_plotting(
             plot_metric(
                 agg, metric_name, "eval", outdir, formats, x_label, overall=False
             )
-            overall = (
-                agg.groupby(["algorithm", "x"])
-                .agg({"center": "mean", "spread": "mean"})
-                .reset_index()
-            )
+            # overall figure: collapse the environment dimension, flag-aware.
+            overall = _collapse_envs(agg, ["algorithm", "x"], aggregation)
             overall["environment"] = "overall"
             plot_metric(
                 overall, metric_name, "eval", outdir, formats, x_label, overall=True
@@ -1192,17 +1269,31 @@ def run_plotting(
             )
             if agg.empty:
                 continue
+            # Drop the critic dimension: average critics within each
+            # (environment, algorithm, x) tuple (flag-aware center, mean of
+            # spreads). Algos are then overlaid as lines, one figure per
+            # (metric, env).
+            per_env = _collapse_envs(
+                agg, ["environment", "algorithm", "x"], aggregation
+            )
             plot_critic_metric(
-                agg, metric_name, outdir, formats, x_label, overall=False
+                per_env, metric_name, outdir, formats, x_label, overall=False
             )
-            overall = (
-                agg.groupby(["algorithm", "critic", "x"])
-                .agg({"center": "mean", "spread": "mean"})
-                .reset_index()
-            )
+            # Overall: collapse the environment dimension on the already
+            # critic-averaged frame, flag-aware. One figure per metric, one
+            # line per algo, env-averaged.
+            n_envs = per_env["environment"].nunique()
+            overall = _collapse_envs(per_env, ["algorithm", "x"], aggregation)
             overall["environment"] = "overall"
             plot_critic_metric(
-                overall, metric_name, outdir, formats, x_label, overall=True
+                overall,
+                metric_name,
+                outdir,
+                formats,
+                x_label,
+                overall=True,
+                aggregation=aggregation,
+                n_envs=n_envs,
             )
 
     # Per-context (Cell 2): gated on eval_per_context.csv existence. Skips
