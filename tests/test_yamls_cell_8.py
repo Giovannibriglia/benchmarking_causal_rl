@@ -99,11 +99,14 @@ def test_strict_mode_raises_when_any_partial_map():
 
 def test_cell_8_discrete_smoke(tmp_path):
     # Confounded σ=0.5 dataset (gate-passing); all three per-env mechanisms set.
-    # Use a unique test id + manual_seed before generation: the confounder samples
-    # U on the GLOBAL RNG, so without a fixed seed the gate-pass is suite-order
-    # dependent (the σ=0.5 marginal can dip near the 0.2 gate threshold). seed=0
-    # pins a deterministic gate-passing dataset (marginal≈0.45), and the unique id
-    # avoids collisions with the convention-id dataset used elsewhere.
+    # Use a unique test id + manual_seed before generation. After issue #36 the
+    # confounder's U is drawn from an isolated per-instance generator (seeded from
+    # generate's seed=0), so the global manual_seed(0) no longer governs U. It is
+    # KEPT (not redundant at σ<1): at σ=0.5 the agent action and the confounded
+    # mixture coin still draw on the GLOBAL RNG, so without it the gate-pass would
+    # stay suite-order dependent (the σ=0.5 marginal can dip near the 0.2 gate
+    # threshold). seed=0 pins a deterministic gate-passing dataset, and the unique
+    # id avoids collisions with the convention-id dataset used elsewhere.
     import torch
 
     did = "test/cell8-smoke-v0"
