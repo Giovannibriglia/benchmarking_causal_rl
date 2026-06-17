@@ -13,8 +13,8 @@ matplotlib.use("Agg")  # headless; must precede the plotting (pyplot) import
 
 import pandas as pd  # noqa: E402
 from src.benchmarking.plotting import (  # noqa: E402
+    _build_sigma_sweep_env_figure,
     _collect_sigma_sweep,
-    _plot_sigma_sweep_ax,
     _resolve_x_label,
     render_eval_per_context_final,
     render_value_trace_per_config,
@@ -88,10 +88,22 @@ def test_value_trace_per_config_skips_when_file_absent(tmp_path):
     assert not (outdir / "tables" / "value_trace").exists()
 
 
-def test_value_trace_per_config_renders(tmp_path):
+def test_value_trace_per_config_renders(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     _write_run(run_dir, value_trace=True, eval_=True)
     outdir = tmp_path / "out"
+
+    # Capture the figures before the renderer closes them, to assert the
+    # twin-row layout (apparent on top, true on bottom) rather than just files.
+    captured = []
+    real_close = matplotlib.pyplot.close
+
+    def _capture_close(fig=None):
+        if hasattr(fig, "axes"):
+            captured.append(fig)
+        return real_close(fig)
+
+    monkeypatch.setattr(matplotlib.pyplot, "close", _capture_close)
     render_value_trace_per_config(
         run_dir, outdir, "episodes", ["png"], "Training epochs", 1024
     )
@@ -99,6 +111,12 @@ def test_value_trace_per_config_renders(tmp_path):
     texs = list((outdir / "tables" / "value_trace" / "per_config").glob("*.tex"))
     assert len(pngs) == len(ALGOS)  # one per (env, algo)
     assert len(texs) == len(ALGOS)
+    # twin-row: each figure has 2 axes with distinct, scale-explicit y-labels
+    assert len(captured) == len(ALGOS)
+    for fig in captured:
+        assert len(fig.axes) == 2
+        ylabels = {ax.get_ylabel() for ax in fig.axes}
+        assert ylabels == {"apparent Q (discounted)", "true return (undiscounted)"}
 
 
 # --------------------------------------------------------------------------
@@ -116,6 +134,11 @@ def _make_cell_dir(tmp_path, sigmas):
     return dirs
 
 
+def _algo_to_pts(records):
+    """Collapse records[(env, algo)] -> {algo: pts} (single-env test fixtures)."""
+    return {algo: pts for (env, algo), pts in records.items()}
+
+
 def test_sigma_sweep_handles_partial_and_full_sibling_sets(tmp_path):
     # --- partial: a single σ run (sweep incomplete) ---
     p = tmp_path / "partial"
@@ -123,7 +146,8 @@ def test_sigma_sweep_handles_partial_and_full_sibling_sets(tmp_path):
     out_p = p / "out"
     render_value_trace_sigma_sweep(dirs[0.5], out_p, ["png"])
     pngs = list((out_p / "plots" / "value_trace" / "sigma_sweep").glob("*.png"))
-    assert len(pngs) == len(ALGOS)  # one per (env, algo), 1 data point each
+    assert len(pngs) == 1  # one figure per env (not per (env, algo))
+    assert pngs[0].name == f"{ENV}.png"
     records, sigma_dirs = _collect_sigma_sweep(dirs[0.5])
     assert len(sigma_dirs) == 1  # incomplete sweep
 
@@ -132,24 +156,46 @@ def test_sigma_sweep_handles_partial_and_full_sibling_sets(tmp_path):
     dirs = _make_cell_dir(f, [0.0, 0.25, 0.5, 0.75, 1.0])
     out_f = f / "out"
     render_value_trace_sigma_sweep(dirs[0.5], out_f, ["png"])
+    pngs = list((out_f / "plots" / "value_trace" / "sigma_sweep").glob("*.png"))
+    assert len(pngs) == 1 and pngs[0].name == f"{ENV}.png"  # per-env figure
     records, sigma_dirs = _collect_sigma_sweep(dirs[0.5])
     assert len(sigma_dirs) == 5
     # every (env, algo) has 5 σ points
     for (env, algo), pts in records.items():
         assert sorted(p[0] for p in pts) == [0.0, 0.25, 0.5, 0.75, 1.0]
-    # σ-sweep table has 5 rows
+
+    # twin-row figure shape: 2 rows × N(algo) columns, anchor on the top-left
+    fig, axes = _build_sigma_sweep_env_figure(ENV, _algo_to_pts(records))
+    assert axes.shape == (2, len(ALGOS))  # 2 rows (apparent / true), N columns
+    assert any(tuple(ln.get_xdata()) == (0.0, 0.0) for ln in axes[0][0].lines)
+    matplotlib.pyplot.close(fig)
+
+    # σ-sweep table: scale-invariant ratio columns replace the contaminated gap
     tex = (
         out_f / "tables" / "value_trace" / "sigma_sweep" / f"cql_{ENV}.tex"
     ).read_text()
+    assert "apparent\\_rel" in tex and "true\\_rel" in tex
+    assert "\\textbf{gap}" not in tex
     assert tex.count("\\\\") >= 6  # header + 5 data rows (+ tabular close)
 
-    # anchor annotation: σ=0.0 present -> axvline drawn; absent -> not.
-    fig, ax = matplotlib.pyplot.subplots()
-    assert _plot_sigma_sweep_ax(ax, [(0.0, 1, 2), (0.5, 3, 1)], "cql") is True
-    assert any(tuple(ln.get_xdata()) == (0.0, 0.0) for ln in ax.lines)  # axvline at 0
+    # anchor absent -> no axvline at σ=0
+    fig, axes = _build_sigma_sweep_env_figure(ENV, {"cql": [(0.25, 1, 2), (0.5, 3, 1)]})
+    assert not any(tuple(ln.get_xdata()) == (0.0, 0.0) for ln in axes[0][0].lines)
     matplotlib.pyplot.close(fig)
-    fig, ax = matplotlib.pyplot.subplots()
-    assert _plot_sigma_sweep_ax(ax, [(0.25, 1, 2), (0.5, 3, 1)], "cql") is False
+
+
+def test_per_algo_y_axes_are_independent():
+    # Two algos at very different apparent-Q scales (CQL-like ~10 vs DQN-like ~600).
+    # A shared row axis would compress the small-scale algo onto the x-axis; the
+    # twin-row layout gives each its own scale.
+    small = [(0.0, 10.0, 500.0), (0.5, 12.0, 480.0), (1.0, 11.0, 460.0)]
+    big = [(0.0, 100.0, 500.0), (0.5, 600.0, 480.0), (1.0, 300.0, 460.0)]
+    fig, axes = _build_sigma_sweep_env_figure(ENV, {"cql": small, "offline_dqn": big})
+    # columns are algo-sorted: ["cql", "offline_dqn"]; top row = apparent Q
+    ylim_small = axes[0][0].get_ylim()
+    ylim_big = axes[0][1].get_ylim()
+    assert ylim_small != ylim_big  # each subplot scaled to its own data
+    assert ylim_small[1] < ylim_big[1]  # small-scale algo not stretched up
     matplotlib.pyplot.close(fig)
 
 

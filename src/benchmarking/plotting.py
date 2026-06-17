@@ -334,13 +334,17 @@ def render_value_trace_per_config(
     for (env, algo), sub in vt.groupby(["environment", "algorithm"]):
         sub = sub.sort_values("epoch")
         x = sub["epoch"] * rollout_len if x_axis == "frames" else sub["epoch"]
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+        # Twin-row layout (recon §6): apparent Q (discounted, small) and true
+        # return (undiscounted, large) live on a shared axis pin the smaller
+        # curve to the x-axis on solved envs. Split into two rows, each on its
+        # own y-axis scale, sharing the training-epoch x-axis.
+        fig, (ax_app, ax_tr) = plt.subplots(2, 1, sharex=True, figsize=(6, 5), dpi=500)
         ap = sub["apparent_value_iqm"].to_numpy()
         ap_s = sub["apparent_value_iqr_std"].fillna(0).to_numpy()
         c_ap = get_algo_color(f"{algo}:apparent")
-        ax.plot(x, ap, label="apparent Q", color=c_ap, linewidth=1.2)
+        ax_app.plot(x, ap, label="apparent Q", color=c_ap, linewidth=1.2)
         if len(sub) >= 2:
-            ax.fill_between(x, ap - ap_s, ap + ap_s, color=c_ap, alpha=0.15)
+            ax_app.fill_between(x, ap - ap_s, ap + ap_s, color=c_ap, alpha=0.15)
 
         true_plotted = False
         if not ev.empty and {"episode", "eval_return_mean"}.issubset(ev.columns):
@@ -356,31 +360,25 @@ def render_value_trace_per_config(
                 )
                 tr = merged["eval_return_mean"].to_numpy()
                 c_tr = get_algo_color(f"{algo}:true")
-                ax.plot(
-                    xt,
-                    tr,
-                    label="true return",
-                    color=c_tr,
-                    linestyle="--",
-                    linewidth=1.2,
-                )
+                ax_tr.plot(xt, tr, label="true return", color=c_tr, linewidth=1.2)
                 if "eval_return_std" in merged and len(merged) >= 2:
                     tr_s = merged["eval_return_std"].fillna(0).to_numpy()
-                    ax.fill_between(xt, tr - tr_s, tr + tr_s, color=c_tr, alpha=0.10)
+                    ax_tr.fill_between(xt, tr - tr_s, tr + tr_s, color=c_tr, alpha=0.10)
                 true_plotted = True
         if not true_plotted:
             print(
                 f"[info] No matching eval data for {env}/{algo}; plotting apparent Q only."
             )
 
-        title = f"apparent Q vs true return - {env} - {algo}"
+        suptitle = f"apparent Q vs true return - {env} - {algo}"
         if sigma is not None:
-            title += f" (σ={sigma:g})"
-        ax.set_title(title)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel("value")
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+            suptitle += f" (σ={sigma:g})"
+        fig.suptitle(suptitle)
+        ax_app.set_ylabel("apparent Q (discounted)")
+        ax_tr.set_ylabel("true return (undiscounted)")
+        ax_tr.set_xlabel(x_label)
+        for ax in (ax_app, ax_tr):
+            ax.grid(True, alpha=0.3)
         fig.tight_layout()
         subdir = outdir / "plots" / "value_trace" / "per_config"
         _ensure_dir(subdir)
@@ -447,64 +445,101 @@ def _collect_sigma_sweep(run_dir: Path):
     return records, sigma_dirs
 
 
-def _plot_sigma_sweep_ax(ax, pts, algo: str) -> bool:
-    """Draw the σ-sweep curves (apparent Q + true return) on ``ax``. Returns True
-    iff the σ=0.0 unconfounded anchor was annotated (axvline at σ=0)."""
-    pts = sorted(pts)
-    xs = [p[0] for p in pts]
-    ax.plot(
-        xs,
-        [p[1] for p in pts],
-        marker="o",
-        label="apparent Q",
-        color=get_algo_color(f"{algo}:apparent"),
-    )
-    ax.plot(
-        xs,
-        [p[2] for p in pts],
-        marker="s",
-        label="true return",
-        color=get_algo_color(f"{algo}:true"),
-    )
-    anchor = 0.0 in xs
-    if anchor:
-        ax.axvline(0.0, linestyle="--", color="gray", alpha=0.6, linewidth=0.8)
-        ax.text(
-            0.0,
-            1.0,
-            " unconfounded anchor",
-            transform=ax.get_xaxis_transform(),
-            fontsize=7,
-            va="top",
-            color="gray",
+def _build_sigma_sweep_env_figure(env: str, algo_to_pts: Dict[str, list]):
+    """Twin-row small multiples for one env: top row apparent Q vs σ, bottom row
+    true return vs σ, one column per algo (recon §6). Each subplot keeps an
+    independent y-axis — a shared axis compresses the small-scale curve (e.g. CQL
+    apparent Q ~10 vs DQN ~600) onto the x-axis and hides the σ-wedge. Returns
+    ``(fig, axes)`` with axes a 2×N array (row 0 apparent, row 1 true). σ=0.0 gets
+    a dashed anchor line on every subplot; the text label only on the top-left.
+    """
+    algos = sorted(algo_to_pts)
+    n = len(algos)
+    fig, axes = plt.subplots(2, n, figsize=(3 * n, 6), dpi=500, squeeze=False)
+    for j, algo in enumerate(algos):
+        pts = sorted(algo_to_pts[algo])
+        xs = [p[0] for p in pts]
+        ax_app, ax_tr = axes[0][j], axes[1][j]
+        ax_app.plot(
+            xs,
+            [p[1] for p in pts],
+            marker="o",
+            color=get_algo_color(f"{algo}:apparent"),
         )
-    if xs:
-        ax.set_xticks(xs)
-    return anchor
+        ax_tr.plot(
+            xs,
+            [p[2] for p in pts],
+            marker="s",
+            color=get_algo_color(f"{algo}:true"),
+        )
+        ax_app.set_title(algo)
+        has_anchor = 0.0 in xs
+        for ax in (ax_app, ax_tr):
+            if has_anchor:
+                ax.axvline(0.0, linestyle="--", color="gray", alpha=0.6, linewidth=0.8)
+            if xs:
+                ax.set_xticks(xs)
+            ax.grid(True, alpha=0.3)
+        ax_tr.set_xlabel("σ (confounding strength)")
+        if has_anchor and j == 0:
+            ax_app.text(
+                0.0,
+                1.0,
+                " unconfounded anchor",
+                transform=ax_app.get_xaxis_transform(),
+                fontsize=7,
+                va="top",
+                color="gray",
+            )
+        if j == 0:
+            ax_app.set_ylabel("apparent Q (discounted)")
+            ax_tr.set_ylabel("true return (undiscounted)")
+    fig.suptitle(f"σ-sweep — {env}")
+    fig.tight_layout()
+    return fig, axes
 
 
 def _sigma_sweep_table(pts, env: str, algo: str, outdir: Path) -> None:
     def fmt(x):
         return f"{x:.3f}" if x == x else "--"
 
+    pts = sorted(pts)
+    # σ=0 anchor for scale-invariant ratios. The old `apparent - true` gap was
+    # contaminated by the discounted-vs-undiscounted scale offset (recon §6:
+    # CQL σ=0 gap ≈ -890 = Q≈7 minus return≈900, encoding scale not confounding).
+    # apparent_rel / true_rel summarize the σ-trajectory shape honestly instead.
+    anchor = next((p for p in pts if p[0] == 0.0), None)
+    ap0 = anchor[1] if anchor else float("nan")
+    tr0 = anchor[2] if anchor else float("nan")
+
+    def rel(val, base):
+        if base != base or abs(base) < 1e-9 or val != val:
+            return float("nan")
+        return val / base
+
     header = [
         "\\textbf{σ}",
         "\\textbf{apparent Q}",
         "\\textbf{true return}",
-        "\\textbf{gap}",
+        "\\textbf{apparent\\_rel}",
+        "\\textbf{true\\_rel}",
     ]
     lines = [
         "\\begin{table}[!t]",
         "\\centering",
         f"\\caption{{σ-sweep ({_escape_latex(env)}, {_escape_latex(algo)})}}",
         f"\\label{{tab:sigma_sweep_{algo}_{env.replace('/', '-')}}}",
-        "\\begin{tabular}{rrrr}",
+        "\\begin{tabular}{rrrrr}",
         " & ".join(header) + " \\\\",
         "\\hline\\hline",
     ]
-    for s, ap, tr in sorted(pts):
-        gap = ap - tr if tr == tr else float("nan")
-        lines.append(" & ".join([f"{s:g}", fmt(ap), fmt(tr), fmt(gap)]) + " \\\\")
+    for s, ap, tr in pts:
+        lines.append(
+            " & ".join(
+                [f"{s:g}", fmt(ap), fmt(tr), fmt(rel(ap, ap0)), fmt(rel(tr, tr0))]
+            )
+            + " \\\\"
+        )
     lines += ["\\end{tabular}", "\\end{table}"]
     table_dir = outdir / "tables" / "value_trace" / "sigma_sweep"
     _ensure_dir(table_dir)
@@ -514,11 +549,12 @@ def _sigma_sweep_table(pts, env: str, algo: str, outdir: Path) -> None:
 def render_value_trace_sigma_sweep(
     run_dir: Path, outdir: Path, formats: Iterable[str]
 ) -> None:
-    """σ-sweep panel (Cell 7/8 paper figure): final-checkpoint apparent Q and true
-    return as a function of σ across sibling runs in the same cell directory, one
-    figure per (env, algo). σ=0.0 is annotated as the unconfounded anchor. Renders
-    partial sweeps (with a log line) and does not error on incomplete sweeps. No
-    cross-env figure (envs have different return scales)."""
+    """σ-sweep paper figure (Cell 7/8): final-checkpoint apparent Q and true return
+    as a function of σ across sibling runs in the same cell directory, as twin-row
+    small multiples — one figure per env, 2 rows (apparent Q / true return) × N
+    columns (algos), each subplot on its own y-axis. σ=0.0 is annotated as the
+    unconfounded anchor. Renders partial sweeps (with a log line) and does not
+    error on incomplete sweeps. No cross-env figure (envs differ in scale)."""
     records, sigma_dirs = _collect_sigma_sweep(run_dir)
     if not records:
         print("[info] value_trace σ-sweep: no sibling value-trace runs; skipping.")
@@ -526,22 +562,20 @@ def render_value_trace_sigma_sweep(
     if len(sigma_dirs) == 1:
         print("[info] Only 1 σ-value found in sibling runs; σ-sweep is incomplete.")
 
+    by_env: Dict[str, Dict[str, list]] = {}
     for (env, algo), pts in records.items():
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
-        _plot_sigma_sweep_ax(ax, pts, algo)
-        ax.set_title(f"σ-sweep: apparent Q vs true return - {env} - {algo}")
-        ax.set_xlabel("σ (confounding strength)")
-        ax.set_ylabel("final-checkpoint value")
-        ax.grid(True, alpha=0.3)
-        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
-        fig.tight_layout()
-        subdir = outdir / "plots" / "value_trace" / "sigma_sweep"
+        by_env.setdefault(env, {})[algo] = pts
+
+    subdir = outdir / "plots" / "value_trace" / "sigma_sweep"
+    for env, algo_to_pts in by_env.items():
+        fig, _axes = _build_sigma_sweep_env_figure(env, algo_to_pts)
         _ensure_dir(subdir)
-        fname = subdir / f"{algo}_{env.replace('/', '-')}"
+        fname = subdir / env.replace("/", "-")
         for fmt in formats:
             fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
         plt.close(fig)
-        _sigma_sweep_table(pts, env, algo, outdir)
+        for algo, pts in algo_to_pts.items():
+            _sigma_sweep_table(pts, env, algo, outdir)
 
 
 def _per_context_final_table(
