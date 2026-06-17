@@ -133,7 +133,12 @@ def build_rollout_env(
         from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 
         sig = 1.0 if strength is None else float(strength)
-        env = ConfoundedCollectionWrapper(env, c_a=sig, c_r=sig)
+        # Thread the generation seed into the wrapper's isolated U RNG (issue #36)
+        # so the confounding latent — and thus the gate-test signature — is
+        # reproducible regardless of cumulative process RNG state. Passed directly:
+        # the wrapper's per-instance Generator already decouples it from build_env's
+        # env seeding, so no namespacing offset is needed.
+        env = ConfoundedCollectionWrapper(env, c_a=sig, c_r=sig, seed=seed)
     return env
 
 

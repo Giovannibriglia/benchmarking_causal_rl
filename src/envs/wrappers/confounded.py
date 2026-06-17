@@ -18,13 +18,27 @@ class ConfoundedCollectionWrapper:
     share the same ``U`` (a stable spurious signal, not within-step noise).
 
     Train-env ONLY: the runner never wraps ``eval_env`` (eval is always clean).
-    ``U`` sampling stays in the main RNG stream (``torch.bernoulli``/``randn``,
-    no explicit per-instance RNG seeding) — it's the behavior+env dynamics,
-    reproducible via the run-start global seed (so it adds no new seeding site).
+
+    ``U`` RNG is dual-mode (issue #36), selected by the ``seed`` arg:
+      * ``seed=None`` (the runner's online A1 collection path): ``U`` is drawn
+        from the GLOBAL torch stream (``torch.bernoulli``/``randn`` with
+        ``generator=None``) — byte-identical to the pre-#36 behavior, so the
+        off-policy golden and the run-seed reproducibility of online confounded
+        collection are untouched (it adds no new seeding site there).
+      * ``seed=int`` (the offline GENERATE path threads
+        ``generate_offline_dataset``'s seed): ``U`` is drawn from an isolated
+        per-instance ``torch.Generator``, so a freshly generated dataset's
+        gate-test outcome is reproducible regardless of cumulative process RNG
+        state. Mirrors ``CuriosityBehaviorPolicy``'s per-instance generator.
     """
 
     def __init__(
-        self, env, c_a: float = 1.0, c_r: float = 1.0, u_dist: str = "bernoulli"
+        self,
+        env,
+        c_a: float = 1.0,
+        c_r: float = 1.0,
+        u_dist: str = "bernoulli",
+        seed: int | None = None,
     ):
         self.env = env
         self.c_a = float(c_a)
@@ -32,6 +46,14 @@ class ConfoundedCollectionWrapper:
         self.u_dist = u_dist
         self.n_envs = env.n_envs
         self.device = env.device
+        # Isolated U RNG only when a seed is given; None keeps the global stream
+        # (see class doc). The generator lives on the sampling device so the
+        # generator/tensor devices match for both CPU and CUDA generation.
+        if seed is None:
+            self._gen = None
+        else:
+            self._gen = torch.Generator(device=self.device)
+            self._gen.manual_seed(int(seed))
         self.current_u = self._sample_u()
 
     def __getattr__(self, name):
@@ -44,8 +66,10 @@ class ConfoundedCollectionWrapper:
 
     def _sample_u(self) -> torch.Tensor:
         if self.u_dist == "normal":
-            return torch.randn(self.n_envs, device=self.device)
-        return torch.bernoulli(torch.full((self.n_envs,), 0.5, device=self.device))
+            return torch.randn(self.n_envs, device=self.device, generator=self._gen)
+        return torch.bernoulli(
+            torch.full((self.n_envs,), 0.5, device=self.device), generator=self._gen
+        )
 
     def reset(self, seed=None):
         obs, info = self.env.reset(seed=seed)
