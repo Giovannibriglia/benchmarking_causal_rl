@@ -1,0 +1,37 @@
+# Cell 7 (gated) — Shadowed Vitals, discrete arm restricted to gate-passing envs.
+# σ = 0.75. The absolute σ·U confounding mechanism induces detectable A→R
+# structure only for unit-reward-scale envs (CartPole +1/step, Acrobot −1/step).
+# Dense-reward (LunarLander) and continuous (MuJoCo) envs at σ≤1 produce
+# Corr(A,R) ≈ 0; their gate-failed datasets are not loaded here. The
+# scale-relative perturbation variant remains as future work.
+# Refs: docs/experimental_design.md §4 Cell 7; original
+# confounded_sigma_075_discrete.yaml; diagnosis recon dated 2026-06-16.
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma075-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma075-v0
+
+# Behavior config is informational here — the dataset was rolled out under
+# bias_confounded at σ=0.75; offline training reads the metadata to verify
+# the gate passed (rejecting ungate-tested datasets per §7).
+behavior_policy: bias_confounded
+behavior_strength: 0.75
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
