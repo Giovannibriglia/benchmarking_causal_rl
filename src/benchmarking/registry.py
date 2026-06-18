@@ -10,7 +10,7 @@ from src.rl.off_policy.ddpg import DDPG
 from src.rl.off_policy.dqn import DQN
 from src.rl.off_policy.replay_buffer import ReplayBuffer
 from src.rl.on_policy.a2c import A2C
-from src.rl.on_policy.policy import ActorCriticMLP
+from src.rl.on_policy.actor_critic import ActorCritic
 from src.rl.on_policy.ppo import PPO
 from src.rl.on_policy.trpo import TRPO
 from src.rl.on_policy.vanilla import VanillaPolicyGradient
@@ -113,49 +113,64 @@ def expand_env_set(name: str) -> List[str]:
     return envs
 
 
+def _ac_trunk_kwargs(kwargs) -> dict:
+    """Optional recurrent-trunk kwargs (hidden_dim, num_layers) from the builder
+    call; absent/None entries are dropped so ActorCritic's defaults apply."""
+    out = {}
+    for k in ("hidden_dim", "num_layers"):
+        if kwargs.get(k) is not None:
+            out[k] = kwargs[k]
+    return out
+
+
+def _build_actor_critic(kwargs) -> ActorCritic:
+    return ActorCritic(
+        kwargs.get("obs_shape", (kwargs["obs_dim"],)),
+        kwargs["obs_dim"],
+        kwargs["action_dim"],
+        kwargs["action_type"],
+        kwargs["device"],
+        actor_network=kwargs.get("actor_network", "mlp"),
+        critic_network=kwargs.get("critic_network", "mlp"),
+        **_ac_trunk_kwargs(kwargs),
+    )
+
+
+def _reject_recurrent(algo_name: str, kwargs) -> None:
+    """Non-PPO on-policy algos get the separate-trunk architecture but NOT
+    recurrent support in this PR — recurrent BPTT is wired for PPO only."""
+    if kwargs.get("actor_network", "mlp") != "mlp" or (
+        kwargs.get("critic_network", "mlp") != "mlp"
+    ):
+        raise ValueError(
+            f"Recurrent networks for {algo_name} are not yet supported. This PR "
+            f"implements recurrent PPO only; non-PPO on-policy algorithms must "
+            f"use networks: {{actor: mlp, critic: mlp}} or the plain string form."
+        )
+
+
 def register_default_algorithms() -> None:
     # On-policy builders
     def build_vanilla(**kwargs):
-        policy = ActorCriticMLP(
-            kwargs["obs_dim"],
-            kwargs["action_dim"],
-            kwargs["action_type"],
-            kwargs["device"],
-            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
-        )
+        _reject_recurrent("vanilla (and vanilla_ac)", kwargs)
+        policy = _build_actor_critic(kwargs)
         agent = VanillaPolicyGradient(policy, device=kwargs["device"])
         return policy, agent
 
     def build_a2c(**kwargs):
-        policy = ActorCriticMLP(
-            kwargs["obs_dim"],
-            kwargs["action_dim"],
-            kwargs["action_type"],
-            kwargs["device"],
-            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
-        )
+        _reject_recurrent("a2c", kwargs)
+        policy = _build_actor_critic(kwargs)
         agent = A2C(policy, device=kwargs["device"])
         return policy, agent
 
     def build_ppo(**kwargs):
-        policy = ActorCriticMLP(
-            kwargs["obs_dim"],
-            kwargs["action_dim"],
-            kwargs["action_type"],
-            kwargs["device"],
-            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
-        )
+        policy = _build_actor_critic(kwargs)
         agent = PPO(policy, device=kwargs["device"])
         return policy, agent
 
     def build_trpo(**kwargs):
-        policy = ActorCriticMLP(
-            kwargs["obs_dim"],
-            kwargs["action_dim"],
-            kwargs["action_type"],
-            kwargs["device"],
-            obs_shape=kwargs.get("obs_shape", (kwargs["obs_dim"],)),
-        )
+        _reject_recurrent("trpo", kwargs)
+        policy = _build_actor_critic(kwargs)
         agent = TRPO(policy, device=kwargs["device"])
         return policy, agent
 

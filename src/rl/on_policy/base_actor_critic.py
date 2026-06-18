@@ -21,6 +21,14 @@ class RolloutBatch:
     next_values: torch.Tensor
     advantages: torch.Tensor
     returns: torch.Tensor
+    # Additive, recurrent-only (default None; the MLP/non-recurrent path ignores
+    # them, and critic_ablation / aux_models — which consume the flat (T*N, D)
+    # fields above — are unaffected). The recurrent PPO BPTT path reads
+    # recurrent_seq_shape (T, N) to reshape the flat fields into per-env
+    # sequences, and recurrent_states for the per-env hidden state at rollout
+    # start ({"actor": ..., "critic": ...}; None entry per MLP component).
+    recurrent_states: Optional[Any] = None
+    recurrent_seq_shape: Optional[Tuple[int, int]] = None
 
 
 class BaseActorCritic(Algorithm):

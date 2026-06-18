@@ -120,6 +120,51 @@ def _resolve_offline_dataset_map(raw, env_ids, source: str) -> dict:
     return {e: raw for e in env_ids}
 
 
+def _normalize_algo(entry) -> dict:
+    """Normalize one ``algos`` entry to {name, actor, critic, network_kwargs}.
+
+    A plain string ``"ppo"`` -> all-MLP default. A dict ``{name, networks:
+    {actor, critic, hidden_dim?, num_layers?}}`` -> the parsed components
+    (networks defaults to MLP per missing component). Raises on a dict without
+    ``name`` or a non-map ``networks``."""
+    if isinstance(entry, str):
+        return {"name": entry, "actor": "mlp", "critic": "mlp", "network_kwargs": {}}
+    if isinstance(entry, dict):
+        if "name" not in entry:
+            raise ValueError(f"algos dict entry missing required 'name': {entry!r}")
+        nets = entry.get("networks", {}) or {}
+        if not isinstance(nets, dict):
+            raise ValueError(
+                f"algos[{entry['name']!r}].networks must be a map "
+                f"{{actor, critic, ...}}; got {type(nets).__name__}."
+            )
+        nkw = {k: nets[k] for k in ("hidden_dim", "num_layers") if k in nets}
+        return {
+            "name": entry["name"],
+            "actor": nets.get("actor", "mlp"),
+            "critic": nets.get("critic", "mlp"),
+            "network_kwargs": nkw,
+        }
+    raise ValueError(
+        f"algos entries must be a string or a dict; got {type(entry).__name__}."
+    )
+
+
+def _canonical_algo_id(spec: dict) -> str:
+    """Canonical run/CSV identifier for a normalized algo spec. On-policy algos
+    disambiguate by per-component network (``name__actor__critic``);
+    off-policy/offline (and unknown) keep the bare name, so their goldens and
+    run-dir names are unchanged by this feature."""
+    name = spec["name"]
+    try:
+        kind = registry.get(name).kind
+    except KeyError:
+        kind = None
+    if kind == "on_policy":
+        return f"{name}__{spec['actor']}__{spec['critic']}"
+    return name
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Benchmarking Causal RL")
     p.add_argument(
@@ -497,10 +542,15 @@ def main():
             "No algorithms or environments specified. Provide them via CLI or reproduce YAML."
         )
 
+    # Normalize the algos list to {name, actor, critic, network_kwargs} dicts.
+    normalized_algos = [_normalize_algo(a) for a in algos]
+
     # Fail fast on structurally-incompatible (on-policy algo + action-bias-only
     # behavior_policy) combinations before building any run (registry is already
     # populated above via register_default_algorithms()).
-    _validate_algos_against_behavior_policy(algos, behavior_policy)
+    _validate_algos_against_behavior_policy(
+        [s["name"] for s in normalized_algos], behavior_policy
+    )
 
     base_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.reproduce:
@@ -558,7 +608,9 @@ def main():
     run_cfg = RunConfig(run_dir=str(run_dir), timestamp=base_timestamp)
 
     for env_id in envs:
-        for algo in algos:
+        for algo_spec_norm in normalized_algos:
+            algo = algo_spec_norm["name"]
+            canonical_algo = _canonical_algo_id(algo_spec_norm)
             env_cfg = EnvConfig(
                 env_id=env_id,
                 n_train_envs=n_train_envs,
@@ -578,8 +630,11 @@ def main():
                 n_checkpoints=n_checkpoints,
                 deterministic=deterministic,
                 device=device_str,
-                algorithm=algo,
+                algorithm=canonical_algo,
                 aggregation=aggregation,
+                actor_network=algo_spec_norm["actor"],
+                critic_network=algo_spec_norm["critic"],
+                network_kwargs=algo_spec_norm["network_kwargs"],
             )
             critic_ablation_cfg = None
             if mode == "critic_ablation":
@@ -602,7 +657,7 @@ def main():
                 spec,
                 critic_ablation_cfg=critic_ablation_cfg,
                 aux_model_cfg=aux_model_cfg,
-                progress_label=f"{algo} - {env_id}",
+                progress_label=f"{canonical_algo} - {env_id}",
             )
             runner.run()
 

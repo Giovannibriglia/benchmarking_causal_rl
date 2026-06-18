@@ -1,6 +1,6 @@
 episode,algorithm,environment,eval_return_mean,eval_return_std
-0,ppo,CartPole-v1,1004.0,0.0
-1,ppo,CartPole-v1,1003.7777709960938,1.1331154108047485
-2,ppo,CartPole-v1,1012.0,0.0
-3,ppo,CartPole-v1,1019.1111450195312,0.9938076734542847
-4,ppo,CartPole-v1,1019.1111450195312,0.9938076734542847
+0,ppo__mlp__mlp,CartPole-v1,1008.0,0.0
+1,ppo__mlp__mlp,CartPole-v1,1019.5555419921875,0.8314809203147888
+2,ppo__mlp__mlp,CartPole-v1,1020.0,0.0
+3,ppo__mlp__mlp,CartPole-v1,1019.3333129882812,0.942807137966156
+4,ppo__mlp__mlp,CartPole-v1,1020.0,0.0
