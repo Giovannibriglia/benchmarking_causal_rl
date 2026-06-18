@@ -149,6 +149,33 @@ def _reject_recurrent(algo_name: str, kwargs) -> None:
         )
 
 
+def _reject_offpolicy_recurrent(algo_name: str, kwargs) -> None:
+    """Forward-compat guard for off-policy algos: accept the actor_network /
+    critic_network kwargs (PR #49 YAML dict form) but reject non-MLP until
+    PR-1C2 wires recurrent off-policy (DQN-LSTM, SAC-LSTM) on top of the
+    SequenceReplayBuffer + recurrent collection path added in this PR."""
+    if kwargs.get("actor_network", "mlp") != "mlp" or (
+        kwargs.get("critic_network", "mlp") != "mlp"
+    ):
+        raise ValueError(
+            f"Recurrent networks for {algo_name} are not yet supported. PR #49 "
+            f"implements recurrent PPO only; recurrent off-policy (DQN-LSTM, "
+            f"SAC-LSTM) is PR-1C2 (forthcoming) and requires sequence sampling "
+            f"from the SequenceReplayBuffer. For {algo_name}, use the plain "
+            f"string form or networks: {{actor: mlp, critic: mlp}}."
+        )
+
+
+def _offpolicy_recurrent_guard(name: str, builder):
+    """Wrap an (imported) off-policy builder so it rejects non-MLP networks."""
+
+    def _wrapped(**kwargs):
+        _reject_offpolicy_recurrent(name, kwargs)
+        return builder(**kwargs)
+
+    return _wrapped
+
+
 def register_default_algorithms() -> None:
     # On-policy builders
     def build_vanilla(**kwargs):
@@ -176,6 +203,7 @@ def register_default_algorithms() -> None:
 
     # Off-policy builders
     def build_dqn(**kwargs):
+        _reject_offpolicy_recurrent("dqn", kwargs)
         obs_dim = kwargs["obs_dim"]
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
@@ -187,6 +215,7 @@ def register_default_algorithms() -> None:
         return q_net.to(device), agent
 
     def build_ddpg(**kwargs):
+        _reject_offpolicy_recurrent("ddpg", kwargs)
         obs_dim = kwargs["obs_dim"]
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
@@ -231,6 +260,7 @@ def register_default_algorithms() -> None:
     registry.register("trpo", AlgorithmSpec(builder=build_trpo, kind="on_policy"))
 
     def build_sac(**kwargs):
+        _reject_offpolicy_recurrent("sac", kwargs)
         from src.rl.off_policy.sac import SAC, SquashedGaussianActor
 
         obs_dim = kwargs["obs_dim"]
@@ -294,5 +324,9 @@ def register_default_algorithms() -> None:
     ):
         registry.register(
             _name,
-            AlgorithmSpec(builder=_builder, kind="off_policy", data_regime="offline"),
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(_name, _builder),
+                kind="off_policy",
+                data_regime="offline",
+            ),
         )

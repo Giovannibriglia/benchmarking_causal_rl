@@ -387,3 +387,65 @@ class OnlineSource(ExperienceSource):
                     aux_models.update(batch)
                 last_batch = batch
         return obs, metrics_cache, last_batch
+
+    def collect_off_policy_recurrent(
+        self,
+        agent: Algorithm,
+        replay_buffer,
+        obs: torch.Tensor,
+        *,
+        collection_policy=None,
+        n_steps: int,
+        n_envs: int,
+        warmup: int,
+        batch_size: int,
+        metrics_cache: Optional[Dict[str, float]] = None,
+        aux_models=None,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, float]], Optional[dict]]:
+        """Recurrent off-policy collection (parallel to ``collect_off_policy``,
+        which stays untouched/golden-pinned — same split as PR #49's
+        ``rollout`` vs ``rollout_recurrent``).
+
+        FOUNDATION SCOPE (PR-1C1): this preserves per-env EPISODE STRUCTURE in a
+        ``SequenceReplayBuffer`` (``add(env_id, transition)`` + ``mark_episode_end``
+        on done) and threads per-env hidden state through ``agent.act(obs, state)``
+        (forward-compat: today's off-policy agents ignore ``state`` and pass it
+        through). It does NOT sample sequences or call ``agent.update`` — the
+        recurrent sequence update belongs to PR-1C2, where the off-policy
+        algorithms gain a sequence-consuming ``learn``. Until then this path is
+        unreachable from the runner (off-policy builders reject non-MLP), so the
+        flat pipeline is what actually trains. ``collection_policy``, ``warmup``,
+        ``batch_size``, ``aux_models`` are accepted for signature parity and are
+        inert here (the behavior-policy seam + sequence updates are PR-1C2).
+        """
+        state = (
+            agent.initial_state(n_envs, device=self.device)
+            if hasattr(agent, "initial_state")
+            else None
+        )
+        for _ in range(n_steps):
+            out = agent.act(obs, state)
+            actions = out.action
+            new_state = out.state
+            next_obs, reward, terminated, truncated, _ = self.env.step(actions)
+            done = torch.logical_or(terminated, truncated).float()
+            for i in range(n_envs):
+                replay_buffer.add(
+                    i,
+                    {
+                        "obs": obs[i].detach(),
+                        "actions": actions[i].detach(),
+                        "rewards": reward[i].detach(),
+                        "next_obs": next_obs[i].detach(),
+                        "dones": done[i].detach(),
+                    },
+                )
+                if bool(done[i]):
+                    replay_buffer.mark_episode_end(i)
+            # Reset per-env hidden state at episode boundaries (forward-compat;
+            # real recurrent agents implement reset_state_where in PR-1C2).
+            if new_state is not None and hasattr(agent, "reset_state_where"):
+                new_state = agent.reset_state_where(new_state, done.bool())
+            state = new_state
+            obs = next_obs
+        return obs, metrics_cache, None

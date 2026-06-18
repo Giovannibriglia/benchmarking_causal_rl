@@ -1,16 +1,16 @@
 main.py:10:from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
-main.py:172:        choices=["benchmark", "critic_ablation"],
-main.py:179:        help="Shortcut for --mode critic_ablation.",
-main.py:287:            "Auxiliary critics to train in critic_ablation mode. "
-main.py:295:        help="Learning rate for auxiliary critics in critic_ablation mode.",
-main.py:480:        mode = "critic_ablation"
-main.py:481:    if mode not in {"benchmark", "critic_ablation"}:
-main.py:483:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
-main.py:595:                "critics": ablation_critics if mode == "critic_ablation" else [],
-main.py:639:            critic_ablation_cfg = None
-main.py:640:            if mode == "critic_ablation":
-main.py:641:                critic_ablation_cfg = CriticAblationConfig(
-main.py:658:                critic_ablation_cfg=critic_ablation_cfg,
+main.py:178:        choices=["benchmark", "critic_ablation"],
+main.py:185:        help="Shortcut for --mode critic_ablation.",
+main.py:293:            "Auxiliary critics to train in critic_ablation mode. "
+main.py:301:        help="Learning rate for auxiliary critics in critic_ablation mode.",
+main.py:486:        mode = "critic_ablation"
+main.py:487:    if mode not in {"benchmark", "critic_ablation"}:
+main.py:489:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
+main.py:601:                "critics": ablation_critics if mode == "critic_ablation" else [],
+main.py:645:            critic_ablation_cfg = None
+main.py:646:            if mode == "critic_ablation":
+main.py:647:                critic_ablation_cfg = CriticAblationConfig(
+main.py:664:                critic_ablation_cfg=critic_ablation_cfg,
 src/benchmarking/plotting.py:1440:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:60:    critic_path = run_dir / "critic_ablation_metrics.csv"
 src/benchmarking/plotting.py:66:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
