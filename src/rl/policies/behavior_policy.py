@@ -25,6 +25,32 @@ class BehaviorPolicy(abc.ABC):
         """Select actions for the given (batched) observation."""
         raise NotImplementedError
 
+    @classmethod
+    def affects_on_policy(cls) -> bool:
+        """Whether this behavior policy's mechanism touches on-policy algorithms.
+
+        Behavior policies in this codebase have two possible mechanisms:
+        - Action-bias only: the policy is consulted in build_collection_policy
+          to produce biased actions for off-policy collection. PPO and other
+          on-policy algorithms ignore this entirely. Examples: curiosity,
+          anti_reward, bias_skew, bias_suboptimal.
+        - Reward perturbation (also): the policy adds a wrapper to train_env
+          that modifies the reward stream for all algorithms training on that
+          env, including on-policy ones. Example: bias_confounded (via
+          ConfoundedCollectionWrapper).
+
+        When False (default), listing on-policy algorithms in a YAML with this
+        behavior_policy is structurally redundant — those algorithms see no
+        effect of the behavior, so their results are equivalent to the same
+        algos run with behavior_policy="agent". The runner rejects such YAMLs
+        at load time with a clear error message; remove the on-policy algos
+        or change the behavior_policy to "agent".
+
+        When True, on-policy algorithms genuinely respond to the behavior's
+        mechanism and may be included as a structural control.
+        """
+        return False
+
 
 class AgentBehaviorPolicy(BehaviorPolicy):
     """Default behavior policy: delegate verbatim to the agent's ``act``.
@@ -382,6 +408,14 @@ class ConfoundedBehaviorPolicy(BehaviorPolicy):
     RNG stream); the per-env mixture coin here is the behavior.
     """
 
+    @classmethod
+    def affects_on_policy(cls) -> bool:
+        # bias_confounded also wraps train_env with ConfoundedCollectionWrapper,
+        # which perturbs the reward stream for all algos (the wrapper runs
+        # regardless of which collection branch is taken), so on-policy
+        # algorithms genuinely respond to it.
+        return True
+
     def __init__(
         self,
         agent: Algorithm,
@@ -420,6 +454,24 @@ _STRENGTH_PARAM = {
     "curiosity": "strength",  # probability of emitting the max-disagreement action
     "bias_confounded": "strength",  # confounding-strength dial (scales c_a, c_r)
 }
+
+# name -> BehaviorPolicy subclass, for class-level introspection (e.g.
+# affects_on_policy()) without constructing a policy. Mirrors the names accepted
+# by build_collection_policy.
+_BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
+    "agent": AgentBehaviorPolicy,
+    "anti_reward": AntiRewardBehaviorPolicy,
+    "bias_skew": SkewBehaviorPolicy,
+    "bias_suboptimal": SuboptimalBehaviorPolicy,
+    "curiosity": CuriosityBehaviorPolicy,
+    "bias_confounded": ConfoundedBehaviorPolicy,
+}
+
+
+def behavior_policy_class(name: str) -> type[BehaviorPolicy] | None:
+    """The BehaviorPolicy subclass for a behavior_policy name, or None if unknown
+    (unknown names are left for build_collection_policy / other validation)."""
+    return _BEHAVIOR_POLICY_CLASSES.get(name)
 
 
 def build_collection_policy(
