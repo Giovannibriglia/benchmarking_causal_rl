@@ -155,6 +155,8 @@ Additionally, the per-dataset confounding signature — Corr(A, R) and Corr(A, R
 
 **Expected result.** Apparent training value inflates with σ while true eval return decays with σ. The gap is the cell's signature.
 
+**Online variant (also instantiated).** Cell 7 is additionally instantiated in the online setting — same identity (Z observed, U present) but the agent collects on-policy/off-policy rather than learning from a fixed dataset. These live in the same folder under the `online_confounded_sigma_*_discrete_gated.yaml` prefix (online vs offline is an axis-value, not a new cell number, so the taxonomy stays eight cells). algos = `[ppo, dqn]`, gated to CartPole + Acrobot per the PR #34 dense-reward finding (the absolute σ·U mechanism only induces detectable A→R structure on unit-reward-scale envs; the continuous arm is skipped for the same reason). DQN (off-policy) receives both halves of σ·U — the `ConfoundedCollectionWrapper` reward perturbation *and* the `ConfoundedBehaviorPolicy` action bias — while PPO (on-policy) receives only the reward perturbation (its actions are never biased by U). PPO is therefore an on-policy **structural control**: any σ-wedge in DQN beyond PPO's response isolates the action-bias contribution to confounding from a simpler reward-noise hypothesis. Online runs produce no `offline_value_trace.csv`, so the σ-wedge figure is eval-return-vs-σ (one line per algo, one figure per env) via `--split online_sigma_sweep`, not the offline twin-row apparent-vs-true layout.
+
 ### Cell 8 — Dark Ages
 
 **Identity.** Z hidden, unknown-offline-πb, U present.
@@ -181,6 +183,8 @@ The wrapper stack is base env → `ConfoundedCollectionWrapper` → `MaskedObser
 **Measurement.** Same as Cell 7 — true eval return in `eval_metrics.csv`, apparent training value in `offline_value_trace.csv`, per-dataset signature in dataset metadata.
 
 **Expected result.** Worse degradation than Cell 7 at matched σ; the apparent-vs-true gap is widest here.
+
+**Online variant (also instantiated).** As with Cell 7, Cell 8 is additionally instantiated online under the `online_confounded_sigma_*_masked_discrete_gated.yaml` prefix in the same folder. Same wrapper stack (base → `ConfoundedCollectionWrapper` → `MaskedObservationWrapper`), algos = `[ppo, dqn]`, gated to CartPole + Acrobot with the §5 masks. The hardest online scenario — all three structural axes adverse (online, masked, confounded). Rendered via `--split online_sigma_sweep`; the PPO line is the same on-policy structural control described for Cell 7's online variant.
 
 ## 5. Per-env mask specification
 

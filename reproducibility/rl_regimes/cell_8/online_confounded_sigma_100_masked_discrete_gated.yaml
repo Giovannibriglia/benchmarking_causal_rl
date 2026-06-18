@@ -1,0 +1,45 @@
+# Cell 8 (Dark Ages), ONLINE arm — masked discrete (gated), σ = 1.0.
+# All three structural axes are adverse here: online, masked (Z hidden), and confounded. The hardest online scenario.
+# The σ-sweep here is the ONLINE analog of Cell 8's offline σ-sweep
+# (online variant of Cell 8; the eight-cell taxonomy is unchanged —
+# online vs offline is an axis-value, so both arms live in cell_8/,
+# distinguished by the online_confounded_ filename prefix).
+#
+# DQN (off-policy) receives BOTH halves of σ·U: the reward perturbation
+# (ConfoundedCollectionWrapper, all algos) AND the action bias
+# (ConfoundedBehaviorPolicy, off-policy collection only). PPO (on-policy)
+# receives ONLY the reward perturbation — its actions are not biased by U.
+# PPO is therefore a structural control: any σ-wedge in DQN beyond PPO's
+# response isolates the action-bias contribution to confounding from the
+# simpler reward-noise hypothesis. σ=0.0 is the unconfounded anchor.
+#
+# Gated to CartPole + Acrobot (unit-reward-scale envs where the absolute
+# σ·U mechanism induces detectable A→R structure); dense-reward and
+# continuous envs gate-fail at σ≤1 (PR #34 finding). Continuous arm skipped
+# for the same reason. Strength grid: {0.0, 0.25, 0.5, 0.75, 1.0}.
+# Refs: docs/experimental_design.md §4 Cell 8; offline
+# confounded_sigma_*_masked_discrete_gated.yaml; PR #34 (gated YAMLs).
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - ppo
+  - dqn
+
+mask_indices:
+  CartPole-v1: [1, 3]
+  Acrobot-v1: [4, 5]
+
+behavior_policy: bias_confounded
+behavior_strength: 1.0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

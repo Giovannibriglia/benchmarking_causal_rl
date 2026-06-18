@@ -597,6 +597,178 @@ def render_value_trace_sigma_sweep(
             _sigma_sweep_table(pts, env, algo, outdir)
 
 
+def _final_eval_return(ev: pd.DataFrame, env: str, algo: str) -> tuple:
+    """Final-checkpoint (eval_return_mean, eval_return_std) for (env, algo), else
+    (NaN, NaN). The mean already reflects the run's --aggregation choice (mean or
+    IQM) — the runner writes whichever statistic into eval_return_mean."""
+    if ev.empty or "eval_return_mean" not in ev.columns:
+        return float("nan"), float("nan")
+    esub = ev[(ev["environment"] == env) & (ev["algorithm"] == algo)]
+    if esub.empty:
+        return float("nan"), float("nan")
+    row = esub.loc[esub["episode"].idxmax()]
+    std = (
+        float(row["eval_return_std"])
+        if "eval_return_std" in esub.columns
+        else float("nan")
+    )
+    return float(row["eval_return_mean"]), std
+
+
+def _collect_online_sigma_sweep(run_dir: Path):
+    """Online analog of ``_collect_sigma_sweep``: walk the cell directory for
+    sibling runs of the same arm, pick the latest run per σ, and collect the
+    final-checkpoint eval return per (env, algo) from eval_metrics.csv.
+
+    The online σ-sweep runs are the online variants of Cells 7/8 — their YAMLs
+    (and so run dirs) carry the ``online_confounded_sigma_*`` prefix, while the
+    offline Cell 7/8 runs are ``confounded_sigma_*``. This globs only the
+    ``online_confounded_*`` dirs, so it never picks up the offline siblings (which
+    render_value_trace_sigma_sweep handles via its own ``confounded_sigma_*``
+    glob) — the two σ-sweep renderers partition the runs by prefix and never
+    double-cover. The offline_value_trace.csv guard below is a belt-and-suspenders
+    check on top of the prefix split. Returns ``(records, sigma_dirs)`` where
+    records maps (env, algo) -> sorted list of (σ, eval_return_mean,
+    eval_return_std)."""
+    run_dir = Path(run_dir)
+    name = run_dir.name
+    if "_discrete_" in name:
+        arm = "discrete"
+    elif "_continuous_" in name:
+        arm = "continuous"
+    else:
+        return {}, {}
+
+    # Gated/non-gated runs of the same arm share the arm token but have different
+    # env sets; aggregate only with same-gating siblings (mirrors the offline
+    # collector's recon §1 rule).
+    is_gated = "_gated_" in name
+
+    sigma_dirs: Dict[float, Path] = {}
+    excluded = 0
+    for d in sorted(run_dir.parent.glob(f"online_confounded_sigma_*_{arm}_*")):
+        if not (d / "eval_metrics.csv").exists():
+            continue
+        # An online variant should never carry a value trace; skip if it somehow
+        # does (offline runs are matched by the confounded_sigma_* glob instead).
+        if (d / "offline_value_trace.csv").exists():
+            continue
+        if ("_gated_" in d.name) != is_gated:
+            excluded += 1
+            continue
+        s = _sigma_from_run(d)
+        if s is None:
+            continue
+        if s in sigma_dirs:
+            keep, drop = (
+                (d, sigma_dirs[s])
+                if d.name > sigma_dirs[s].name
+                else (sigma_dirs[s], d)
+            )
+            print(
+                f"[info] online σ-sweep: multiple runs at σ={s:g}; using {keep.name}, "
+                f"skipping {drop.name}."
+            )
+            sigma_dirs[s] = keep
+        else:
+            sigma_dirs[s] = d
+
+    if excluded:
+        tag = "gated" if is_gated else "non-gated"
+        other = "non-gated" if is_gated else "gated"
+        print(
+            f"[info] online σ-sweep: excluding {excluded} {other} siblings (current "
+            f"run is {tag}; only {tag} sibling runs are aggregated)."
+        )
+
+    records: Dict[tuple, list] = {}
+    for s in sorted(sigma_dirs):
+        ev = pd.read_csv(sigma_dirs[s] / "eval_metrics.csv")
+        if ev.empty or "algorithm" not in ev.columns:
+            continue
+        for (env, algo), _ in ev.groupby(["environment", "algorithm"]):
+            mean, std = _final_eval_return(ev, env, algo)
+            records.setdefault((env, algo), []).append((s, mean, std))
+    for k in records:
+        records[k] = sorted(records[k])
+    return records, sigma_dirs
+
+
+def _build_online_sigma_sweep_env_figure(env: str, algo_to_pts: Dict[str, list]):
+    """One env, one row: eval return vs σ, one line per algorithm (algos overlaid
+    on a shared axis — all curves share the eval-return scale, unlike the offline
+    apparent-vs-true twin-row which needs split axes). Error bands are ±std.
+    σ=0.0 gets a dashed anchor line + label. Returns ``(fig, ax)``."""
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=500)
+    all_sigmas: set = set()
+    for algo in sorted(algo_to_pts):
+        pts = sorted(algo_to_pts[algo])
+        xs = [p[0] for p in pts]
+        ys = np.array([p[1] for p in pts], dtype=float)
+        es = np.nan_to_num(np.array([p[2] for p in pts], dtype=float))
+        all_sigmas.update(xs)
+        color = get_algo_color(algo)
+        ax.plot(xs, ys, marker="o", color=color, label=algo, linewidth=1.2)
+        if len(xs) >= 2:
+            ax.fill_between(xs, ys - es, ys + es, color=color, alpha=0.15)
+    xs_sorted = sorted(all_sigmas)
+    if 0.0 in all_sigmas:
+        ax.axvline(0.0, linestyle="--", color="gray", alpha=0.6, linewidth=0.8)
+        ax.text(
+            0.0,
+            1.0,
+            " unconfounded anchor",
+            transform=ax.get_xaxis_transform(),
+            fontsize=7,
+            va="top",
+            color="gray",
+        )
+    if xs_sorted:
+        ax.set_xticks(xs_sorted)
+    ax.set_xlabel("σ (confounding strength)")
+    ax.set_ylabel("eval return (undiscounted)")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    fig.suptitle(f"online σ-sweep — {env}")
+    fig.tight_layout()
+    return fig, ax
+
+
+def render_online_sigma_sweep(
+    run_dir: Path, outdir: Path, formats: Iterable[str]
+) -> None:
+    """Online σ-sweep paper figure (online variants of Cells 7/8): final-
+    checkpoint eval return as a function of σ across sibling runs in the same cell
+    directory — one figure per env, one line per algorithm, x-axis σ. The online
+    analog of Cell 7/8's twin-row value-trace σ-wedge, but a single row: online
+    runs produce no apparent-Q estimate (no offline learner), only true return.
+
+    For these online variants the DQN (off-policy) line receives the full σ·U
+    confounding while the PPO (on-policy) line receives only the reward half, so
+    DQN diverging from PPO as σ grows is the figure's structural-confounding
+    signal. Renders partial sweeps with a log line; skips cleanly when no online
+    confounded siblings exist."""
+    records, sigma_dirs = _collect_online_sigma_sweep(run_dir)
+    if not records:
+        print("[info] online σ-sweep: no online confounded sibling runs; skipping.")
+        return
+    if len(sigma_dirs) == 1:
+        print("[info] Only 1 σ-value found in sibling runs; σ-sweep is incomplete.")
+
+    by_env: Dict[str, Dict[str, list]] = {}
+    for (env, algo), pts in records.items():
+        by_env.setdefault(env, {})[algo] = pts
+
+    subdir = outdir / "plots" / "online_sigma_sweep"
+    for env, algo_to_pts in by_env.items():
+        fig, _ax = _build_online_sigma_sweep_env_figure(env, algo_to_pts)
+        _ensure_dir(subdir)
+        fname = subdir / env.replace("/", "-")
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+
+
 def _per_context_final_table(
     fin: pd.DataFrame, env: str, algo: str, outdir: Path
 ) -> None:
@@ -1317,6 +1489,14 @@ def run_plotting(
         )
         render_value_trace_sigma_sweep(Path("runs") / run_name, outdir, formats)
 
+    # Online σ-sweep (online variants of Cells 7/8): eval return vs σ across
+    # sibling online_confounded_* runs, one line per algo. Gated on
+    # eval_metrics.csv; the online_confounded_* glob partitions these from the
+    # offline confounded_* siblings (value-trace renderer). Skips cleanly when
+    # there are no online confounded siblings.
+    if split in ("online_sigma_sweep", "all"):
+        render_online_sigma_sweep(Path("runs") / run_name, outdir, formats)
+
     # Final-checkpoint per-context snapshot (Cells 2/4): the clean companion to
     # the over-training per_context view. Gated on eval_per_context.csv.
     if split in ("per_context_final", "all"):
@@ -1337,6 +1517,7 @@ def main():
             "per_context",
             "per_context_final",
             "value_trace",
+            "online_sigma_sweep",
             "both",
             "all",
         ],

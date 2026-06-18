@@ -1,0 +1,41 @@
+# Cell 7 (Shadowed Vitals), ONLINE arm — discrete (gated), σ = 0.0.
+# Online + Z observed + U present.
+# The σ-sweep here is the ONLINE analog of Cell 7's offline σ-sweep
+# (online variant of Cell 7; the eight-cell taxonomy is unchanged —
+# online vs offline is an axis-value, so both arms live in cell_7/,
+# distinguished by the online_confounded_ filename prefix).
+#
+# DQN (off-policy) receives BOTH halves of σ·U: the reward perturbation
+# (ConfoundedCollectionWrapper, all algos) AND the action bias
+# (ConfoundedBehaviorPolicy, off-policy collection only). PPO (on-policy)
+# receives ONLY the reward perturbation — its actions are not biased by U.
+# PPO is therefore a structural control: any σ-wedge in DQN beyond PPO's
+# response isolates the action-bias contribution to confounding from the
+# simpler reward-noise hypothesis. σ=0.0 is the unconfounded anchor.
+#
+# Gated to CartPole + Acrobot (unit-reward-scale envs where the absolute
+# σ·U mechanism induces detectable A→R structure); dense-reward and
+# continuous envs gate-fail at σ≤1 (PR #34 finding). Continuous arm skipped
+# for the same reason. Strength grid: {0.0, 0.25, 0.5, 0.75, 1.0}.
+# Refs: docs/experimental_design.md §4 Cell 7; offline
+# confounded_sigma_*_discrete_gated.yaml; PR #34 (gated YAMLs).
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - ppo
+  - dqn
+
+behavior_policy: bias_confounded
+behavior_strength: 0.0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
