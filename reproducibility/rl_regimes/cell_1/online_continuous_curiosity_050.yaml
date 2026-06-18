@@ -2,10 +2,16 @@
 # curiosity strength sweep, strength = 0.5.
 # Agent emits the max-ensemble-disagreement (novel) action with
 # probability=strength, else its own action (curiosity-driven coverage).
-# Only the off-policy collector (sac) is listed: behavior policies bias
-# off-policy COLLECTION only; on-policy PPO collects its own rollouts and is
-# unaffected (PPO lives in the baseline online_continuous.yaml). strength=0.0 reproduces
-# the baseline collection exactly (pure agent) — kept as a clean grid anchor.
+# Algos: off-policy collector (sac) + on-policy PPO. Behavior policies bias
+# OFF-POLICY collection only; on-policy PPO collects its own rollouts and is
+# unaffected by behavior_strength. PPO is included as an on-policy structural
+# control: across the strength sweep PPO's curve is a baseline that demonstrates
+# "behavior bias affects off-policy but not on-policy collection." Any divergence
+# between the off-policy curve (sac) and PPO across strength isolates the
+# behavior's structural impact from baseline algorithm differences. This matches
+# the on-policy/off-policy control framing of Cells 7/8's online σ-sweep (PR #45).
+# strength=0.0 reproduces the baseline collection exactly (pure agent) — kept as
+# a clean grid anchor.
 # Strength grid: {0.0, 0.25, 0.5, 0.75, 1.0}, from curiosity's natural [0, 1]
 # mixture range. Refs: docs/experimental_design.md §4 Cell 1;
 # bias_confounded strength=σ pattern from Cells 7/8.
@@ -18,6 +24,7 @@ envs:
 
 algos:
   - sac
+  - ppo
 
 behavior_policy: curiosity
 behavior_strength: 0.5
