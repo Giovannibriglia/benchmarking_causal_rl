@@ -78,3 +78,20 @@ def test_canonical_id_off_policy_stays_bare():
     # dqn/sac keep bare names -> off-policy goldens & run-dirs unaffected.
     assert _canonical_algo_id(_normalize_algo("dqn")) == "dqn"
     assert _canonical_algo_id(_normalize_algo("sac")) == "sac"
+
+
+def test_canonical_id_off_policy_all_mlp_stays_bare():
+    # Explicit all-MLP dict form is equivalent to the bare string (goldens green).
+    spec = _normalize_algo(
+        {"name": "dqn", "networks": {"actor": "mlp", "critic": "mlp"}}
+    )
+    assert _canonical_algo_id(spec) == "dqn"
+
+
+def test_canonical_id_off_policy_non_default_is_suffixed():
+    # The canonical id is computed for recurrent off-policy (used by PR-1C2),
+    # even though this config is rejected at builder time in PR-1C1.
+    spec = _normalize_algo(
+        {"name": "dqn", "networks": {"actor": "lstm", "critic": "lstm"}}
+    )
+    assert _canonical_algo_id(spec) == "dqn__lstm__lstm"

@@ -740,6 +740,41 @@ class BenchmarkRunner:
             self.train_env.close()
             self.eval_env.close()
 
+    def _collect_off_policy(self, obs, total_steps, metrics_cache):
+        """Route off-policy collection: recurrent policies use the sequence-buffer
+        path, everything else the existing verbatim/golden-pinned flat path.
+
+        PR-1C1 WIRING: ``is_recurrent`` is currently always False for off-policy
+        (the builders reject non-MLP networks), so the ``else`` branch — bitwise-
+        identical to the prior inline call — always runs. PR-1C2 unlocks the
+        recurrent branch by allowing recurrent off-policy and constructing a
+        SequenceReplayBuffer in the builder."""
+        if getattr(self.policy, "is_recurrent", False):
+            return self.experience_source.collect_off_policy_recurrent(
+                self.agent,
+                self.replay_buffer,
+                obs,
+                collection_policy=self.collection_policy,
+                n_steps=total_steps,
+                n_envs=self.env_cfg.n_train_envs,
+                warmup=self.offpolicy_warmup,
+                batch_size=self.offpolicy_batch_size,
+                metrics_cache=metrics_cache,
+                aux_models=self.aux_models,
+            )
+        return self.experience_source.collect_off_policy(
+            self.agent,
+            self.replay_buffer,
+            obs,
+            collection_policy=self.collection_policy,
+            n_steps=total_steps,
+            n_envs=self.env_cfg.n_train_envs,
+            warmup=self.offpolicy_warmup,
+            batch_size=self.offpolicy_batch_size,
+            metrics_cache=metrics_cache,
+            aux_models=self.aux_models,
+        )
+
     def _train_off_policy(
         self,
         train_logger: CSVLogger,
@@ -760,18 +795,9 @@ class BenchmarkRunner:
             # OnlineSource.collect_off_policy (Phase 1). aux_models (if any)
             # trains on each sampled batch inside the loop; last_batch is used
             # for checkpoint logging (no re-sampling, so off-policy RNG/golden
-            # is unaffected).
-            obs, metrics_cache, last_batch = self.experience_source.collect_off_policy(
-                self.agent,
-                self.replay_buffer,
-                obs,
-                collection_policy=self.collection_policy,
-                n_steps=total_steps,
-                n_envs=self.env_cfg.n_train_envs,
-                warmup=self.offpolicy_warmup,
-                batch_size=self.offpolicy_batch_size,
-                metrics_cache=metrics_cache,
-                aux_models=self.aux_models,
+            # is unaffected). _collect_off_policy routes flat vs recurrent.
+            obs, metrics_cache, last_batch = self._collect_off_policy(
+                obs, total_steps, metrics_cache
             )
 
             if ep in checkpoint_eps:

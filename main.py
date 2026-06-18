@@ -159,8 +159,14 @@ def _canonical_algo_id(spec: dict) -> str:
     try:
         kind = registry.get(name).kind
     except KeyError:
-        kind = None
+        return name
     if kind == "on_policy":
+        # On-policy always suffixes (per PR #49).
+        return f"{name}__{spec['actor']}__{spec['critic']}"
+    # Off-policy: suffix ONLY when the network config is non-default. This keeps
+    # existing off-policy goldens (bare dqn/sac/ddpg) bitwise-green while enabling
+    # disambiguation for recurrent off-policy (dqn__lstm__lstm) in PR-1C2.
+    if spec["actor"] != "mlp" or spec["critic"] != "mlp":
         return f"{name}__{spec['actor']}__{spec['critic']}"
     return name
 
