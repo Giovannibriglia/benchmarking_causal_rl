@@ -43,7 +43,7 @@ def test_cell_1_yamls_parse():
         "Hopper-v5",
         "Walker2d-v5",
     ]
-    assert continuous["algos"] == ["sac"]
+    assert continuous["algos"] == ["sac", "ppo"]
 
     # (c) common §3 settings landed on both arms.
     for cfg in (discrete, continuous):

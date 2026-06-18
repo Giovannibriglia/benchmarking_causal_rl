@@ -56,15 +56,32 @@ class _StubDQN:
     def q_network(self, obs):
         return self._q
 
+    def act(self, obs, *a, **k):
+        # Agent action is the argmax (index 1); the anti-reward branch must
+        # override it with argmin when strength=1.
+        b = obs.shape[0]
+        return ActionOutput(action=torch.full((b,), 1, dtype=torch.long))
+
 
 def test_anti_reward_discrete_returns_argmin_not_argmax():
     # argmin index is 2 (value 0.0); argmax index is 1 (value 5.0).
     q = torch.tensor([[1.0, 5.0, 0.0, 3.0]])
+    # strength=1.0 -> fully adversarial; epsilon=0.0 -> no within-branch random.
     pol = AntiRewardBehaviorPolicy(
-        _StubDQN(q), "discrete", _DiscreteSpace(4), epsilon=0.0
+        _StubDQN(q), "discrete", _DiscreteSpace(4), strength=1.0, epsilon=0.0
     )
     action = pol.act(torch.zeros(1, 3)).action
-    assert action.item() == 2  # argmin, NOT 1 (argmax)
+    assert action.item() == 2  # argmin, NOT 1 (argmax / the agent's action)
+
+
+def test_anti_reward_strength_zero_is_pure_agent():
+    # strength=0.0 -> always the agent's action (argmax index 1), never argmin.
+    q = torch.tensor([[1.0, 5.0, 0.0, 3.0]])
+    pol = AntiRewardBehaviorPolicy(
+        _StubDQN(q), "discrete", _DiscreteSpace(4), strength=0.0, epsilon=0.0
+    )
+    action = pol.act(torch.zeros(1, 3)).action
+    assert action.item() == 1  # the agent's action, NOT 2 (argmin)
 
 
 class _StubDDPGCritic:
@@ -192,7 +209,7 @@ def test_factory_strength_maps_to_primary_param():
     sub = build_collection_policy(
         "bias_suboptimal", agent, "discrete", _DiscreteSpace(2), strength=0.4
     )
-    assert anti.epsilon == 0.25 and skew.p == 0.8 and sub.beta == 0.4
+    assert anti.strength == 0.25 and skew.p == 0.8 and sub.beta == 0.4
 
 
 # --------------------------------------------------------------------------

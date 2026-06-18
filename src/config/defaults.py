@@ -24,9 +24,12 @@ class EnvConfig:
     offline_dataset: Optional[str] = None
     # Off-policy online collection behavior policy (opt-in; default "agent" =
     # AgentBehaviorPolicy, byte-identical to the pre-A1 path). One of: agent,
-    # anti_reward, bias_skew, bias_suboptimal. behavior_strength maps to each
-    # policy's primary param (anti_reward=epsilon, bias_skew=p,
-    # bias_suboptimal=beta); None keeps the policy default.
+    # anti_reward, curiosity, bias_skew, bias_suboptimal, bias_confounded.
+    # behavior_strength maps to each policy's primary param (anti_reward=strength,
+    # curiosity=strength, bias_skew=p, bias_suboptimal=beta,
+    # bias_confounded=strength); for anti_reward/curiosity/bias_confounded the
+    # dial is uniform: 0.0 = pure agent (baseline), 1.0 = fully active. None
+    # keeps the policy default.
     behavior_policy: str = "agent"
     behavior_strength: Optional[float] = None
     # Observation indices to drop from the flat obs vector (Z-hidden axis). For
