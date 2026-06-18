@@ -6,13 +6,13 @@ pessimal argmin-Q) — swept across a shared strength grid {0.0, 0.25, 0.5, 0.75
 1.0}, the same grid Cells 7/8 use for bias_confounded's σ. 0.0 = pure agent
 (baseline anchor), 1.0 = fully active.
 
-Behavior policies bias OFF-POLICY collection only, so each sweep YAML pairs the
-off-policy collector (dqn discrete / sac continuous) with on-policy PPO as a
-structural control: PPO ignores behavior_strength, so its curve is a baseline
-that isolates the behavior's effect on off-policy collection (matching Cells 7/8's
-online σ-sweep, PR #45). These tests check parse, the two behavior fields, the
-[collector, ppo] algo list, and grid completeness. No run smoke test (that would
-exercise live policy/wrapper code — out of scope here).
+Behavior policies bias OFF-POLICY collection only, so each sweep YAML lists only
+the off-policy collector (dqn discrete / sac continuous); on-policy PPO is
+unaffected and is structurally rejected here (the runner validates this at load
+time — see test_runner_behavior_policy_validation.py). PPO data for these cells
+lives in the baseline YAML (behavior_policy=agent). These tests check parse, the
+two behavior fields, the off-policy-only algo list, and grid completeness. No run
+smoke test (that would exercise live policy/wrapper code — out of scope here).
 """
 
 from __future__ import annotations
@@ -48,10 +48,11 @@ def _check_behavior(behavior: str):
             cfg = yaml.safe_load(path.read_text())
             assert cfg["behavior_policy"] == behavior, path.name
             assert cfg["behavior_strength"] == sval, path.name
-            # Off-policy collector + on-policy PPO (the structural control): the
-            # behavior policy biases off-policy collection, while PPO ignores
-            # behavior_strength and serves as a baseline across the sweep.
-            assert cfg["algos"] == [algo, "ppo"], path.name
+            # Off-policy collector only — the behavior policy biases off-policy
+            # collection, and on-policy PPO is structurally rejected here (it
+            # would be a no-op; the runner enforces this at load time).
+            assert cfg["algos"] == [algo], path.name
+            assert "ppo" not in cfg["algos"], path.name
             # §3 common settings carry over unchanged.
             assert cfg["seed"] == 0 and cfg["n_train_envs"] == 16
             assert cfg["n_episodes"] == 250 and cfg["aggregation"] == "iqm"

@@ -2,14 +2,11 @@
 # anti_reward strength sweep, strength = 0.0.
 # Agent takes its critic's argmin-Q (reward-pessimal) action with
 # probability=strength, else its own action (critic-pessimal collection).
-# Algos: off-policy collector (sac) + on-policy PPO. Behavior policies bias
-# OFF-POLICY collection only; on-policy PPO collects its own rollouts and is
-# unaffected by behavior_strength. PPO is included as an on-policy structural
-# control: across the strength sweep PPO's curve is a baseline that demonstrates
-# "behavior bias affects off-policy but not on-policy collection." Any divergence
-# between the off-policy curve (sac) and PPO across strength isolates the
-# behavior's structural impact from baseline algorithm differences. This matches
-# the on-policy/off-policy control framing of Cells 7/8's online σ-sweep (PR #45).
+# Only the off-policy collector (sac) is listed: behavior policies in this
+# YAML (anti_reward) bias OFF-POLICY collection only. On-policy PPO is structurally
+# rejected here at YAML load time — adding it would be a no-op redundant run (PPO
+# ignores behavior_strength), and the runner's validation enforces this. PPO data
+# for these cells lives in the baseline online_masked_continuous.yaml (behavior_policy=agent).
 # strength=0.0 reproduces the baseline collection exactly (pure agent) — kept as
 # a clean grid anchor.
 # Strength grid: {0.0, 0.25, 0.5, 0.75, 1.0}, from anti_reward's natural [0, 1]
@@ -24,7 +21,6 @@ envs:
 
 algos:
   - sac
-  - ppo
 
 mask_indices:
   Pendulum-v1: [2]

@@ -13,7 +13,10 @@ from src.benchmarking.registry import (
     register_default_algorithms,
     registry,
 )
-from src.benchmarking.runner import BenchmarkRunner
+from src.benchmarking.runner import (
+    _validate_algos_against_behavior_policy,
+    BenchmarkRunner,
+)
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.device import detect_device
 from src.envs.registry import register_default_env_wrappers
@@ -493,6 +496,11 @@ def main():
         raise ValueError(
             "No algorithms or environments specified. Provide them via CLI or reproduce YAML."
         )
+
+    # Fail fast on structurally-incompatible (on-policy algo + action-bias-only
+    # behavior_policy) combinations before building any run (registry is already
+    # populated above via register_default_algorithms()).
+    _validate_algos_against_behavior_policy(algos, behavior_policy)
 
     base_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.reproduce:

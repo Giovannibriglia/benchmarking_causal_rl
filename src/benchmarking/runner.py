@@ -87,6 +87,71 @@ class AlgorithmSpec:
     data_regime: str = "online"
 
 
+def _validate_algos_against_behavior_policy(
+    algos: list,
+    behavior_policy: str,
+    on_policy_algos=None,
+) -> None:
+    """Reject YAMLs where on-policy algorithms appear alongside a behavior
+    policy whose mechanism doesn't touch them.
+
+    On-policy algorithms collect their own rollouts via their internal
+    actor-critic loop and ignore the configured behavior_policy. So if the
+    behavior_policy's mechanism is action-bias-only (curiosity, anti_reward,
+    bias_skew, bias_suboptimal), an on-policy algo in the YAML is a no-op
+    across the run — it produces identical results to the same algo run with
+    behavior_policy="agent". Listing it is structurally redundant and wastes
+    compute.
+
+    Only behaviors that affect on-policy algorithms (currently bias_confounded,
+    via the ConfoundedCollectionWrapper's reward perturbation) may include
+    on-policy algos in the same YAML.
+
+    ``on_policy_algos`` is the set of algo names treated as on-policy. When None
+    (the default), it is derived from the algorithm registry — the source of
+    truth is ``AlgorithmSpec.kind == "on_policy"`` (so adding a new on-policy
+    algo needs no change here). The registry must be populated first
+    (``register_default_algorithms()``); main.py does this before calling.
+    """
+    if behavior_policy == "agent":
+        return  # No active behavior mechanism; on-policy algos are fine.
+
+    from src.rl.policies.behavior_policy import behavior_policy_class
+
+    policy_class = behavior_policy_class(behavior_policy)
+    if policy_class is None:
+        return  # Unknown behavior_policy; other validation handles this.
+    if policy_class.affects_on_policy():
+        return  # Behavior's mechanism affects on-policy too; PPO+DQN is valid.
+
+    # Behavior is action-bias-only. Find any on-policy algos in the list.
+    if on_policy_algos is not None:
+        on_policy_in_list = sorted(set(algos) & set(on_policy_algos))
+    else:
+        from src.benchmarking.registry import registry
+
+        on_policy_in_list = []
+        for a in algos:
+            try:
+                if registry.get(a).kind == "on_policy":
+                    on_policy_in_list.append(a)
+            except KeyError:
+                pass  # Unknown algo; let registry.get raise downstream instead.
+        on_policy_in_list = sorted(set(on_policy_in_list))
+
+    if on_policy_in_list:
+        raise ValueError(
+            f"YAML configuration error: behavior_policy={behavior_policy!r} "
+            f"is action-bias-only (it does not affect on-policy algorithms), "
+            f"so listing on-policy algos {on_policy_in_list} in the same YAML "
+            f"is structurally redundant — those algos see no effect of the "
+            f"behavior and produce identical results to behavior_policy='agent'. "
+            f"Remove the on-policy algos OR change behavior_policy to 'agent' "
+            f"OR use a behavior_policy whose mechanism affects on-policy algos "
+            f"(currently only bias_confounded, via its reward wrapper)."
+        )
+
+
 class BenchmarkRunner:
     def __init__(
         self,
