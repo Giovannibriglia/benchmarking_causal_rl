@@ -1,6 +1,8 @@
 # Cell 2 — Invisible Gene, continuous arm.
 # Online, hidden Z (velocity components masked), no confounding. Exercises the
 # epistemic-POMDP signature: marginal return holds, per-context variance grows.
+# Continuous arm includes both on-policy (PPO) and off-policy (SAC) baselines,
+# matching the discrete arm's PPO+DQN coverage.
 # Refs: docs/experimental_design.md §4 Cell 2, §5 per-env mask spec, §3 common settings.
 
 envs:
@@ -11,6 +13,7 @@ envs:
 
 algos:
   - sac
+  - ppo
 
 mask_indices:
   Pendulum-v1: [2]

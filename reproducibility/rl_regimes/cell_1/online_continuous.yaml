@@ -1,5 +1,7 @@
 # Cell 1 — Crystal Clear Clinic, continuous arm.
 # Online, fully observed, no confounding. Baseline anchor for the eight-cell taxonomy.
+# Continuous arm includes both on-policy (PPO) and off-policy (SAC) baselines,
+# matching the discrete arm's PPO+DQN coverage.
 # Refs: docs/experimental_design.md §4 Cell 1, §3 common run settings.
 
 envs:
@@ -10,6 +12,7 @@ envs:
 
 algos:
   - sac
+  - ppo
 
 n_episodes: 250
 rollout_len: 1024

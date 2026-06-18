@@ -61,16 +61,27 @@ def _action_bounds(action_space, device: torch.device):
 
 
 class AntiRewardBehaviorPolicy(BehaviorPolicy):
-    """Critic-pessimal collection: take the action the agent's OWN critic values
-    least (argmin-Q), per-algorithm. No second learner.
+    """Critic-pessimal collection: with probability ``strength`` take the action
+    the agent's OWN critic values least (argmin-Q); otherwise take the agent's
+    action. ``strength=0`` -> pure agent (the unconfounded baseline);
+    ``strength=1`` -> fully adversarial. This dial convention matches
+    ``CuriosityBehaviorPolicy`` and ``ConfoundedBehaviorPolicy`` (0 = off,
+    1 = fully active), so the three behaviors share a single strength grid.
+
+    The adversarial (argmin-Q) branch, per-algorithm, with no second learner:
 
       * discrete (DQN): argmin_a Q(s, a), inside the SAME epsilon-greedy
-        structure as ``DQN.act`` (the ``torch.rand`` draw is kept unconditional
-        so a future agent= run alongside is RNG-consistent).
+        structure as ``DQN.act`` (``epsilon`` is the within-branch random-action
+        rate; the ``torch.rand`` draw is kept unconditional so a future agent=
+        run alongside is RNG-consistent).
       * continuous (DDPG/SAC): sample ``n_candidates`` actions from the agent's
         own ``act`` and return the one the critic scores LOWEST. SAC's twin-Q is
         evaluated on the de-scaled action; DDPG's single critic on the action
         as stored.
+
+    Note ``strength`` (the agent-vs-adversarial mixture dial, mapped from the
+    config's ``behavior_strength``) is distinct from ``epsilon`` (the random
+    exploration rate WITHIN the adversarial branch, a fixed secondary knob).
     """
 
     def __init__(
@@ -79,12 +90,14 @@ class AntiRewardBehaviorPolicy(BehaviorPolicy):
         action_type: str,
         action_space,
         *,
+        strength: float = 1.0,
         epsilon: float = 0.1,
         n_candidates: int = 10,
     ) -> None:
         self.agent = agent
         self.action_type = action_type
         self.action_space = action_space
+        self.strength = float(strength)
         self.epsilon = float(epsilon)
         self.n_candidates = max(1, int(n_candidates))
 
@@ -108,28 +121,37 @@ class AntiRewardBehaviorPolicy(BehaviorPolicy):
         idx = torch.argmin(q, dim=0)  # [B]
         return candidates[idx, torch.arange(b, device=candidates.device)]
 
-    def act(self, obs: torch.Tensor) -> ActionOutput:
+    def _adversarial(self, obs: torch.Tensor) -> torch.Tensor:
+        """The critic-pessimal (argmin-Q) action per env."""
         if self.action_type == "discrete":
             # Mirror DQN.act's epsilon-greedy, but argmin instead of argmax.
             if torch.rand(1).item() < self.epsilon:
                 batch = obs.shape[0]
-                return ActionOutput(
-                    action=torch.randint(
-                        0,
-                        self.agent.q_network(obs).shape[1],
-                        (batch,),
-                        device=obs.device,
-                    )
+                return torch.randint(
+                    0,
+                    self.agent.q_network(obs).shape[1],
+                    (batch,),
+                    device=obs.device,
                 )
             with torch.no_grad():
                 q = self.agent.q_network(obs)
-                return ActionOutput(action=torch.argmin(q, dim=1))
+                return torch.argmin(q, dim=1)
         # Continuous: sample candidates from the agent, return the worst by Q.
         with torch.no_grad():
             candidates = torch.stack(
                 [self.agent.act(obs).action for _ in range(self.n_candidates)], dim=0
             )
-            return ActionOutput(action=self._argmin_over_candidates(obs, candidates))
+            return self._argmin_over_candidates(obs, candidates)
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        agent_a = self.agent.act(obs).action
+        adversarial = self._adversarial(obs)
+        take = torch.rand(obs.shape[0], device=obs.device) < self.strength
+        if self.action_type == "discrete":
+            return ActionOutput(action=torch.where(take, adversarial, agent_a))
+        return ActionOutput(
+            action=torch.where(take.unsqueeze(-1), adversarial, agent_a)
+        )
 
 
 class SkewBehaviorPolicy(BehaviorPolicy):
@@ -392,7 +414,7 @@ class ConfoundedBehaviorPolicy(BehaviorPolicy):
 # the pre-A1 path), so the off-policy golden is untouched; this factory only
 # builds the opt-in policies.
 _STRENGTH_PARAM = {
-    "anti_reward": "epsilon",  # epsilon-greedy exploration over argmin-Q
+    "anti_reward": "strength",  # P(take argmin-Q action) vs the agent's action
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
