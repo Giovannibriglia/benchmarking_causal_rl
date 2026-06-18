@@ -50,6 +50,12 @@ class PPO(BaseActorCritic):
             )
 
     def learn(self, batch: RolloutBatch) -> Dict[str, float]:
+        # Recurrent batches (from rollout_recurrent) carry a (T, N) seq shape and
+        # require truncated BPTT over contiguous per-env sequences — the flat
+        # shuffled-minibatch path below cannot be used (shuffling breaks the time
+        # axis). The MLP path keeps the original flat update UNCHANGED.
+        if batch.recurrent_seq_shape is not None:
+            return self._learn_recurrent(batch)
         metrics = {}
         # Safety: old tensors must be constants.
         assert not batch.log_probs.requires_grad
@@ -93,4 +99,62 @@ class PPO(BaseActorCritic):
                     "actor_loss": policy_loss.item(),
                     "critic_loss": value_loss.item(),
                 }
+        return metrics
+
+    def _learn_recurrent(self, batch: RolloutBatch) -> Dict[str, float]:
+        """Truncated-BPTT PPO update for recurrent trunks. The whole rollout
+        (all N envs × T steps) is one batch per epoch — no flat shuffling, since
+        sequences must stay contiguous in time. Forward is a single
+        ``evaluate_sequence`` pass with per-env episode-boundary resets;
+        ``loss.backward()`` propagates through the recurrent cells (the BPTT)."""
+        assert not batch.log_probs.requires_grad
+        assert not batch.advantages.requires_grad
+        assert not batch.returns.requires_grad
+        T, N = batch.recurrent_seq_shape
+        obs_seq = batch.obs.view(T, N, *batch.obs.shape[1:])
+        if batch.actions.ndim > 1:
+            actions_seq = batch.actions.view(T, N, *batch.actions.shape[1:])
+        else:
+            actions_seq = batch.actions.view(T, N)
+        dones = batch.dones.view(T, N)
+        adv = batch.advantages.view(T, N)
+        ret = batch.returns.view(T, N)
+        old_logp = batch.log_probs.view(T, N)
+        # episode_starts[t]: step t begins a fresh episode -> reset hidden state.
+        # t=0 always (rollout reset the env); t>0 iff the previous step was done.
+        episode_starts = torch.zeros(T, N, device=self.device)
+        episode_starts[0] = 1.0
+        if T > 1:
+            episode_starts[1:] = dones[:-1]
+
+        metrics = {}
+        for _ in range(self.train_iters):
+            logp, values, entropy = self.policy.evaluate_sequence(
+                obs_seq, actions_seq, episode_starts, batch.recurrent_states
+            )
+            ratio = torch.exp(logp - old_logp)
+            surr1 = ratio * adv
+            surr2 = torch.clamp(ratio, 1 - self.clip_ratio, 1 + self.clip_ratio) * adv
+            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = F.mse_loss(values, ret)
+            entropy_mean = entropy.mean()
+            loss = (
+                policy_loss
+                + self.value_coef * value_loss
+                - self.entropy_coef * entropy_mean
+            )
+
+            self.optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            self.optimizer.step()
+
+            metrics = {
+                "loss": loss.item(),
+                "policy_loss": policy_loss.item(),
+                "value_loss": value_loss.item(),
+                "entropy": entropy_mean.item(),
+                "actor_loss": policy_loss.item(),
+                "critic_loss": value_loss.item(),
+            }
         return metrics

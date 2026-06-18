@@ -278,6 +278,12 @@ class BenchmarkRunner:
             device=self.device,
             action_space=act_space,
             obs_shape=self.obs_shape,
+            # Per-component network selection (on-policy ActorCritic). Off-policy
+            # builders take **kwargs and ignore these. network_kwargs carries
+            # optional hidden_dim/num_layers for recurrent trunks.
+            actor_network=getattr(self.train_cfg, "actor_network", "mlp"),
+            critic_network=getattr(self.train_cfg, "critic_network", "mlp"),
+            **getattr(self.train_cfg, "network_kwargs", {}),
         )
         self.replay_buffer = None
         self.collection_policy = None
@@ -341,13 +347,22 @@ class BenchmarkRunner:
             )
 
     def _collect_on_policy(self) -> tuple[RolloutBatch, float, float]:
-        # Rollout loop relocated verbatim to OnlineSource.rollout (Phase 1).
-        batch, ep_returns = self.experience_source.rollout(
-            self.policy,
-            self.agent,
-            n_steps=self.env_cfg.rollout_len,
-            n_envs=self.env_cfg.n_train_envs,
-        )
+        # Recurrent policies (any non-MLP trunk) use the separate state-threading
+        # rollout; the MLP path keeps the verbatim, golden-pinned rollout (Phase 1).
+        if getattr(self.policy, "is_recurrent", False):
+            batch, ep_returns = self.experience_source.rollout_recurrent(
+                self.policy,
+                self.agent,
+                n_steps=self.env_cfg.rollout_len,
+                n_envs=self.env_cfg.n_train_envs,
+            )
+        else:
+            batch, ep_returns = self.experience_source.rollout(
+                self.policy,
+                self.agent,
+                n_steps=self.env_cfg.rollout_len,
+                n_envs=self.env_cfg.n_train_envs,
+            )
         train_return_mean, train_return_std = self._aggregate_returns(ep_returns)
         return batch, train_return_mean, train_return_std
 

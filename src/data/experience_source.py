@@ -259,6 +259,82 @@ class OnlineSource(ExperienceSource):
         )
         return batch, ep_returns
 
+    def rollout_recurrent(
+        self,
+        policy,
+        agent: Algorithm,
+        *,
+        n_steps: int,
+        n_envs: int,
+    ) -> Tuple[RolloutBatch, torch.Tensor]:
+        """Recurrent on-policy rollout (separate code path from ``rollout`` so the
+        verbatim, golden-pinned MLP loop above is untouched).
+
+        Threads per-env hidden state through ``policy.act_step`` across steps,
+        resets the state per-env on episode boundaries (``done``), and stores the
+        flat (T*N) fields PLUS the additive ``recurrent_states`` (rollout-start
+        state) and ``recurrent_seq_shape`` = (T, N) for the BPTT update. GAE's
+        next-value bootstrap uses the post-step critic state (masked on done, so
+        only the within-episode V(s') matters)."""
+        T, N = n_steps, n_envs
+        obs_buf, next_obs_buf, act_buf, logp_buf = [], [], [], []
+        rew_buf = torch.zeros(T, N, device=self.device)
+        done_buf = torch.zeros(T, N, device=self.device)
+        val_buf = torch.zeros(T, N, device=self.device)
+        next_val_buf = torch.zeros(T, N, device=self.device)
+
+        obs, _ = self.env.reset()
+        ep_returns = torch.zeros(N, device=self.device)
+        # Rollout-start hidden state (zeros). Stored for the BPTT update's
+        # sequence start; episode_starts also zero per-env at t=0 on the update.
+        init_state = policy.initial_state(N, device=self.device)
+        state = policy.initial_state(N, device=self.device)
+        for t in range(T):
+            with torch.no_grad():
+                action, logp, val, new_state = policy.act_step(obs, state)
+            next_obs, reward, terminated, truncated, _ = self.env.step(action)
+            done = torch.logical_or(terminated, truncated).float()
+            ep_returns += reward
+            with torch.no_grad():
+                next_val, _ = policy.value_step(next_obs, new_state["critic"])
+
+            obs_buf.append(obs)
+            next_obs_buf.append(next_obs)
+            act_buf.append(action.detach())
+            logp_buf.append(logp.detach())
+            rew_buf[t] = reward
+            done_buf[t] = done
+            val_buf[t] = val.detach()
+            next_val_buf[t] = next_val.detach()
+
+            # Reset per-env hidden state where the episode just ended, so the
+            # next step starts the new (autoreset) episode from zeros.
+            state = policy.reset_state_where(new_state, done.bool())
+            obs = next_obs
+
+        advantages, returns = agent.compute_gae(
+            rew_buf, done_buf, val_buf, next_val_buf
+        )
+        batch = RolloutBatch(
+            obs=torch.stack(obs_buf).flatten(0, 1),
+            next_obs=torch.stack(next_obs_buf).flatten(0, 1),
+            actions=(
+                torch.stack(act_buf).reshape(T * N, -1)
+                if act_buf[0].ndim > 1
+                else torch.stack(act_buf).reshape(T * N)
+            ),
+            log_probs=torch.stack(logp_buf).reshape(T * N),
+            rewards=rew_buf.reshape(T * N),
+            dones=done_buf.reshape(T * N),
+            values=val_buf.reshape(T * N),
+            next_values=next_val_buf.reshape(T * N),
+            advantages=advantages.reshape(T * N),
+            returns=returns.reshape(T * N),
+            recurrent_states=init_state,
+            recurrent_seq_shape=(T, N),
+        )
+        return batch, ep_returns
+
     def collect_off_policy(
         self,
         agent: Algorithm,

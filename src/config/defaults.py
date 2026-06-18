@@ -49,6 +49,14 @@ class TrainingConfig:
     algorithm: str = "ppo"
     checkpoint_dir: Optional[str] = None
     aggregation: str = "iqm"
+    # On-policy per-component network selection (separate actor/critic trunks).
+    # The on-policy builders thread these into ActorCritic; off-policy builders
+    # ignore them. Default mlp/mlp reproduces the plain-string algo behavior.
+    # ``algorithm`` above carries the canonical id (e.g. ppo__lstm__lstm) for
+    # on-policy runs; ``actor_network``/``critic_network`` drive construction.
+    actor_network: str = "mlp"
+    critic_network: str = "mlp"
+    network_kwargs: dict = field(default_factory=dict)
 
     def checkpoint_episodes(self) -> list[int]:
         """Compute uniformly spaced checkpoint episodes including first and last."""

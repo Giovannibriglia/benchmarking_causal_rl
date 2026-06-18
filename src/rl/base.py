@@ -44,10 +44,9 @@ class Algorithm(abc.ABC, nn.Module):
     ``set_agent_group`` is a no-op when ``n_agents == 1``.
 
     Actor/critic separation: off-policy algorithms keep distinct
-    ``self.actor`` / ``self.critic`` modules; on-policy algorithms separate
-    actor and critic at the head level inside their policy network
-    (``ActorCriticMLP.actor`` / ``.critic``) — kept as-is by Phase-0 gate
-    decision 5.
+    ``self.actor`` / ``self.critic`` modules; on-policy algorithms use the
+    separate-trunk ``ActorCritic`` policy (independent actor/critic trunks,
+    each MLP or recurrent, with their own heads).
     """
 
     paradigm: Literal["on_policy", "off_policy", "offline"]

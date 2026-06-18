@@ -24,6 +24,18 @@ def get_algo_color(algo: str, palette: str = "Set1"):
     return COLOR_MAP[algo]
 
 
+def short_algo_label(algo: str) -> str:
+    """Legend label for an algorithm identifier. The canonical on-policy id
+    ``name__actor__critic`` renders compactly as ``name (actor/critic)``; bare
+    names are returned unchanged. Note historical CSVs predating per-component
+    ids carry a bare ``ppo`` (equivalent to ``ppo__mlp__mlp``); they render as
+    ``ppo`` and are not auto-merged with new ids."""
+    parts = str(algo).split("__")
+    if len(parts) == 3:
+        return f"{parts[0]} ({parts[1]}/{parts[2]})"
+    return str(algo)
+
+
 NON_METRIC_COLS = {
     "algorithm",
     "environment",
@@ -708,7 +720,9 @@ def _build_online_sigma_sweep_env_figure(env: str, algo_to_pts: Dict[str, list])
         es = np.nan_to_num(np.array([p[2] for p in pts], dtype=float))
         all_sigmas.update(xs)
         color = get_algo_color(algo)
-        ax.plot(xs, ys, marker="o", color=color, label=algo, linewidth=1.2)
+        ax.plot(
+            xs, ys, marker="o", color=color, label=short_algo_label(algo), linewidth=1.2
+        )
         if len(xs) >= 2:
             ax.fill_between(xs, ys - es, ys + es, color=color, alpha=0.15)
     xs_sorted = sorted(all_sigmas)
@@ -844,7 +858,7 @@ def render_eval_per_context_final(
         y = fin["return_iqm"].to_numpy()
         spread = fin["return_iqr_std"].fillna(0).to_numpy()
         color = get_algo_color(algo)
-        ax.plot(x, y, marker="o", color=color, label=algo)
+        ax.plot(x, y, marker="o", color=color, label=short_algo_label(algo))
         ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.15)
         ax.set_title(f"final-checkpoint per-context return - {env} - {algo}")
         ax.set_xlabel("context value (bin midpoint)")
@@ -1110,7 +1124,7 @@ def plot_metric(
             y = sub["center"].to_numpy()
             spread = sub["spread"].fillna(0).to_numpy()
             color = get_algo_color(algo)
-            ax.plot(x, y, label=algo, color=color)
+            ax.plot(x, y, label=short_algo_label(algo), color=color)
             if len(sub) >= 2:
                 ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.2)
         ax.set_title(f"{metric} - {env}")
@@ -1174,7 +1188,7 @@ def plot_critic_metric(
             y = sub["center"].to_numpy()
             spread = sub["spread"].fillna(0).to_numpy()
             color = get_algo_color(algo)
-            ax.plot(x, y, label=algo, color=color, marker="o")
+            ax.plot(x, y, label=short_algo_label(algo), color=color, marker="o")
             if len(sub) >= 2:
                 ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.2)
 

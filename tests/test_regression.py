@@ -73,7 +73,9 @@ def _assert_artifact_layout(run_dir: Path, expect_critic_csv: bool) -> None:
     # checkpoints written per env/algo/seed with per-episode files
     ckpt_dirs = list((run_dir / "checkpoints").iterdir())
     assert ckpt_dirs, "no checkpoint subdirectory written"
-    assert any(d.name == "CartPole-v1_ppo_seed42" for d in ckpt_dirs)
+    # The on-policy algorithm id is now the canonical separate-trunk form
+    # (name__actor__critic); plain `ppo` -> `ppo__mlp__mlp`.
+    assert any(d.name == "CartPole-v1_ppo__mlp__mlp_seed42" for d in ckpt_dirs)
     assert list(ckpt_dirs[0].glob("ckpt_ep*.pt"))
 
 
