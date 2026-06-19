@@ -89,7 +89,7 @@ def test_collect_off_policy_recurrent_preserves_episodes():
         collection_policy=None,
         n_steps=50,
         n_envs=2,
-        warmup=0,
+        warmup=10**9,  # skip the train gate; this test is about episode structure
         batch_size=4,
     )
     assert len(buf) == 100  # 50 steps * 2 envs
@@ -115,7 +115,7 @@ def test_collect_off_policy_recurrent_passes_state_through():
         collection_policy=None,
         n_steps=5,
         n_envs=2,
-        warmup=0,
+        warmup=10**9,  # skip the train gate; this test is about state threading
         batch_size=2,
     )
     # First call gets the initial (zeros) state; subsequent calls get a threaded
@@ -135,7 +135,8 @@ def _toggle_probe(is_recurrent: bool):
         )[1],
     )
     fake = types.SimpleNamespace(
-        policy=types.SimpleNamespace(is_recurrent=is_recurrent),
+        # Off-policy recurrence is gated on the run config (not a policy attr).
+        _is_recurrent_run=lambda: is_recurrent,
         experience_source=fake_src,
         agent=None,
         replay_buffer=None,
@@ -143,6 +144,7 @@ def _toggle_probe(is_recurrent: bool):
         aux_models=None,
         offpolicy_warmup=0,
         offpolicy_batch_size=4,
+        offpolicy_seq_len=8,
         env_cfg=types.SimpleNamespace(n_train_envs=2),
     )
     BenchmarkRunner._collect_off_policy(
@@ -154,3 +156,48 @@ def _toggle_probe(is_recurrent: bool):
 def test_runner_toggle_routes_to_correct_collection_method():
     assert _toggle_probe(is_recurrent=True) == ["recurrent"]
     assert _toggle_probe(is_recurrent=False) == ["flat"]
+
+
+class _FixedAction0Policy:
+    """Behavior policy that always emits action 0 (overrides the agent)."""
+
+    def act(self, obs):
+        return ActionOutput(action=torch.zeros(obs.shape[0], dtype=torch.long))
+
+
+def test_behavior_policy_overrides_action_but_state_still_threads():
+    """The behavior policy's action is what gets stored/taken; the agent's hidden
+    state still evolves through the real observations (its forward is still run)."""
+    from src.benchmarking.registry import register_default_algorithms, registry
+    from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
+
+    register_default_algorithms()
+    dev = torch.device("cpu")
+    buf = SequenceReplayBuffer(capacity=10_000, device=dev)
+    _, agent = registry.get("dqn").builder(
+        obs_dim=3,
+        action_dim=2,
+        action_type="discrete",
+        device=dev,
+        action_space=None,
+        obs_shape=(3,),
+        critic_network="lstm",
+        buffer=buf,
+    )
+    env = _StubVecEnv(periods=[6, 6])
+    src = OnlineSource(env, dev)
+    obs, _ = env.reset()
+    src.collect_off_policy_recurrent(
+        agent,
+        buf,
+        obs,
+        collection_policy=_FixedAction0Policy(),
+        n_steps=20,
+        n_envs=2,
+        warmup=8,
+        batch_size=4,
+        seq_len=4,
+    )
+    # Every stored action is the behavior policy's choice (0), not the agent's.
+    sampled = buf.sample_sequences(batch_size=8, seq_len=4)["actions"]
+    assert torch.all(sampled == 0)
