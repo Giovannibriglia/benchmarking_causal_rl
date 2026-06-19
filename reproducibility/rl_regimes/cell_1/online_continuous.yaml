@@ -3,6 +3,10 @@
 # Continuous arm includes both on-policy (PPO) and off-policy (SAC) baselines,
 # matching the discrete arm's PPO+DQN coverage.
 # Refs: docs/experimental_design.md §4 Cell 1, §3 common run settings.
+# Recurrent baselines: LSTM variants of the listed algos are included for the
+# POMDP-resolution demonstration (control — Z observed, recurrence should NOT hurt performance). LSTM uses separate
+# actor/critic trunks (defaults hidden_dim=128, num_layers=1; override per-YAML
+# via networks: {hidden_dim, num_layers}).
 
 envs:
   - Pendulum-v1
@@ -13,6 +17,8 @@ envs:
 algos:
   - sac
   - ppo
+  - {name: ppo, networks: {actor: lstm, critic: lstm}}
+  - {name: sac, networks: {actor: lstm, critic: lstm}}
 
 n_episodes: 250
 rollout_len: 1024

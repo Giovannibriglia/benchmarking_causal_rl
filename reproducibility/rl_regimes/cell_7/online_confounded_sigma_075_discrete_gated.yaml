@@ -19,6 +19,10 @@
 # for the same reason. Strength grid: {0.0, 0.25, 0.5, 0.75, 1.0}.
 # Refs: docs/experimental_design.md §4 Cell 7; offline
 # confounded_sigma_*_discrete_gated.yaml; PR #34 (gated YAMLs).
+# Recurrent baselines: LSTM variants of the listed algos are included for the
+# POMDP-resolution demonstration (control with confounding — Z observed + U present). LSTM uses separate
+# actor/critic trunks (defaults hidden_dim=128, num_layers=1; override per-YAML
+# via networks: {hidden_dim, num_layers}).
 
 envs:
   - CartPole-v1
@@ -27,6 +31,8 @@ envs:
 algos:
   - ppo
   - dqn
+  - {name: ppo, networks: {actor: lstm, critic: lstm}}
+  - {name: dqn, networks: {actor: lstm, critic: lstm}}
 
 behavior_policy: bias_confounded
 behavior_strength: 0.75
