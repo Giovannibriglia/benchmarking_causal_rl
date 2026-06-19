@@ -283,12 +283,18 @@ class BenchmarkRunner:
             # optional hidden_dim/num_layers for recurrent trunks.
             actor_network=getattr(self.train_cfg, "actor_network", "mlp"),
             critic_network=getattr(self.train_cfg, "critic_network", "mlp"),
+            # Recurrent off-policy uses the episode-aware SequenceReplayBuffer
+            # (constructed here, passed to the builder); flat/MLP and on-policy
+            # pass None and the builder keeps its own buffer (golden bitwise).
+            buffer=self._make_replay_buffer(),
             **getattr(self.train_cfg, "network_kwargs", {}),
         )
         self.replay_buffer = None
         self.collection_policy = None
         self.offpolicy_batch_size = 128
         self.offpolicy_warmup = 1000
+        # Sequence length for recurrent off-policy sampling/BPTT (zero-init R2D2).
+        self.offpolicy_seq_len = 8
         if self.algo_spec.kind == "off_policy":
             self.replay_buffer = self.agent.buffer  # type: ignore[attr-defined]
             # Default collection seam: delegates to agent.act (exact pre-seam
@@ -740,16 +746,32 @@ class BenchmarkRunner:
             self.train_env.close()
             self.eval_env.close()
 
-    def _collect_off_policy(self, obs, total_steps, metrics_cache):
-        """Route off-policy collection: recurrent policies use the sequence-buffer
-        path, everything else the existing verbatim/golden-pinned flat path.
+    def _is_recurrent_run(self) -> bool:
+        """True iff the train_cfg requests any non-MLP network. Gates the
+        off-policy buffer type and collection path (off-policy agents are bare
+        modules without an is_recurrent attribute, so the signal comes from the
+        config — the locked PR-1C2 decision)."""
+        return (
+            getattr(self.train_cfg, "actor_network", "mlp") != "mlp"
+            or getattr(self.train_cfg, "critic_network", "mlp") != "mlp"
+        )
 
-        PR-1C1 WIRING: ``is_recurrent`` is currently always False for off-policy
-        (the builders reject non-MLP networks), so the ``else`` branch — bitwise-
-        identical to the prior inline call — always runs. PR-1C2 unlocks the
-        recurrent branch by allowing recurrent off-policy and constructing a
-        SequenceReplayBuffer in the builder."""
-        if getattr(self.policy, "is_recurrent", False):
+    def _make_replay_buffer(self):
+        """Construct the off-policy buffer to pass to the builder: an episode-aware
+        SequenceReplayBuffer for recurrent off-policy runs, else None (the builder
+        keeps its own flat ReplayBuffer with its existing capacity -> goldens
+        bitwise). On-policy builders ignore the buffer kwarg."""
+        if self.algo_spec.kind == "off_policy" and self._is_recurrent_run():
+            from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
+
+            return SequenceReplayBuffer(capacity=1_000_000, device=self.device)
+        return None
+
+    def _collect_off_policy(self, obs, total_steps, metrics_cache):
+        """Route off-policy collection: recurrent runs use the sequence-buffer
+        path (state threading + sequence sampling + BPTT update), everything else
+        the verbatim/golden-pinned flat path."""
+        if self._is_recurrent_run():
             return self.experience_source.collect_off_policy_recurrent(
                 self.agent,
                 self.replay_buffer,
@@ -759,6 +781,7 @@ class BenchmarkRunner:
                 n_envs=self.env_cfg.n_train_envs,
                 warmup=self.offpolicy_warmup,
                 batch_size=self.offpolicy_batch_size,
+                seq_len=self.offpolicy_seq_len,
                 metrics_cache=metrics_cache,
                 aux_models=self.aux_models,
             )

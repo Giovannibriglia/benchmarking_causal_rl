@@ -399,34 +399,42 @@ class OnlineSource(ExperienceSource):
         n_envs: int,
         warmup: int,
         batch_size: int,
+        seq_len: int = 8,
         metrics_cache: Optional[Dict[str, float]] = None,
         aux_models=None,
     ) -> Tuple[torch.Tensor, Optional[Dict[str, float]], Optional[dict]]:
-        """Recurrent off-policy collection (parallel to ``collect_off_policy``,
-        which stays untouched/golden-pinned — same split as PR #49's
-        ``rollout`` vs ``rollout_recurrent``).
+        """Recurrent off-policy collection + update (parallel to the flat
+        ``collect_off_policy``, which stays untouched/golden-pinned — same split
+        as PR #49's ``rollout`` vs ``rollout_recurrent``).
 
-        FOUNDATION SCOPE (PR-1C1): this preserves per-env EPISODE STRUCTURE in a
-        ``SequenceReplayBuffer`` (``add(env_id, transition)`` + ``mark_episode_end``
-        on done) and threads per-env hidden state through ``agent.act(obs, state)``
-        (forward-compat: today's off-policy agents ignore ``state`` and pass it
-        through). It does NOT sample sequences or call ``agent.update`` — the
-        recurrent sequence update belongs to PR-1C2, where the off-policy
-        algorithms gain a sequence-consuming ``learn``. Until then this path is
-        unreachable from the runner (off-policy builders reject non-MLP), so the
-        flat pipeline is what actually trains. ``collection_policy``, ``warmup``,
-        ``batch_size``, ``aux_models`` are accepted for signature parity and are
-        inert here (the behavior-policy seam + sequence updates are PR-1C2).
-        """
+        Per step: the agent's forward (``agent.act(obs, state)``) ADVANCES the
+        per-env hidden state through the actual observations; the action stored/
+        taken comes from the behavior ``collection_policy`` if one is configured
+        (curiosity / anti_reward / bias_confounded override the agent's action),
+        else the agent's own action. Transitions are stored episode-structured
+        (``add(env_id, …)`` + ``mark_episode_end`` on done) and the hidden state
+        is reset per-env at episode boundaries.
+
+        Once warmed up and the buffer holds an episode >= ``seq_len``, each step
+        samples a contiguous within-episode batch (``sample_sequences``) and runs
+        ``agent.update`` — the recurrent sequence/BPTT update. aux_models train on
+        the same sampled batch (no extra sampling)."""
         state = (
             agent.initial_state(n_envs, device=self.device)
             if hasattr(agent, "initial_state")
             else None
         )
+        last_batch = None
         for _ in range(n_steps):
+            # Agent forward advances hidden state through the observation.
             out = agent.act(obs, state)
-            actions = out.action
             new_state = out.state
+            # Behavior policy may override the emitted action (state still
+            # evolved through the agent's forward on the real obs).
+            if collection_policy is not None:
+                actions = collection_policy.act(obs).action
+            else:
+                actions = out.action
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             for i in range(n_envs):
@@ -442,10 +450,19 @@ class OnlineSource(ExperienceSource):
                 )
                 if bool(done[i]):
                     replay_buffer.mark_episode_end(i)
-            # Reset per-env hidden state at episode boundaries (forward-compat;
-            # real recurrent agents implement reset_state_where in PR-1C2).
+            # Reset per-env hidden state at episode boundaries.
             if new_state is not None and hasattr(agent, "reset_state_where"):
                 new_state = agent.reset_state_where(new_state, done.bool())
             state = new_state
             obs = next_obs
-        return obs, metrics_cache, None
+
+            # Sequence update once warmed up and a long-enough episode exists.
+            if len(replay_buffer) > max(
+                warmup, batch_size
+            ) and replay_buffer.can_sample(seq_len):
+                batch = replay_buffer.sample_sequences(batch_size, seq_len)
+                metrics_cache = agent.update(batch)
+                if aux_models is not None:
+                    aux_models.update(batch)
+                last_batch = batch
+        return obs, metrics_cache, last_batch

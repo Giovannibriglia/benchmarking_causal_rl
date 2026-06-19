@@ -5,7 +5,7 @@ from typing import Callable, Dict, List
 import torch
 import torch.nn as nn
 
-from src.rl.models.backbone import select_backbone
+from src.rl.models.backbone import build_trunk, select_backbone
 from src.rl.off_policy.ddpg import DDPG
 from src.rl.off_policy.dqn import DQN
 from src.rl.off_policy.replay_buffer import ReplayBuffer
@@ -150,19 +150,17 @@ def _reject_recurrent(algo_name: str, kwargs) -> None:
 
 
 def _reject_offpolicy_recurrent(algo_name: str, kwargs) -> None:
-    """Forward-compat guard for off-policy algos: accept the actor_network /
-    critic_network kwargs (PR #49 YAML dict form) but reject non-MLP until
-    PR-1C2 wires recurrent off-policy (DQN-LSTM, SAC-LSTM) on top of the
-    SequenceReplayBuffer + recurrent collection path added in this PR."""
+    """Guard for off-policy algos that do NOT yet have recurrent variants: accept
+    the actor_network / critic_network kwargs (YAML dict form) but reject non-MLP.
+    Only DQN and SAC have recurrent variants; DDPG and the offline algos
+    (offline_dqn, cql, iql, bcq, *_continuous) still reject."""
     if kwargs.get("actor_network", "mlp") != "mlp" or (
         kwargs.get("critic_network", "mlp") != "mlp"
     ):
         raise ValueError(
-            f"Recurrent networks for {algo_name} are not yet supported. PR #49 "
-            f"implements recurrent PPO only; recurrent off-policy (DQN-LSTM, "
-            f"SAC-LSTM) is PR-1C2 (forthcoming) and requires sequence sampling "
-            f"from the SequenceReplayBuffer. For {algo_name}, use the plain "
-            f"string form or networks: {{actor: mlp, critic: mlp}}."
+            f"Recurrent networks for {algo_name} are not supported. Only DQN and "
+            f"SAC have recurrent variants (LSTM/GRU/RNN); for {algo_name}, use the "
+            f"plain string form or networks: {{actor: mlp, critic: mlp}}."
         )
 
 
@@ -203,14 +201,24 @@ def register_default_algorithms() -> None:
 
     # Off-policy builders
     def build_dqn(**kwargs):
-        _reject_offpolicy_recurrent("dqn", kwargs)
         obs_dim = kwargs["obs_dim"]
         action_dim = kwargs["action_dim"]
         device = kwargs["device"]
         obs_shape = kwargs.get("obs_shape", (obs_dim,))
-        q_net = select_backbone(obs_shape, obs_dim, action_dim)
-        target_net = select_backbone(obs_shape, obs_dim, action_dim)
-        buffer = ReplayBuffer(capacity=100_000, device=device)
+        # DQN has no actor/critic split; the Q-network IS the critic, so it uses
+        # critic_network. build_trunk("mlp") == select_backbone (bitwise); a
+        # recurrent type returns an LSTM/GRU/RNN trunk. trunk_kwargs carries
+        # hidden_dim/num_layers when recurrent.
+        net = kwargs.get("critic_network", "mlp")
+        tk = _ac_trunk_kwargs(kwargs)
+        q_net = build_trunk(net, obs_shape, obs_dim, action_dim, **tk)
+        target_net = build_trunk(net, obs_shape, obs_dim, action_dim, **tk)
+        # Buffer: the runner passes a SequenceReplayBuffer for recurrent runs;
+        # otherwise the flat ReplayBuffer is created here (capacity unchanged ->
+        # golden bitwise).
+        buffer = kwargs.get("buffer")
+        if buffer is None:  # not `or`: an empty SequenceReplayBuffer is falsy
+            buffer = ReplayBuffer(capacity=100_000, device=device)
         agent = DQN(q_net.to(device), target_net.to(device), buffer, device=device)
         return q_net.to(device), agent
 
@@ -260,7 +268,6 @@ def register_default_algorithms() -> None:
     registry.register("trpo", AlgorithmSpec(builder=build_trpo, kind="on_policy"))
 
     def build_sac(**kwargs):
-        _reject_offpolicy_recurrent("sac", kwargs)
         from src.rl.off_policy.sac import SAC, SquashedGaussianActor
 
         obs_dim = kwargs["obs_dim"]
@@ -268,19 +275,33 @@ def register_default_algorithms() -> None:
         device = kwargs["device"]
         action_space = kwargs["action_space"]
         obs_shape = kwargs.get("obs_shape", (obs_dim,))
-        actor = SquashedGaussianActor(obs_dim, action_dim, obs_shape=obs_shape).to(
-            device
-        )
-        mk_q = lambda: select_backbone(  # noqa: E731
-            (obs_dim + action_dim,),
-            obs_dim + action_dim,
-            1,
-            hidden_dims=(256, 256),
-            activation=nn.ReLU,
-        )
+        # Actor uses actor_network; twin critics use critic_network. mlp keeps the
+        # exact pre-recurrent construction (SAC golden bitwise).
+        actor_net = kwargs.get("actor_network", "mlp")
+        critic_net = kwargs.get("critic_network", "mlp")
+        tk = _ac_trunk_kwargs(kwargs)
+        actor = SquashedGaussianActor(
+            obs_dim, action_dim, obs_shape=obs_shape, network=actor_net, **tk
+        ).to(device)
+        if critic_net == "mlp":
+            mk_q = lambda: select_backbone(  # noqa: E731
+                (obs_dim + action_dim,),
+                obs_dim + action_dim,
+                1,
+                hidden_dims=(256, 256),
+                activation=nn.ReLU,
+            )
+        else:
+            mk_q = lambda: build_trunk(  # noqa: E731
+                critic_net, (obs_dim + action_dim,), obs_dim + action_dim, 1, **tk
+            )
         q1, q2, q1t, q2t = (mk_q().to(device) for _ in range(4))
-        # SAC needs a large buffer for million-step reference training
-        buffer = ReplayBuffer(capacity=1_000_000, device=device)
+        # SAC needs a large buffer for million-step reference training. Runner
+        # passes a SequenceReplayBuffer for recurrent runs; else create the flat
+        # one here (capacity unchanged -> golden bitwise).
+        buffer = kwargs.get("buffer")
+        if buffer is None:  # not `or`: an empty SequenceReplayBuffer is falsy
+            buffer = ReplayBuffer(capacity=1_000_000, device=device)
         try:
             scale = float(abs(action_space.high[0]))
         except Exception:
