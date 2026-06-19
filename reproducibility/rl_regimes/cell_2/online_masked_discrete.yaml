@@ -2,6 +2,10 @@
 # Online, hidden Z (velocity components masked), no confounding. Exercises the
 # epistemic-POMDP signature: marginal return holds, per-context variance grows.
 # Refs: docs/experimental_design.md §4 Cell 2, §5 per-env mask spec, §3 common settings.
+# Recurrent baselines: LSTM variants of the listed algos are included for the
+# POMDP-resolution demonstration (primary — Z hidden, recurrence should resolve the epistemic-POMDP signature). LSTM uses separate
+# actor/critic trunks (defaults hidden_dim=128, num_layers=1; override per-YAML
+# via networks: {hidden_dim, num_layers}).
 
 envs:
   - CartPole-v1
@@ -11,6 +15,8 @@ envs:
 algos:
   - ppo
   - dqn
+  - {name: ppo, networks: {actor: lstm, critic: lstm}}
+  - {name: dqn, networks: {actor: lstm, critic: lstm}}
 
 mask_indices:
   CartPole-v1: [1, 3]

@@ -49,8 +49,14 @@ def test_online_variant_yamls_parse_and_match_convention():
         assert cfg["envs"] == ENVS, path.name
         assert cfg["behavior_policy"] == "bias_confounded", path.name
         assert cfg["behavior_strength"] == sigma, path.name
-        # Online arm: ppo (on-policy control) + dqn (off-policy, fully confounded).
-        assert cfg["algos"] == ["ppo", "dqn"], path.name
+        # Online arm: ppo (on-policy control) + dqn (off-policy, fully confounded)
+        # + their LSTM recurrent variants (dict form, PR #49 schema).
+        assert cfg["algos"] == [
+            "ppo",
+            "dqn",
+            {"name": "ppo", "networks": {"actor": "lstm", "critic": "lstm"}},
+            {"name": "dqn", "networks": {"actor": "lstm", "critic": "lstm"}},
+        ], path.name
         # Online => no offline dataset (the offline siblings have one; these don't).
         assert "offline_dataset" not in cfg, path.name
         assert cfg["seed"] == 0 and cfg["n_train_envs"] == 16

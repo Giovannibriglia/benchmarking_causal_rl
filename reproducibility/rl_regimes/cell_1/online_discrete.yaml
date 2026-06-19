@@ -1,6 +1,10 @@
 # Cell 1 — Crystal Clear Clinic, discrete arm.
 # Online, fully observed, no confounding. Baseline anchor for the eight-cell taxonomy.
 # Refs: docs/experimental_design.md §4 Cell 1, §3 common run settings.
+# Recurrent baselines: LSTM variants of the listed algos are included for the
+# POMDP-resolution demonstration (control — Z observed, recurrence should NOT hurt performance). LSTM uses separate
+# actor/critic trunks (defaults hidden_dim=128, num_layers=1; override per-YAML
+# via networks: {hidden_dim, num_layers}).
 
 envs:
   - CartPole-v1
@@ -10,6 +14,8 @@ envs:
 algos:
   - ppo
   - dqn
+  - {name: ppo, networks: {actor: lstm, critic: lstm}}
+  - {name: dqn, networks: {actor: lstm, critic: lstm}}
 
 n_episodes: 250
 rollout_len: 1024

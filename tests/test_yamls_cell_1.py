@@ -36,14 +36,25 @@ def test_cell_1_yamls_parse():
 
     # (b) expected envs / algos per §4 Cell 1.
     assert discrete["envs"] == ["CartPole-v1", "LunarLander-v3", "Acrobot-v1"]
-    assert discrete["algos"] == ["ppo", "dqn"]
+    # MLP baselines + LSTM recurrent variants (dict form, PR #49 schema).
+    assert discrete["algos"] == [
+        "ppo",
+        "dqn",
+        {"name": "ppo", "networks": {"actor": "lstm", "critic": "lstm"}},
+        {"name": "dqn", "networks": {"actor": "lstm", "critic": "lstm"}},
+    ]
     assert continuous["envs"] == [
         "Pendulum-v1",
         "HalfCheetah-v5",
         "Hopper-v5",
         "Walker2d-v5",
     ]
-    assert continuous["algos"] == ["sac", "ppo"]
+    assert continuous["algos"] == [
+        "sac",
+        "ppo",
+        {"name": "ppo", "networks": {"actor": "lstm", "critic": "lstm"}},
+        {"name": "sac", "networks": {"actor": "lstm", "critic": "lstm"}},
+    ]
 
     # (c) common §3 settings landed on both arms.
     for cfg in (discrete, continuous):
