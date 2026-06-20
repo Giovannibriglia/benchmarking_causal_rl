@@ -10,6 +10,16 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.benchmarking.table_formatting import (
+    best_indices_per_column,
+    detect_sweep_families,
+    family_label,
+    format_cell,
+    metric_direction,
+    metric_label,
+    strength_to_float_label,
+)
+
 # Global color map for consistent algorithm colors across plots
 COLOR_MAP: Dict[str, tuple] = {}
 
@@ -1230,78 +1240,122 @@ def _escape_latex(text: str) -> str:
     return text.replace("_", "\\_")
 
 
+def _standard_table_caption(run_name: Optional[str], metric: str, split: str) -> str:
+    """Build a benchmark-naming caption for a standard per-run table.
+
+    From a run name like ``rl_regimes/cell_1/online_discrete_20260618_202831``
+    and metric ``eval_return`` produces
+    ``Cell 1 online discrete — eval return (mean ± std)``. Falls back to the
+    bare metric/split when the run name carries no recognizable cell/arm.
+    """
+    label = metric_label(metric)
+    pieces: List[str] = []
+    if run_name:
+        cell_match = re.search(r"cell_(\d+)", run_name)
+        if cell_match:
+            pieces.append(f"Cell {cell_match.group(1)}")
+        # Arm = run folder name minus the trailing _<date>_<time> stamp.
+        folder = Path(run_name).name
+        arm = re.sub(r"_\d{8}_\d{6}$", "", folder).replace("_", " ").strip()
+        if arm:
+            pieces.append(arm)
+    prefix = " ".join(pieces) if pieces else f"{metric} ({split})"
+    return f"{prefix} — {label} (mean ± std)"
+
+
 def make_latex_table(
     df: pd.DataFrame,
     metric: str,
     split: str,
     aggregation: str,
     outdir: Path,
-    precision: int = 3,
+    precision: int = 1,
+    run_name: Optional[str] = None,
 ):
+    """Render a standard per-run table: envs (+ an Overall row) down the rows,
+    algorithms across the columns. The best algorithm per env row is bolded,
+    with direction (max/min) chosen per metric. Caption names the benchmark.
+    """
     if df.empty:
         print(f"[warn] no data for table {metric} ({split})")
         return
     envs = sorted(df["environment"].unique())
     algos = sorted(df["algorithm"].unique())
-    rows = []
-    fmt = f"{{:.{precision}f}}"
 
-    for env in envs:
-        row = [_escape_latex(env)]
+    # Table rows are the env groups plus a trailing "Overall" group; columns are
+    # algorithms. Build aligned (center, spread) matrices indexed [group, algo],
+    # NaN where a cell is absent, then bold the best algo within each group.
+    groups = list(envs) + ["Overall"]
+    n_groups, n_algos = len(groups), len(algos)
+    centers = np.full((n_groups, n_algos), np.nan)
+    spreads = np.full((n_groups, n_algos), np.nan)
+
+    for gi, env in enumerate(envs):
         env_df = df[df["environment"] == env]
-        for algo in algos:
+        for ai, algo in enumerate(algos):
             cell_df = env_df[env_df["algorithm"] == algo]
             if cell_df.empty:
-                row.append("--")
                 continue
-            center = cell_df.iloc[0]["center"]
-            spread = cell_df.iloc[0]["spread"]
-            row.append(f"${fmt.format(center)} \\pm {fmt.format(spread)}$")
-        rows.append(row)
+            centers[gi, ai] = cell_df.iloc[0]["center"]
+            spreads[gi, ai] = cell_df.iloc[0]["spread"]
 
-    # overall row: cross-env collapse of centers/spreads where present. Center
+    # Overall row: cross-env collapse of centers/spreads where present. Center
     # honors --aggregation (IQM under iqm, mean under mean); spread is the mean
     # of per-env spreads regardless of flag — matching _collapse_envs and
     # compute_aggregates's cross-seed spread convention.
-    overall_row = ["Overall"]
-    for algo in algos:
-        vals = []
-        spreads = []
+    for ai, algo in enumerate(algos):
+        vals, sprs = [], []
         for env in envs:
             cell = df[(df["environment"] == env) & (df["algorithm"] == algo)]
             if not cell.empty:
                 vals.append(cell.iloc[0]["center"])
-                spreads.append(cell.iloc[0]["spread"])
-        if len(vals) == 0:
-            overall_row.append("--")
-        else:
-            center = (
+                sprs.append(cell.iloc[0]["spread"])
+        if vals:
+            centers[-1, ai] = (
                 _iqm(np.asarray(vals, dtype=float))
                 if aggregation == "iqm"
                 else float(np.mean(vals))
             )
-            overall_row.append(
-                f"${fmt.format(center)} \\pm {fmt.format(np.mean(spreads))}$"
+            spreads[-1, ai] = float(np.mean(sprs))
+
+    # Best algo per group: candidates are algos (rows of the transpose), groups
+    # are the columns. best_per_group[gi] = set of best algo indices in group gi.
+    direction = metric_direction(metric)
+    best_per_group = best_indices_per_column(centers.T, direction)
+
+    rows = []
+    for gi, group in enumerate(groups):
+        label = group if group == "Overall" else _escape_latex(group)
+        row = [label]
+        for ai in range(n_algos):
+            row.append(
+                format_cell(
+                    centers[gi, ai],
+                    spreads[gi, ai],
+                    is_best=ai in best_per_group[gi],
+                    precision=precision,
+                )
             )
-    rows.append(overall_row)
+        rows.append(row)
 
     # Bold headers; escape underscores
     header = ["\\textbf{Environment}"] + [
         f"\\textbf{{{_escape_latex(a)}}}" for a in algos
     ]
     col_spec = "l" + "|c" * len(algos)
+    caption = _standard_table_caption(run_name, metric, split)
     lines = [
         "\\begin{table}[!t]",
         "\\centering",
-        f"\\caption{{{metric.replace('_', '\\_')} ({split})}}",
+        f"\\caption{{{caption}}}",
         f"\\label{{tab:{split}_{metric}}}",
         "%\\footnotesize",
         f"\\begin{{tabular}}{{{col_spec}}}",
-        " \\\\ ".join(header) + " \\\\",
+        " & ".join(header) + " \\\\",
         "\\hline\\hline",
     ]
     for r in rows:
-        lines.append(" \\\\ ".join(r) + " \\\\")
+        lines.append(" & ".join(r) + " \\\\")
     lines.append("\\end{tabular}")
     lines.append("\\end{table}")
 
@@ -1326,6 +1380,8 @@ def build_tables(
     split: str,
     aggregation: str,
     outdir: Path,
+    precision: int = 1,
+    run_name: Optional[str] = None,
 ):
     if df.empty:
         return
@@ -1364,7 +1420,197 @@ def build_tables(
         if not agg_rows:
             continue
         agg_df = pd.DataFrame(agg_rows)
-        make_latex_table(agg_df, metric_name, split, aggregation, outdir)
+        make_latex_table(
+            agg_df,
+            metric_name,
+            split,
+            aggregation,
+            outdir,
+            precision=precision,
+            run_name=run_name,
+        )
+
+
+_RUN_STAMP_RE = re.compile(r"_\d{8}_\d{6}$")
+
+
+def _latest_run_dir(runs_cell_dir: Path, basename: str) -> Optional[Path]:
+    """Return the most recent ``<basename>_<date>_<time>`` run dir under
+    ``runs_cell_dir``, or None if none exist.
+
+    Anchored on the timestamp suffix so a prefix like ``confounded_sigma_050_
+    discrete`` does not accidentally match its ``..._discrete_gated`` sibling.
+    """
+    pattern = re.compile(rf"^{re.escape(basename)}_\d{{8}}_\d{{6}}$")
+    candidates = [
+        p
+        for p in runs_cell_dir.glob(f"{basename}_*")
+        if p.is_dir() and pattern.match(p.name)
+    ]
+    if not candidates:
+        return None
+    # Timestamp suffix sorts lexically => latest name wins.
+    return max(candidates, key=lambda p: p.name)
+
+
+def render_sweep_family_table(
+    family_stem: str,
+    members: List[Tuple[str, str]],
+    runs_cell_dir: Path,
+    out_cell_dir: Path,
+    metric: str = "eval_return",
+    aggregation: str = "iqm",
+    precision: int = 1,
+) -> List[Path]:
+    """For a detected sweep family, emit one LaTeX table per env with strength
+    values as columns, algorithms as rows, and the best algorithm per strength
+    column bolded. Missing family members (YAMLs not yet run) are skipped with a
+    warning rather than crashing.
+
+    Returns the list of written ``.tex`` paths.
+    """
+    mean_col = f"{metric}_mean"
+    std_col = f"{metric}_std"
+
+    # (env, algo, strength) -> (center, spread). Collected across whichever
+    # family members have a run on disk.
+    records: Dict[Tuple[str, str, str], Tuple[float, float]] = {}
+    present_strengths: List[str] = []
+    missing_strengths: List[str] = []
+
+    for strength, basename in members:
+        run_dir = _latest_run_dir(runs_cell_dir, basename)
+        eval_csv = run_dir / "eval_metrics.csv" if run_dir else None
+        if run_dir is None or not eval_csv.exists():
+            missing_strengths.append(strength)
+            continue
+        df = pd.read_csv(eval_csv)
+        if mean_col not in df.columns or df.empty:
+            missing_strengths.append(strength)
+            continue
+        final = _final_checkpoint(df)
+        present_strengths.append(strength)
+        for (env, algo), sub in final.groupby(["environment", "algorithm"]):
+            vals = sub[mean_col].dropna().to_numpy()
+            if vals.size == 0:
+                continue
+            center = float(np.mean(vals)) if aggregation == "mean" else _iqm(vals)
+            if std_col in sub.columns:
+                svals = sub[std_col].dropna().to_numpy()
+                spread = float(np.mean(svals)) if svals.size else 0.0
+            else:
+                spread = float(np.std(vals)) if vals.size > 1 else 0.0
+            records[(env, algo, strength)] = (center, spread)
+
+    if missing_strengths:
+        print(
+            f"[warn] sweep family '{family_stem}': no run found for "
+            f"strengths {sorted(missing_strengths)} — skipping those columns"
+        )
+    if not records:
+        print(f"[warn] sweep family '{family_stem}': no run data — skipping")
+        return []
+
+    strengths = sorted(present_strengths)
+    envs = sorted({env for (env, _, _) in records})
+    direction = metric_direction(metric)
+    written: List[Path] = []
+    _ensure_dir(out_cell_dir)
+
+    for env in envs:
+        algos = sorted({a for (e, a, _) in records if e == env})
+        centers = np.full((len(algos), len(strengths)), np.nan)
+        spreads = np.full((len(algos), len(strengths)), np.nan)
+        for ai, algo in enumerate(algos):
+            for si, strength in enumerate(strengths):
+                rec = records.get((env, algo, strength))
+                if rec is not None:
+                    centers[ai, si], spreads[ai, si] = rec
+
+        best_per_col = best_indices_per_column(centers, direction)
+
+        header = ["\\textbf{Algorithm}"] + [
+            f"\\textbf{{{strength_to_float_label(s)}}}" for s in strengths
+        ]
+        col_spec = "l" + "|c" * len(strengths)
+        caption = (
+            f"{family_label(family_stem)} strength sweep on "
+            f"{_escape_latex(env)} — {metric_label(metric)} (mean ± std)"
+        )
+        env_safe = env.replace("/", "-")
+        lines = [
+            "\\begin{table}[!t]",
+            "\\centering",
+            f"\\caption{{{caption}}}",
+            f"\\label{{tab:sweep_{family_stem}_{env_safe}}}",
+            "%\\footnotesize",
+            f"\\begin{{tabular}}{{{col_spec}}}",
+            " & ".join(header) + " \\\\",
+            "\\hline\\hline",
+        ]
+        for ai, algo in enumerate(algos):
+            row = [_escape_latex(algo)]
+            for si in range(len(strengths)):
+                row.append(
+                    format_cell(
+                        centers[ai, si],
+                        spreads[ai, si],
+                        is_best=ai in best_per_col[si],
+                        precision=precision,
+                    )
+                )
+            lines.append(" & ".join(row) + " \\\\")
+        lines += ["\\end{tabular}", "\\end{table}"]
+
+        out_path = out_cell_dir / f"{family_stem}_{env_safe}.tex"
+        out_path.write_text("\n".join(lines))
+        written.append(out_path)
+
+    return written
+
+
+def render_sweep_tables(
+    run_name: str,
+    base_outdir: Path,
+    aggregation: str,
+    precision: int = 1,
+) -> List[Path]:
+    """Detect sweep families for the cell that ``run_name`` belongs to and emit
+    aggregated strength-sweep tables, one per (family, env).
+
+    Sweep tables aggregate across sibling runs, so they are written to
+    ``<base_outdir>/<cell_path>/sweep_tables/`` (not the per-run output dir).
+    The cell's YAML directory under ``reproducibility/<cell_path>`` drives
+    family detection; each member's latest run dir under ``runs/<cell_path>``
+    supplies the data.
+    """
+    cell_path = Path(run_name).parent  # e.g. rl_regimes/cell_7
+    yaml_dir = Path("reproducibility") / cell_path
+    runs_cell_dir = Path("runs") / cell_path
+    out_cell_dir = base_outdir / cell_path / "sweep_tables"
+
+    if not yaml_dir.exists():
+        print(f"[warn] sweep_tables: YAML dir {yaml_dir} not found — skipping")
+        return []
+
+    families = detect_sweep_families(yaml_dir)
+    if not families:
+        print(f"[warn] sweep_tables: no sweep families detected in {yaml_dir}")
+        return []
+
+    written: List[Path] = []
+    for family_stem, members in sorted(families.items()):
+        written.extend(
+            render_sweep_family_table(
+                family_stem,
+                members,
+                runs_cell_dir,
+                out_cell_dir,
+                aggregation=aggregation,
+                precision=precision,
+            )
+        )
+    return written
 
 
 def run_plotting(
@@ -1374,10 +1620,12 @@ def run_plotting(
     aggregation: str,
     outdir: Path,
     formats: List[str],
+    precision: int = 1,
 ):
     config, train_df, eval_df, critic_df = load_run(run_name)
     rollout_len = _get_rollout_len(config)
-    outdir = Path(outdir) / run_name
+    base_outdir = Path(outdir)
+    outdir = base_outdir / run_name
     # Offline-aware: offline runs label the checkpoint axis "Training epochs".
     x_label = _resolve_x_label(x_axis, train_df)
     mode = (
@@ -1409,7 +1657,15 @@ def run_plotting(
             plot_metric(
                 overall, metric_name, "train", outdir, formats, x_label, overall=True
             )
-        build_tables(train_df, train_metrics, "train", aggregation, outdir)
+        build_tables(
+            train_df,
+            train_metrics,
+            "train",
+            aggregation,
+            outdir,
+            precision=precision,
+            run_name=run_name,
+        )
 
     if split in ("eval", "both", "all") and not eval_df.empty:
         eval_metrics = discover_metrics(eval_df)
@@ -1434,7 +1690,15 @@ def run_plotting(
             plot_metric(
                 overall, metric_name, "eval", outdir, formats, x_label, overall=True
             )
-        build_tables(eval_df, eval_metrics, "eval", aggregation, outdir)
+        build_tables(
+            eval_df,
+            eval_metrics,
+            "eval",
+            aggregation,
+            outdir,
+            precision=precision,
+            run_name=run_name,
+        )
 
     plot_critic = split in ("critic", "all") or (
         split == "both" and mode == "critic_ablation"
@@ -1516,6 +1780,14 @@ def run_plotting(
     if split in ("per_context_final", "all"):
         render_eval_per_context_final(Path("runs") / run_name, outdir, formats)
 
+    # Sweep-family tables (strength dials): aggregate eval return across sibling
+    # runs of the same sweep family (one table per env, strengths as columns).
+    # Detected from the cell's YAML filename conventions; writes to
+    # outputs/<cell_path>/sweep_tables/ (not the per-run dir). Skips cleanly when
+    # no families are detected or no sibling runs exist yet.
+    if split in ("sweep_tables", "all"):
+        render_sweep_tables(run_name, base_outdir, aggregation, precision=precision)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1532,6 +1804,7 @@ def main():
             "per_context_final",
             "value_trace",
             "online_sigma_sweep",
+            "sweep_tables",
             "both",
             "all",
         ],
@@ -1561,6 +1834,12 @@ def main():
         default=["png", "pdf"],
         help="File formats to save",
     )
+    parser.add_argument(
+        "--precision",
+        type=int,
+        default=1,
+        help="Decimal places for table mean ± std cells",
+    )
     args = parser.parse_args()
 
     run_plotting(
@@ -1570,6 +1849,7 @@ def main():
         aggregation=args.aggregation,
         outdir=Path(args.outdir),
         formats=args.formats,
+        precision=args.precision,
     )
 
 
