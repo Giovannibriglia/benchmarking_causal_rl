@@ -64,6 +64,8 @@ uv run python tools/make_cartpole_offline.py --dataset-id cartpole/random-v0
 uv run python main.py --envs CartPole-v1 --algos cql --offline-dataset cartpole/random-v0
 ```
 
+The first offline command builds a small local Minari dataset; the second trains CQL on it (you cannot `--offline-dataset` an id that does not exist locally or hosted yet).
+
 ### Reproduce the full paper matrix
 One command runs Cells 1–4, 7, 8 (76 YAMLs, 8 concurrent) and plots every
 resulting run dir:
@@ -77,8 +79,6 @@ separately:
 ```bash
 bash tools/generate_all_datasets.sh
 ```
-
-The first offline command builds a small local Minari dataset; the second trains CQL on it (you cannot `--offline-dataset` an id that does not exist locally or hosted yet).
 
 ---
 
