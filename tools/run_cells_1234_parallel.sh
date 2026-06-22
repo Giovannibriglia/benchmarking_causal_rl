@@ -27,6 +27,38 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# --- Preflight: ensure the offline datasets THIS sweep consumes exist --------
+# Derive the exact ids the sweep will run (same globs as Phase 1: cells 1-4 all
+# YAMLs, cells 7-8 ONLY *_gated), build any missing via the resumable generator,
+# and abort only if a REQUIRED id is still absent. We gate on the required set,
+# not the generator's exit code: the generator builds a 56-id superset whose
+# heaviest, most failure-prone slice (continuous- + LunarLander-confounded, 25
+# ids) the sweep never touches, so those failures must not block a runnable run.
+req=$(mktemp); present=$(mktemp); miss=$(mktemp)
+grep -rhoE 'generated/[a-z0-9_]+/[a-z0-9_.-]+' \
+  reproducibility/rl_regimes/cell_{1,2,3,4}/*.yaml \
+  reproducibility/rl_regimes/cell_{7,8}/*_gated.yaml 2>/dev/null | sort -u >"$req"
+n_req=$(wc -l <"$req")
+recheck() {
+  uv run python -c "import minari;[print(d) for d in minari.list_local_datasets()]" \
+    2>/dev/null | sort -u >"$present"
+  comm -23 "$req" "$present" >"$miss"
+}
+recheck
+if [ -s "$miss" ]; then
+  echo "[preflight] missing offline datasets:"; sed 's/^/    /' "$miss"
+  echo "[preflight] building via tools/generate_all_datasets.sh (resumable)..."
+  bash tools/generate_all_datasets.sh || true   # superset build; required set verified below
+  recheck
+  if [ -s "$miss" ]; then
+    echo "[preflight] STILL missing REQUIRED datasets after generation — aborting:" >&2
+    sed 's/^/    /' "$miss" >&2; rm -f "$req" "$present" "$miss"; exit 1
+  fi
+fi
+rm -f "$req" "$present" "$miss"
+echo "[preflight] all $n_req required offline datasets present; proceeding."
+# ----------------------------------------------------------------------------
+
 SWEEP_CONCURRENCY=8
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SWEEP_START_EPOCH=$(date +%s)
