@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from contextlib import nullcontext
@@ -75,6 +76,36 @@ OFFLINE_VALUE_TRACE_COLUMNS: List[str] = [
     "apparent_value_iqm",
     "apparent_value_iqr_std",
 ]
+
+
+@functools.lru_cache(maxsize=None)
+def _render_capable(env_id: str) -> bool:
+    """Probe ONCE per env_id whether this machine can render the env.
+
+    Eval renders frames into an .mp4 via ``start_video`` (which flips
+    ``record_video`` on), so ``evaluate`` calls ``env.render()`` every step. On a
+    headless box (no display/GL context, broken pygame-gfxdraw) that ``render()``
+    raises and crashes eval. Probing a throwaway env (never the real train/eval
+    env) lets eval fall back to ``render=False``, where ``render()`` returns
+    ``None`` and is skipped instead of crashing. Render is side-effect-only, so
+    this never changes numerics where rendering already works (golden-bitwise).
+    The ``lru_cache`` makes this a one-time probe per env_id (one warning at most).
+    """
+    try:
+        import gymnasium as gym
+
+        e = gym.make(env_id, render_mode="rgb_array")  # match build_env path
+        e.reset(seed=0)
+        e.render()
+        e.close()
+        return True
+    except Exception:
+        print(
+            f"[warn] Rendering unavailable for {env_id}; eval video disabled "
+            "(eval metrics unaffected).",
+            file=sys.stderr,
+        )
+        return False
 
 
 @dataclass
@@ -229,7 +260,7 @@ class BenchmarkRunner:
             n_envs=env_cfg.n_eval_envs,
             device=self.device,
             seed=env_cfg.seed + env_cfg.n_train_envs,
-            render=True,
+            render=_render_capable(env_cfg.env_id),
             record_video=False,
             env_wrapper=env_cfg.env_wrapper,
             env_entry_point=env_cfg.env_entry_point,
