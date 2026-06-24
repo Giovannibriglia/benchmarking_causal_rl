@@ -26,16 +26,18 @@ The PyTorch CUDA 13.0 wheel index is pinned in `pyproject.toml`, so `uv sync` re
 Optional environment families are opt-in extras:
 
 ```bash
-uv sync --extra atari      # ALE/* Atari envs (ale-py + opencv)
-uv sync --extra box2d      # Box2D envs (LunarLander, BipedalWalker)
-uv sync --extra minigrid   # MiniGrid envs
-uv sync --extra mujoco     # MuJoCo envs (HalfCheetah, Hopper, Walker2d, …)
-uv sync --extra robotics   # gymnasium-robotics (Fetch/Hand)
-uv sync --extra offline    # Minari offline stack (load + generate)
+# Install optional env families. uv sync is EXACT by default, so running
+# `uv sync --extra X` separately each time OVERWRITES the previous extra,
+# leaving only the last installed. Pass them together in ONE command:
+uv sync --all-extras
+# ...or a subset in a single invocation, e.g. continuous control:
+uv sync --extra mujoco --extra box2d --extra offline
 ```
 
-Combine extras as needed, e.g. `uv sync --extra box2d --extra mujoco` for the full
-continuous-control surface. Box2D additionally needs `swig` at build time when no
+The available extras are `atari` (ALE/* Atari envs), `box2d` (LunarLander,
+BipedalWalker), `minigrid`, `mujoco` (HalfCheetah, Hopper, Walker2d, …),
+`robotics` (gymnasium-robotics Fetch/Hand), and `offline` (Minari offline stack).
+Box2D additionally needs `swig` at build time when no
 `box2d-py` wheel exists for your platform; it is declared in the `box2d` extra, but
 if the build still fails install it from your system package manager first
 (`sudo apt-get install -y swig`, or the equivalent) before re-running `uv sync`.
@@ -67,18 +69,21 @@ uv run python main.py --envs CartPole-v1 --algos cql --offline-dataset cartpole/
 The first offline command builds a small local Minari dataset; the second trains CQL on it (you cannot `--offline-dataset` an id that does not exist locally or hosted yet).
 
 ### Reproduce the full paper matrix
-One command runs Cells 1–4, 7, 8 (76 YAMLs, 8 concurrent) and plots every
-resulting run dir:
+The offline cells (3, 4, 7, 8) need the generated Minari datasets. Generate them
+first (resumable, one-time; ~30 min cold, near-instant once present):
 ```bash
-bash tools/run_cells_1234_parallel.sh
-```
-The offline cells (3, 4, 7, 8) require the generated Minari datasets; the sweep
-builds any that are missing on first run via `tools/generate_all_datasets.sh`
-(resumable; near-instant once present, ~30 min cold). To pre-build them
-separately:
-```bash
+# 1. Generate the offline datasets:
 bash tools/generate_all_datasets.sh
 ```
+Then run Cells 1–4, 7, 8 (76 YAMLs, 8 concurrent), which plots every resulting
+run dir:
+```bash
+# 2. Run the full paper-matrix simulation:
+bash tools/run_cells_1234_parallel.sh
+```
+Step 1 is optional on a fresh machine: the sweep's preflight auto-builds any
+missing datasets on first run via the same `tools/generate_all_datasets.sh`.
+Running it explicitly first just front-loads that one-time cost.
 
 ---
 
