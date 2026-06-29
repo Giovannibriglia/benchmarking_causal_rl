@@ -40,10 +40,17 @@ def short_algo_label(algo: str) -> str:
     names are returned unchanged. Note historical CSVs predating per-component
     ids carry a bare ``ppo`` (equivalent to ``ppo__mlp__mlp``); they render as
     ``ppo`` and are not auto-merged with new ids."""
-    parts = str(algo).split("__")
+    name = str(algo)
+    # Oracle-U deconfounding variants are an oracle REFERENCE (they read the true
+    # U), so brand them as such in every legend; the underlying base renders
+    # normally. Only strings ending in the suffix are affected -> no impact on
+    # any non-oracle algo label.
+    if name.endswith("_oracle_u"):
+        return f"{short_algo_label(name[: -len('_oracle_u')])} (oracle-U, true U)"
+    parts = name.split("__")
     if len(parts) == 3:
         return f"{parts[0]} ({parts[1]}/{parts[2]})"
-    return str(algo)
+    return name
 
 
 NON_METRIC_COLS = {
@@ -353,7 +360,25 @@ def render_value_trace_per_config(
     ev = pd.read_csv(eval_path) if eval_path.exists() else pd.DataFrame()
     sigma = _sigma_from_run(run_dir)
 
+    # Floor-vs-ceiling pairing (intra-run): when a base algo and its *_oracle_u
+    # sibling both appear in THIS run's value trace, render ONE overlaid figure
+    # for the pair (base solid, oracle Q_adj dashed, u=0 anchor dotted) instead of
+    # two separate per-config figures. Purely additive: with no pair present
+    # `consumed` is empty and the per-config loop below is byte-identical to
+    # before. Tables stay per-algo (written inside the pair helper for paired
+    # algos, in the loop for the rest).
+    algos_present = set(vt["algorithm"].unique())
+    consumed: set[str] = set()
+    for base in sorted(b for b in algos_present if f"{b}_oracle_u" in algos_present):
+        variant = f"{base}_oracle_u"
+        _render_value_trace_pair(
+            vt, ev, base, variant, x_axis, formats, x_label, rollout_len, sigma, outdir
+        )
+        consumed.update({base, variant})
+
     for (env, algo), sub in vt.groupby(["environment", "algorithm"]):
+        if algo in consumed:
+            continue  # rendered as a floor-vs-ceiling overlay above
         sub = sub.sort_values("epoch")
         x = sub["epoch"] * rollout_len if x_axis == "frames" else sub["epoch"]
         # Twin-row layout (recon §6): apparent Q (discounted, small) and true
@@ -409,6 +434,103 @@ def render_value_trace_per_config(
             fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
         plt.close(fig)
         _value_trace_table(sub, ev, env, algo, outdir)
+
+
+def _render_value_trace_pair(
+    vt: pd.DataFrame,
+    ev: pd.DataFrame,
+    base: str,
+    variant: str,
+    x_axis: str,
+    formats: Iterable[str],
+    x_label: str,
+    rollout_len: int,
+    sigma: "float | None",
+    outdir: Path,
+) -> None:
+    """Floor-vs-ceiling overlay for a base algo and its ``*_oracle_u`` sibling.
+
+    One twin-row figure per env both appear in: row 0 apparent Q — base SOLID,
+    oracle Q_adj DASHED (branded "oracle-U, true U"), oracle u=0 anchor DOTTED
+    (when populated) — each with its IQR band; row 1 the true eval return likewise
+    (base solid / oracle dashed). Both lines share the base hue (``get_algo_color``)
+    so the pair reads as one family distinguished by linestyle. Per-algo value
+    tables are still written (the figure is the only thing the pairing collapses).
+    """
+    color = get_algo_color(base)
+    envs = sorted(
+        set(vt[vt["algorithm"] == base]["environment"].unique())
+        & set(vt[vt["algorithm"] == variant]["environment"].unique())
+    )
+    for env in envs:
+        fig, (ax_app, ax_tr) = plt.subplots(2, 1, sharex=True, figsize=(6, 5), dpi=500)
+        for algo, ls in ((base, "-"), (variant, "--")):
+            sub = vt[
+                (vt["environment"] == env) & (vt["algorithm"] == algo)
+            ].sort_values("epoch")
+            if sub.empty:
+                continue
+            label = short_algo_label(algo)
+            x = sub["epoch"] * rollout_len if x_axis == "frames" else sub["epoch"]
+            ap = sub["apparent_value_iqm"].to_numpy()
+            ap_s = sub["apparent_value_iqr_std"].fillna(0).to_numpy()
+            ax_app.plot(x, ap, color=color, linestyle=ls, linewidth=1.2, label=label)
+            if len(sub) >= 2:
+                ax_app.fill_between(x, ap - ap_s, ap + ap_s, color=color, alpha=0.12)
+            # u=0 anchor (oracle variant only, when the column is present/filled).
+            if (
+                "apparent_value_u0_iqm" in sub.columns
+                and sub["apparent_value_u0_iqm"].notna().any()
+            ):
+                u0 = sub["apparent_value_u0_iqm"].to_numpy()
+                ax_app.plot(
+                    x,
+                    u0,
+                    color=color,
+                    linestyle=":",
+                    linewidth=1.0,
+                    label=f"{label} u=0 anchor",
+                )
+            # True return row, joined on epoch == episode (mirrors per-config).
+            if not ev.empty and {"episode", "eval_return_mean"}.issubset(ev.columns):
+                esub = ev[(ev["environment"] == env) & (ev["algorithm"] == algo)]
+                if not esub.empty:
+                    merged = sub.merge(
+                        esub, left_on="epoch", right_on="episode", how="left"
+                    )
+                    xt = (
+                        merged["epoch"] * rollout_len
+                        if x_axis == "frames"
+                        else merged["epoch"]
+                    )
+                    tr = merged["eval_return_mean"].to_numpy()
+                    ax_tr.plot(
+                        xt, tr, color=color, linestyle=ls, linewidth=1.2, label=label
+                    )
+                    if "eval_return_std" in merged and len(merged) >= 2:
+                        tr_s = merged["eval_return_std"].fillna(0).to_numpy()
+                        ax_tr.fill_between(
+                            xt, tr - tr_s, tr + tr_s, color=color, alpha=0.10
+                        )
+            _value_trace_table(sub, ev, env, algo, outdir)
+
+        suptitle = f"floor vs oracle ceiling - {env} - {base}"
+        if sigma is not None:
+            suptitle += f" (σ={sigma:g})"
+        fig.suptitle(suptitle)
+        ax_app.set_ylabel("apparent Q (discounted)")
+        ax_tr.set_ylabel("true return (undiscounted)")
+        ax_tr.set_xlabel(x_label)
+        for ax in (ax_app, ax_tr):
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=7)
+        fig.tight_layout()
+        subdir = outdir / "plots" / "value_trace" / "per_config"
+        _ensure_dir(subdir)
+        fname = subdir / f"{base}__vs__oracle_u_{env.replace('/', '-')}"
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
 
 
 def _collect_sigma_sweep(run_dir: Path):
