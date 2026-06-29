@@ -77,6 +77,14 @@ OFFLINE_VALUE_TRACE_COLUMNS: List[str] = [
     "apparent_value_iqr_std",
 ]
 
+# Additive u=0 anchor columns (oracle-U ceiling, *_oracle_u variants only).
+# Appended to the value-trace schema ONLY when a U-variant is in the run; pure
+# base runs keep OFFLINE_VALUE_TRACE_COLUMNS exactly (frozen schema preserved).
+OFFLINE_VALUE_TRACE_U0_COLUMNS: List[str] = [
+    "apparent_value_u0_iqm",
+    "apparent_value_u0_iqr_std",
+]
+
 
 @functools.lru_cache(maxsize=None)
 def _render_capable(env_id: str) -> bool:
@@ -116,6 +124,11 @@ class AlgorithmSpec:
     # or "offline" (logged dataset; Stage B). Distinct from the agent's
     # vestigial ``Algorithm.paradigm`` (the on/off-policy learning regime).
     data_regime: str = "online"
+    # True iff this algo is a deconfounding variant that reads the per-transition
+    # latent U (the *_oracle_u oracle reference line). Drives the offline loader's
+    # load_u and the value-trace u0-anchor schema. Default False keeps every
+    # existing AlgorithmSpec(...) construction (and the base algos) unchanged.
+    requires_confounder_u: bool = False
 
 
 def _validate_algos_against_behavior_policy(
@@ -224,6 +237,27 @@ class BenchmarkRunner:
         self._value_trace_gate_open: bool = (
             getattr(env_cfg, "behavior_policy", "agent") == "bias_confounded"
             and algo_spec.data_regime == "offline"
+        )
+        # Oracle-U ceiling: the deconfounding variant (*_oracle_u) reads the
+        # latent U and records the u=0 anchor in offline_value_trace.csv.
+        #   _requires_confounder_u (per-algo): drives load_u and the u0 WRITE gate
+        #     (only this oracle agent computes oracle_anchor_q).
+        #   _value_trace_oracle (per-algo): gate-open AND this algo needs U -> the
+        #     agent emits u0 anchor rows.
+        #   _value_trace_schema_oracle (run-level): gate-open AND (this algo OR any
+        #     sibling algo in the run needs U, via run_cfg.value_trace_u0_schema)
+        #     -> the SHARED offline_value_trace.csv uses the u0 SUPERSET header so
+        #     all sibling runners agree; base runners blank-fill the u0 cells. The
+        #     `requires_u or` term keeps a standalone variant runner self-sufficient.
+        self._requires_confounder_u: bool = getattr(
+            algo_spec, "requires_confounder_u", False
+        )
+        self._value_trace_oracle: bool = (
+            self._value_trace_gate_open and self._requires_confounder_u
+        )
+        self._value_trace_schema_oracle: bool = self._value_trace_gate_open and (
+            self._requires_confounder_u
+            or getattr(run_cfg, "value_trace_u0_schema", False)
         )
         self._offline_value_trace_logger: CSVLogger | None = None
 
@@ -669,15 +703,21 @@ class BenchmarkRunner:
         if q_vals is None:
             return
         iqm, iqr_std = self._bin_stats(q_vals.reshape(-1))
-        logger.log(
-            {
-                "epoch": epoch,
-                "algorithm": self.train_cfg.algorithm,
-                "environment": self.env_cfg.env_id,
-                "apparent_value_iqm": iqm,
-                "apparent_value_iqr_std": iqr_std,
-            }
-        )
+        row = {
+            "epoch": epoch,
+            "algorithm": self.train_cfg.algorithm,
+            "environment": self.env_cfg.env_id,
+            "apparent_value_iqm": iqm,
+            "apparent_value_iqr_std": iqr_std,
+        }
+        # u=0 validation anchor (AM3): Q(s, a_data, u=0) tracks the clean value;
+        # the built-in check that conditioning on U works. Oracle runs only.
+        if self._value_trace_oracle and hasattr(self.agent, "oracle_anchor_q"):
+            q0 = self.agent.oracle_anchor_q(batch)
+            u0_iqm, u0_iqr_std = self._bin_stats(q0.reshape(-1))
+            row["apparent_value_u0_iqm"] = u0_iqm
+            row["apparent_value_u0_iqr_std"] = u0_iqr_std
+        logger.log(row)
 
     def _aggregate_returns(self, returns: torch.Tensor) -> Tuple[float, float]:
         if returns.numel() == 0:
@@ -741,7 +781,15 @@ class BenchmarkRunner:
             value_trace_ctx = (
                 CSVLogger(
                     os.path.join(self.run_dir, "offline_value_trace.csv"),
-                    fieldnames=OFFLINE_VALUE_TRACE_COLUMNS,
+                    # Runs containing a U-variant append the u=0 anchor columns to
+                    # the SHARED file (run-level schema flag, so base + variant
+                    # sibling runners agree on one header); pure base runs keep the
+                    # frozen schema exactly.
+                    fieldnames=(
+                        OFFLINE_VALUE_TRACE_COLUMNS + OFFLINE_VALUE_TRACE_U0_COLUMNS
+                        if self._value_trace_schema_oracle
+                        else OFFLINE_VALUE_TRACE_COLUMNS
+                    ),
                 )
                 if self._value_trace_gate_open
                 else nullcontext(None)
@@ -962,6 +1010,9 @@ class BenchmarkRunner:
             self.replay_buffer,
             self.device,
             mask_indices=getattr(self.env_cfg, "mask_indices", None),
+            # Oracle-U ceiling: load the per-transition latent U so the
+            # U-conditioned critic can read batch["confounder_u"].
+            load_u=self._requires_confounder_u,
         )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")

@@ -180,6 +180,7 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         obs, _ = env.reset(seed=seed + 1000 + ep)
         obs_list = [_to_np(obs)]
         acts, rews, terms, truncs = [], [], [], []
+        ep_u: list[float] = []  # per-transition U for this episode (confounded only)
         done = False
         steps = 0
         while not done and steps < max_steps:
@@ -206,9 +207,19 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 )
                 sig_r.append(r_t)
                 sig_u.append(u_t)
+                ep_u.append(u_t)
             done = terms[-1] or truncs[-1]
             steps += 1
         adt = np.int64 if action_type == "discrete" else np.float32
+        # Persist the per-transition latent U (length T, aligned with actions/
+        # rewards) into the episode infos ONLY when confounded — the oracle-U
+        # ceiling reads it back. The clean path omits infos so non-confounded
+        # datasets stay byte-identical to the pre-oracle generator.
+        ep_kwargs = (
+            {"infos": {"confounder_u": np.asarray(ep_u, dtype=np.float32)}}
+            if confounded
+            else {}
+        )
         buffers.append(
             EpisodeBuffer(
                 observations=np.asarray(obs_list, dtype=np.float32),
@@ -216,6 +227,7 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 rewards=np.asarray(rews, dtype=np.float32),
                 terminations=np.asarray(terms, dtype=bool),
                 truncations=np.asarray(truncs, dtype=bool),
+                **ep_kwargs,
             )
         )
     samples = (

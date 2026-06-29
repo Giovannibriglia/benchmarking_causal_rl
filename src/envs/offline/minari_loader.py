@@ -63,6 +63,7 @@ def fill_replay_buffer_from_minari(
     buffer,
     device: torch.device,
     mask_indices: tuple[int, ...] | None = None,
+    load_u: bool = False,
 ) -> int:
     """Load a Minari dataset and fill ``buffer`` with its transitions.
 
@@ -71,6 +72,13 @@ def fill_replay_buffer_from_minari(
     — the same dict shape the online off-policy collector produces, so the
     agent's batched ``update`` is identical offline. ``next_obs`` is the
     episode's next observation; ``dones = terminations | truncations``.
+
+    ``load_u`` (oracle-U ceiling, the ``*_oracle_u`` variant algos): when True, the
+    per-transition latent ``U`` stored in each episode's ``infos["confounder_u"]``
+    (written at generation for confounded datasets) is added to the transition
+    dict as ``"confounder_u"``, so the U-conditioned critic can read it. Raises a
+    clear ``ValueError`` if requested but absent (older/non-confounded dataset).
+    Default ``load_u=False`` leaves the 5-key transition path byte-identical.
 
     ``mask_indices`` (Z-hidden axis, Cells 4/8): when set, those positions are
     dropped from the LAST axis of every transition's ``obs``/``next_obs`` in
@@ -103,15 +111,27 @@ def fill_replay_buffer_from_minari(
         truncations = torch.as_tensor(episode.truncations, dtype=torch.bool)
         dones = (terminations | truncations).float()
         steps = rewards.shape[0]
+        u_vals = None
+        if load_u:
+            infos = getattr(episode, "infos", None) or {}
+            if "confounder_u" not in infos:
+                raise ValueError(
+                    f"load_u=True but Minari dataset '{dataset_id}' has no "
+                    "infos['confounder_u']; the per-transition latent U is "
+                    "required by the *_oracle_u variant algos. Regenerate the "
+                    "dataset (bias_confounded) so U is persisted into episode infos."
+                )
+            u_vals = torch.as_tensor(infos["confounder_u"], dtype=torch.float32)
         for t in range(steps):
-            buffer.add(
-                {
-                    "obs": obs[t],
-                    "actions": actions[t],
-                    "rewards": rewards[t],
-                    "next_obs": obs[t + 1],
-                    "dones": dones[t],
-                }
-            )
+            transition = {
+                "obs": obs[t],
+                "actions": actions[t],
+                "rewards": rewards[t],
+                "next_obs": obs[t + 1],
+                "dones": dones[t],
+            }
+            if u_vals is not None:
+                transition["confounder_u"] = u_vals[t]
+            buffer.add(transition)
             n_added += 1
     return n_added

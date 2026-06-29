@@ -351,3 +351,32 @@ def register_default_algorithms() -> None:
                 data_regime="offline",
             ),
         )
+
+    # Oracle-U deconfounding variants (discrete Cell-7 arm) as FIRST-CLASS algos,
+    # selected via --algos like any other. They read the per-transition latent U
+    # (requires_confounder_u=True) -> the ORACLE REFERENCE ceiling, not a reported
+    # competitor. Only the discrete bases have an oracle builder; there is no
+    # continuous variant, so e.g. "cql_continuous_oracle_u"/"sac_oracle_u" is a
+    # clean registry KeyError.
+    from src.rl.offline.oracle_u import (
+        build_oracle_u_bcq,
+        build_oracle_u_cql,
+        build_oracle_u_dqn,
+        build_oracle_u_iql,
+    )
+
+    for _vname, _vbuilder in (
+        ("offline_dqn_oracle_u", build_oracle_u_dqn),
+        ("bcq_oracle_u", build_oracle_u_bcq),
+        ("cql_oracle_u", build_oracle_u_cql),
+        ("iql_oracle_u", build_oracle_u_iql),
+    ):
+        registry.register(
+            _vname,
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(_vname, _vbuilder),
+                kind="off_policy",
+                data_regime="offline",
+                requires_confounder_u=True,
+            ),
+        )

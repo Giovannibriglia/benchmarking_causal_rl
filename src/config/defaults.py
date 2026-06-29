@@ -78,6 +78,13 @@ class RunConfig:
         default_factory=lambda: datetime.now().strftime("%Y%m%d_%H%M%S")
     )
     run_dir: Optional[str] = None
+    # Run-level flag (set by main.py = "any selected algo requires the confounder
+    # U", i.e. any *_oracle_u variant). All sibling (env, algo) runners share one
+    # offline_value_trace.csv in run_dir; when any of them is a U-variant the file
+    # must use the u0-anchor SUPERSET schema so every runner writes a consistent
+    # header (base runners blank-fill the u0 cells). A per-runner decision can't
+    # see siblings, so this is decided once from the full algo list in main.py.
+    value_trace_u0_schema: bool = False
 
     def resolve_run_dir(self) -> str:
         if self.run_dir is not None:

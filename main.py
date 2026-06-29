@@ -611,7 +611,23 @@ def main():
     with (run_dir / "metadata.json").open("w") as f:
         json.dump({"timestamp": base_timestamp}, f, indent=2)
 
-    run_cfg = RunConfig(run_dir=str(run_dir), timestamp=base_timestamp)
+    # Run-level u0-schema flag: the sibling (env, algo) runners SHARE one
+    # offline_value_trace.csv in run_dir, so if ANY selected algo is a U-variant
+    # (requires_confounder_u) every runner must widen that file to the u0 SUPERSET
+    # header (base runners blank-fill the u0 cells). Decided here because only the
+    # full algo list is visible at this level, not inside a per-(env, algo) runner.
+    def _algo_requires_u(name: str) -> bool:
+        try:
+            return bool(registry.get(name).requires_confounder_u)
+        except KeyError:
+            return False  # unknown algo surfaces in the run loop below
+
+    run_requires_u = any(_algo_requires_u(a["name"]) for a in normalized_algos)
+    run_cfg = RunConfig(
+        run_dir=str(run_dir),
+        timestamp=base_timestamp,
+        value_trace_u0_schema=run_requires_u,
+    )
 
     for env_id in envs:
         for algo_spec_norm in normalized_algos:
