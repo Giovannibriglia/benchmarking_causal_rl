@@ -380,3 +380,34 @@ def register_default_algorithms() -> None:
                 requires_confounder_u=True,
             ),
         )
+
+    # Proximal deconfounding variants (STUB, PR-1 scaffolding). base x Proximal()
+    # strategy: it INFERS U (requires_confounder_u=False, never reads it) and
+    # consumes episode-grouped sequences (needs_episode_grouping=True). The stub
+    # degrades to the Observational floor; the estimator math is PR-2. Same
+    # discrete bases; selecting a continuous *_proximal is a clean KeyError.
+    from src.rl.off_policy.identification import Proximal
+
+    def _proximal_builder(base_builder):
+        def _wrapped(**kwargs):
+            return base_builder(strategy=Proximal(), **kwargs)
+
+        return _wrapped
+
+    for _pname, _pbuilder in (
+        ("offline_dqn_proximal", build_offline_dqn),
+        ("bcq_proximal", build_bcq),
+        ("cql_proximal", build_cql),
+        ("iql_proximal", build_iql),
+    ):
+        registry.register(
+            _pname,
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(
+                    _pname, _proximal_builder(_pbuilder)
+                ),
+                kind="off_policy",
+                data_regime="offline",
+                needs_episode_grouping=True,
+            ),
+        )

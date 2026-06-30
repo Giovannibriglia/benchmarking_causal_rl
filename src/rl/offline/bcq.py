@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from src.rl.base import ActionOutput
 from src.rl.models.backbone import select_backbone
 from src.rl.off_policy.base_off_policy import BaseOffPolicy
+from src.rl.off_policy.identification import IdentificationStrategy, Observational
 from src.rl.off_policy.replay_buffer import ReplayBuffer
 
 
@@ -40,6 +41,7 @@ class DiscreteBCQ(BaseOffPolicy):
         gamma: float = 0.99,
         tau: float = 0.005,
         threshold: float = 0.3,
+        strategy: IdentificationStrategy | None = None,
     ) -> None:
         super().__init__(device, gamma=gamma)
         self.q_network = q_network
@@ -51,6 +53,10 @@ class DiscreteBCQ(BaseOffPolicy):
         self.behavior_opt = torch.optim.Adam(self.behavior_net.parameters(), lr=lr)
         self.tau = tau
         self.threshold = threshold
+        # Default Observational => critic_value is net(x), byte-identical to the
+        # pre-strategy BCQ (golden unchanged). The behavior net G(a|s) is U-free
+        # and never routed through the strategy.
+        self._strategy = strategy if strategy is not None else Observational()
 
     def allowed_mask(
         self, obs: torch.Tensor, threshold: float | None = None
@@ -100,14 +106,22 @@ class DiscreteBCQ(BaseOffPolicy):
 
         # Q: target uses the behavior-constrained next-action argmax.
         with torch.no_grad():
-            next_q_online = self.q_network(next_obs)
+            next_q_online = self._strategy.critic_value(self.q_network, next_obs, batch)
             next_constrained = self._constrained_q(
                 next_q_online, self.allowed_mask(next_obs)
             )
             next_actions = torch.argmax(next_constrained, dim=1, keepdim=True)
-            next_q = self.target_network(next_obs).gather(1, next_actions).squeeze(-1)
+            next_q = (
+                self._strategy.critic_value(self.target_network, next_obs, batch)
+                .gather(1, next_actions)
+                .squeeze(-1)
+            )
             target = rewards + self.gamma * next_q * (1.0 - dones)
-        q_sa = self.q_network(obs).gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        q_sa = (
+            self._strategy.critic_value(self.q_network, obs, batch)
+            .gather(1, actions.unsqueeze(-1))
+            .squeeze(-1)
+        )
         q_loss = F.mse_loss(q_sa, target)
         self.q_opt.zero_grad(set_to_none=True)
         q_loss.backward()
@@ -140,5 +154,12 @@ def build_bcq(**kwargs):
     target_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     behavior_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
-    agent = DiscreteBCQ(q_net, target_net, behavior_net, buffer, device=device)
+    agent = DiscreteBCQ(
+        q_net,
+        target_net,
+        behavior_net,
+        buffer,
+        device=device,
+        strategy=kwargs.get("strategy"),
+    )
     return q_net, agent

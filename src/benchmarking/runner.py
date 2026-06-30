@@ -129,6 +129,11 @@ class AlgorithmSpec:
     # load_u and the value-trace u0-anchor schema. Default False keeps every
     # existing AlgorithmSpec(...) construction (and the base algos) unchanged.
     requires_confounder_u: bool = False
+    # True iff this algo consumes episode-grouped sequences (the *_proximal
+    # latent-class variants, whose per-episode posterior needs whole episodes).
+    # Default False. PR-1 registers the flag + the Proximal stub; wiring the
+    # offline loop to honor it (Minari -> SequenceReplayBuffer) is PR-2.
+    needs_episode_grouping: bool = False
 
 
 def _validate_algos_against_behavior_policy(

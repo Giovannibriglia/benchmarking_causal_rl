@@ -17,23 +17,24 @@ import warnings
 import pytest
 import torch
 from src.benchmarking.registry import register_default_algorithms, registry
-from src.rl.offline.oracle_u import (
-    OracleUBCQ,
-    OracleUCQL,
-    OracleUDQN,
-    OracleUIQL,
-    UMarginalizedQ,
-)
+from src.rl.off_policy.dqn import DQN
+from src.rl.off_policy.identification import OracleU
+from src.rl.offline.bcq import DiscreteBCQ
+from src.rl.offline.cql import CQL
+from src.rl.offline.iql import IQL
+from src.rl.offline.oracle_u import UMarginalizedQ
 
 warnings.filterwarnings("ignore")
 
 _CPU = torch.device("cpu")
 _OBS_DIM, _ACT_DIM = 4, 2
+# Post-collapse: an oracle-U agent is the BASE class carrying an OracleU strategy
+# (no more OracleU* subclasses).
 _ORACLE_TYPES = {
-    "offline_dqn": OracleUDQN,
-    "cql": OracleUCQL,
-    "iql": OracleUIQL,
-    "bcq": OracleUBCQ,
+    "offline_dqn": DQN,
+    "cql": CQL,
+    "iql": IQL,
+    "bcq": DiscreteBCQ,
 }
 
 
@@ -90,7 +91,8 @@ def test_q_adj_is_bernoulli_mean_of_u0_u1():
 @pytest.mark.parametrize("name", list(_ORACLE_TYPES))
 def test_oracle_builds_and_learn_exercises_u_conditioned_net(name):
     policy, agent = _make_oracle(name)
-    assert type(agent) is _ORACLE_TYPES[name]
+    assert type(agent) is _ORACLE_TYPES[name]  # base class + OracleU strategy
+    assert isinstance(agent._strategy, OracleU)
     assert agent.is_oracle_u is True
     assert isinstance(agent.q_network, UMarginalizedQ)
 
@@ -127,10 +129,8 @@ def test_iql_oracle_advantage_is_u_independent():
     form (advantage from q_su(.,u)) would differ by the c_r·U reward bonus and
     re-upweight the U-biased actions. The final check confirms q_su genuinely
     depends on u, so the invariance is marginalization removing a real dependence."""
-    from src.rl.offline.oracle_u import OracleUIQL
-
     _, agent = _make_oracle("iql")
-    assert isinstance(agent, OracleUIQL)
+    assert isinstance(agent, IQL) and agent.is_oracle_u  # base IQL + OracleU strategy
     g = torch.Generator().manual_seed(1)
     obs = torch.randn(16, _OBS_DIM, generator=g)
     actions = torch.randint(0, _ACT_DIM, (16,), generator=g)

@@ -30,5 +30,11 @@ def build_offline_dqn(**kwargs):
     q_net = select_backbone(obs_shape, obs_dim, action_dim)
     target_net = select_backbone(obs_shape, obs_dim, action_dim)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
-    agent = DQN(q_net.to(device), target_net.to(device), buffer, device=device)
+    agent = DQN(
+        q_net.to(device),
+        target_net.to(device),
+        buffer,
+        device=device,
+        strategy=kwargs.get("strategy"),
+    )
     return q_net.to(device), agent

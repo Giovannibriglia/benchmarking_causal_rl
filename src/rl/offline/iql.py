@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from src.rl.base import ActionOutput
 from src.rl.models.backbone import select_backbone
 from src.rl.off_policy.base_off_policy import BaseOffPolicy
+from src.rl.off_policy.identification import IdentificationStrategy, Observational
 from src.rl.off_policy.replay_buffer import ReplayBuffer
 
 
@@ -59,6 +60,7 @@ class IQL(BaseOffPolicy):
         expectile: float = 0.7,
         beta: float = 3.0,
         adv_clip: float = 100.0,
+        strategy: IdentificationStrategy | None = None,
     ) -> None:
         super().__init__(device, gamma=gamma)
         # actor / critics kept as distinct modules.
@@ -76,6 +78,30 @@ class IQL(BaseOffPolicy):
         self.expectile = expectile
         self.beta = beta
         self.adv_clip = adv_clip
+        # Default Observational => critic_value is net(x), byte-identical to the
+        # pre-strategy IQL (golden unchanged). ONLY the q_sa data-action site is
+        # routed through the strategy; V-target/advantage stay plain (see below).
+        self._strategy = strategy if strategy is not None else Observational()
+
+    def v_target(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Expectile-regression target for V: the (target) Q at the data action.
+
+        PLAIN ``target_network(obs)`` — deliberately NOT routed through the
+        strategy hook. For the OracleU net this forward is the marginalized
+        ``Q_adj`` (U-independent); routing it through ``q_su`` would re-introduce
+        the confounder leak into V and the policy (the cb751d6 fix)."""
+        with torch.no_grad():
+            a_idx = batch["actions"].long().unsqueeze(-1)
+            return self.target_network(batch["obs"]).gather(1, a_idx).squeeze(-1)
+
+    def awr_advantage(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """AWR advantage ``Q(s,a_data) - V(s)`` using the PLAIN target_network(obs)
+        (U-independent for the OracleU net) — same leak-avoidance as v_target."""
+        with torch.no_grad():
+            a_idx = batch["actions"].long().unsqueeze(-1)
+            return self.target_network(batch["obs"]).gather(1, a_idx).squeeze(
+                -1
+            ) - self.value_net(batch["obs"]).squeeze(-1)
 
     def act(
         self,
@@ -98,19 +124,25 @@ class IQL(BaseOffPolicy):
         a_idx = actions.unsqueeze(-1)
 
         # Value: expectile regression toward the (target) Q of the data action.
-        with torch.no_grad():
-            q_target_sa = self.target_network(obs).gather(1, a_idx).squeeze(-1)
+        # v_target is the plain target_network(obs) (NOT hooked) — preserves the
+        # original compute order (target-Q forward, then V forward).
+        q_target_sa = self.v_target(batch)
         v = self.value_net(obs).squeeze(-1)
         v_loss = expectile_loss(q_target_sa - v, self.expectile).mean()
         self.v_opt.zero_grad(set_to_none=True)
         v_loss.backward()
         self.v_opt.step()
 
-        # Q: TD target bootstrapped from V (avoids the OOD max over actions).
+        # Q: TD target bootstrapped from V (avoids the OOD max over actions). ONLY
+        # the data-action Q (q_sa) is routed through the strategy hook.
         with torch.no_grad():
             next_v = self.value_net(next_obs).squeeze(-1)
             q_target = rewards + self.gamma * next_v * (1.0 - dones)
-        q_sa = self.q_network(obs).gather(1, a_idx).squeeze(-1)
+        q_sa = (
+            self._strategy.critic_value(self.q_network, obs, batch)
+            .gather(1, a_idx)
+            .squeeze(-1)
+        )
         q_loss = F.mse_loss(q_sa, q_target)
         self.q_opt.zero_grad(set_to_none=True)
         q_loss.backward()
@@ -118,12 +150,12 @@ class IQL(BaseOffPolicy):
         for p, tp in zip(self.q_network.parameters(), self.target_network.parameters()):
             tp.data.copy_(self.tau * p.data + (1.0 - self.tau) * tp.data)
 
-        # Policy: advantage-weighted regression with clipped weights.
+        # Policy: advantage-weighted regression with clipped weights. The advantage
+        # uses the plain (marginalized) target-Q, NOT the strategy hook.
         with torch.no_grad():
-            adv = self.target_network(obs).gather(1, a_idx).squeeze(
-                -1
-            ) - self.value_net(obs).squeeze(-1)
-            weight = torch.clamp(torch.exp(self.beta * adv), max=self.adv_clip)
+            weight = torch.clamp(
+                torch.exp(self.beta * self.awr_advantage(batch)), max=self.adv_clip
+            )
         log_pi = F.log_softmax(self.policy_net(obs), dim=1).gather(1, a_idx).squeeze(-1)
         pi_loss = -(weight * log_pi).mean()
         self.pi_opt.zero_grad(set_to_none=True)
@@ -157,5 +189,13 @@ def build_iql(**kwargs):
     target_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     value_net = select_backbone(obs_shape, obs_dim, 1).to(device)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
-    agent = IQL(policy_net, q_net, target_net, value_net, buffer, device=device)
+    agent = IQL(
+        policy_net,
+        q_net,
+        target_net,
+        value_net,
+        buffer,
+        device=device,
+        strategy=kwargs.get("strategy"),
+    )
     return policy_net, agent

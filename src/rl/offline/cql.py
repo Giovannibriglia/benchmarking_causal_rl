@@ -9,6 +9,7 @@ import torch.nn.functional as F
 from src.rl.base import ActionOutput
 from src.rl.models.backbone import select_backbone
 from src.rl.off_policy.base_off_policy import BaseOffPolicy
+from src.rl.off_policy.identification import IdentificationStrategy, Observational
 from src.rl.off_policy.replay_buffer import ReplayBuffer
 
 
@@ -37,6 +38,7 @@ class CQL(BaseOffPolicy):
         gamma: float = 0.99,
         tau: float = 0.005,
         alpha: float = 1.0,
+        strategy: IdentificationStrategy | None = None,
     ) -> None:
         super().__init__(device, gamma=gamma)
         self.q_network = q_network
@@ -46,6 +48,9 @@ class CQL(BaseOffPolicy):
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=lr)
         self.tau = tau
         self.alpha = alpha
+        # Default Observational => critic_value is net(x), byte-identical to the
+        # pre-strategy CQL (golden unchanged).
+        self._strategy = strategy if strategy is not None else Observational()
 
     def act(
         self,
@@ -80,10 +85,14 @@ class CQL(BaseOffPolicy):
         next_obs = batch["next_obs"]
         dones = batch["dones"]
 
-        q_values = self.q_network(obs)
+        q_values = self._strategy.critic_value(self.q_network, obs, batch)
         q_sa = q_values.gather(1, actions.unsqueeze(-1)).squeeze(-1)
         with torch.no_grad():
-            next_q = self.target_network(next_obs).max(dim=1).values
+            next_q = (
+                self._strategy.critic_value(self.target_network, next_obs, batch)
+                .max(dim=1)
+                .values
+            )
             target = rewards + self.gamma * next_q * (1.0 - dones)
         td_loss = F.mse_loss(q_sa, target)
         penalty = self.conservative_penalty(q_values, actions)
@@ -120,5 +129,7 @@ def build_cql(**kwargs):
     q_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     target_net = select_backbone(obs_shape, obs_dim, action_dim).to(device)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
-    agent = CQL(q_net, target_net, buffer, device=device)
+    agent = CQL(
+        q_net, target_net, buffer, device=device, strategy=kwargs.get("strategy")
+    )
     return q_net, agent

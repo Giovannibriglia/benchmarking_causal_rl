@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from ..base import ActionOutput
 from .base_off_policy import BaseOffPolicy
+from .identification import IdentificationStrategy, Observational
 from .replay_buffer import ReplayBuffer
 
 
@@ -26,6 +27,7 @@ class DQN(BaseOffPolicy):
         gamma: float = 0.99,
         tau: float = 0.005,
         epsilon: float = 0.1,
+        strategy: IdentificationStrategy | None = None,
     ) -> None:
         super().__init__(device, gamma=gamma)
         self.q_network = q_network
@@ -35,6 +37,10 @@ class DQN(BaseOffPolicy):
         self.optimizer = torch.optim.Adam(self.q_network.parameters(), lr=lr)
         self.tau = tau
         self.epsilon = epsilon
+        # Identification strategy: routes the u-conditionable critic evals.
+        # Default Observational => critic_value is net(x), byte-identical to the
+        # pre-strategy code (online + offline DQN goldens unchanged).
+        self._strategy = strategy if strategy is not None else Observational()
         # Recurrent iff the Q-trunk carries hidden state (build_trunk("lstm"/...)
         # exposes initial_state; build_trunk("mlp") returns a bare MLP). The MLP
         # path below stays byte-identical -> off-policy goldens stay green.
@@ -134,9 +140,17 @@ class DQN(BaseOffPolicy):
         next_obs = batch["next_obs"]
         dones = batch["dones"]
 
-        q_values = self.q_network(obs).gather(1, actions.unsqueeze(-1)).squeeze(-1)
+        q_values = (
+            self._strategy.critic_value(self.q_network, obs, batch)
+            .gather(1, actions.unsqueeze(-1))
+            .squeeze(-1)
+        )
         with torch.no_grad():
-            next_q = self.target_network(next_obs).max(dim=1).values
+            next_q = (
+                self._strategy.critic_value(self.target_network, next_obs, batch)
+                .max(dim=1)
+                .values
+            )
             target = rewards + self.gamma * next_q * (1.0 - dones)
         loss = F.mse_loss(q_values, target)
         self.optimizer.zero_grad()
