@@ -840,6 +840,15 @@ class BenchmarkRunner:
             or getattr(self.train_cfg, "critic_network", "mlp") != "mlp"
         )
 
+    def _needs_episode_grouping_run(self) -> bool:
+        """True iff this run consumes episode-grouped sequences: a recurrent run OR
+        an algo flagged needs_episode_grouping (the *_proximal latent-class
+        variants). Gates the OFFLINE grouped path (Minari -> SequenceReplayBuffer).
+        Non-grouped offline stays on the flat ReplayBuffer path, byte-identical."""
+        return self._is_recurrent_run() or getattr(
+            self.algo_spec, "needs_episode_grouping", False
+        )
+
     def _make_replay_buffer(self):
         """Construct the off-policy buffer to pass to the builder: an episode-aware
         SequenceReplayBuffer for recurrent off-policy runs, else None (the builder
@@ -952,6 +961,10 @@ class BenchmarkRunner:
         left blank (as online off-policy already does); eval runs in the live
         env so returns stay comparable to online runs.
         """
+        # Episode-grouped offline (proximal / future recurrent-offline): a parallel
+        # path so the flat path below stays byte-frozen (golden 63/1). [PR-2a]
+        if self._needs_episode_grouping_run():
+            return self._train_offline_grouped(train_logger, eval_logger, aux_logger)
         assert self.replay_buffer is not None
         dataset_id = self.env_cfg.offline_dataset
         if not dataset_id:
@@ -1076,3 +1089,110 @@ class BenchmarkRunner:
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
                 self._log_aux_rows(aux_logger, last_batch, ep)
+
+    def _train_offline_grouped(
+        self,
+        train_logger: CSVLogger,
+        eval_logger: CSVLogger,
+        aux_logger: CSVLogger | None = None,
+    ) -> None:
+        """Episode-grouped offline training (proximal latent-class variants; later
+        offline-recurrent). Parallel to ``_train_offline`` so the flat path stays
+        byte-frozen. The RUNNER owns a ``SequenceReplayBuffer`` (the offline
+        builders ignore the passed buffer and make a flat one), fills it
+        episode-grouped via ``fill_sequence_buffer_from_minari``, and samples
+        same-episode ``(B, T, *)`` windows -> ``agent.update``; the AGENT owns
+        sequence consumption (the runner only passes (B, T)). The dataset-resolve
+        + confounding-gate block is duplicated from ``_train_offline`` (not shared)
+        to keep that method byte-frozen.
+
+        Deferred to PR-2b (NOT here): the offline value-trace on sequences + the
+        whole-episode posterior accessor; aux-models on sequences. The Proximal
+        stub degrades to the Observational floor (its wrapped learn flattens (B,T)).
+        """
+        dataset_id = self.env_cfg.offline_dataset
+        if not dataset_id:
+            raise ValueError(
+                "offline training requires env_cfg.offline_dataset (a Minari "
+                "dataset id); pass --offline-dataset."
+            )
+        from src.envs.offline.minari_loader import (
+            assert_dataset_matches_algo,
+            fill_sequence_buffer_from_minari,
+            load_minari_dataset,
+        )
+        from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
+
+        dataset = load_minari_dataset(dataset_id)
+        assert_dataset_matches_algo(
+            dataset, self.action_type, dataset_id, self.train_cfg.algorithm
+        )
+        # Confounding gate (Cells 7-8) — duplicated verbatim from _train_offline.
+        if self._value_trace_gate_open:
+            meta = dataset.storage.metadata
+            if "gate_test_passed" not in meta:
+                raise ValueError(
+                    f"Confounded offline run on dataset '{dataset_id}' requires "
+                    "the confounding-signature metadata, but none is present "
+                    "(likely generated before this metadata existed). Regenerate "
+                    "the dataset with tools/generate_offline.py."
+                )
+            if meta.get("behavior_strength_sigma") == 0.0:
+                print(
+                    "[runner] sigma=0.0 anchor: skipping confounding gate test "
+                    "(dataset is the unconfounded baseline by construction).",
+                    file=sys.stderr,
+                )
+            elif not bool(meta["gate_test_passed"]):
+                raise ValueError(
+                    f"Dataset '{dataset_id}' failed the confounding gate test "
+                    "(gate_test_passed=False): the confounding signature did not "
+                    "hold at generation. Regenerate or inspect the dataset."
+                )
+
+        # The runner owns the episode-grouped buffer (offline builders ignore the
+        # passed buffer). Mirror the flat fill's mask_indices / load_u args.
+        self.replay_buffer = SequenceReplayBuffer(
+            capacity=1_000_000, device=self.device
+        )
+        n_added = fill_sequence_buffer_from_minari(
+            dataset_id,
+            self.replay_buffer,
+            self.device,
+            mask_indices=getattr(self.env_cfg, "mask_indices", None),
+            load_u=self._requires_confounder_u,
+        )
+        if n_added == 0:
+            raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
+
+        checkpoint_eps = self.train_cfg.checkpoint_episodes()
+        grad_steps_per_epoch = self.env_cfg.rollout_len
+        seq_len = self.offpolicy_seq_len
+        batch_size = self.offpolicy_batch_size
+        metrics_cache = None
+        for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
+            for _ in range(grad_steps_per_epoch):
+                if not self.replay_buffer.can_sample(seq_len):
+                    break  # no episode long enough yet (skip-short semantics)
+                batch = self.replay_buffer.sample_sequences(batch_size, seq_len)
+                metrics_cache = self.agent.update(batch)  # agent owns (B,T) consumption
+            if ep in checkpoint_eps:
+                self._save_checkpoint(ep)
+                eval_metrics = self.evaluate(ep)
+                eval_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                eval_row = self._make_row(EVAL_COLUMNS, eval_metrics, ep)
+                train_metrics = (metrics_cache or {}).copy()
+                train_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
+                train_logger.log(train_row)
+                eval_logger.log(eval_row)

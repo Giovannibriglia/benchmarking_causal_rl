@@ -388,9 +388,36 @@ def register_default_algorithms() -> None:
     # discrete bases; selecting a continuous *_proximal is a clean KeyError.
     from src.rl.off_policy.identification import Proximal
 
+    def _install_proximal_stub_learn(agent):
+        """STUB (PR-2b-replaced): the runner's grouped offline path passes the agent
+        episode-grouped ``(B, T, *)`` batches. The stub degrades to the Observational
+        floor, which ignores episode structure -> flattening (B, T, *) -> (B*T, *) is
+        honest HERE only because of that degrade (it stops the moment PR-2b's real
+        E/M consumes the (B, T) structure). The two gate surrogates are computed
+        (history), not gating (known-cell). The AGENT owns this consumption."""
+        strategy = agent._strategy
+        base_learn = agent.learn
+
+        def _stub_learn(batch):
+            if (
+                isinstance(batch, dict)
+                and torch.is_tensor(batch.get("obs"))
+                and batch["obs"].dim() == 3
+            ):
+                strategy.statistical_diagnostic(batch)  # computed, not gating
+                batch = {
+                    k: (v.flatten(0, 1) if torch.is_tensor(v) and v.dim() >= 2 else v)
+                    for k, v in batch.items()
+                }
+            return base_learn(batch)
+
+        agent.learn = _stub_learn
+
     def _proximal_builder(base_builder):
         def _wrapped(**kwargs):
-            return base_builder(strategy=Proximal(), **kwargs)
+            policy, agent = base_builder(strategy=Proximal(), **kwargs)
+            _install_proximal_stub_learn(agent)
+            return policy, agent
 
         return _wrapped
 
