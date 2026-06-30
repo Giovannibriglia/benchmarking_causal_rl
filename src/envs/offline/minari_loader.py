@@ -135,3 +135,74 @@ def fill_replay_buffer_from_minari(
             buffer.add(transition)
             n_added += 1
     return n_added
+
+
+def fill_sequence_buffer_from_minari(
+    dataset_id: str,
+    seq_buffer,
+    device: torch.device,
+    mask_indices: tuple[int, ...] | None = None,
+    load_u: bool = False,
+) -> int:
+    """Episode-grouped offline fill: a Minari dataset into a ``SequenceReplayBuffer``.
+
+    The episode-aware twin of ``fill_replay_buffer_from_minari`` (the flat
+    ``ReplayBuffer`` loader, left byte-for-byte untouched). The per-episode
+    processing — image normalization, ``mask_indices`` projection, ``load_u``
+    ``infos["confounder_u"]`` extraction, and the ``{obs, actions, rewards,
+    next_obs, dones[, confounder_u]}`` transition dict — is DELIBERATELY DUPLICATED
+    from the flat loader rather than shared, so the flat loader's bytes stay frozen
+    (flat-offline byte-identity is structural, not a behavioral claim). Dedup is a
+    later refactor if it earns its keep.
+
+    Only the sink differs: each Minari episode becomes ONE buffer episode keyed by
+    its enumerate index — per-transition ``seq_buffer.add(ep_idx, transition)`` then
+    ``mark_episode_end(ep_idx)`` — the SAME add/mark semantics the online recurrent
+    collector uses, so ``sample_sequences`` yields same-episode windows. Distinct
+    ``ep_idx`` per episode means episodes never merge.
+
+    ``mask_indices`` / ``load_u`` mirror the flat loader's signature for drop-in
+    parity (load_u raises the same clear error on a dataset lacking the latent).
+    Returns the number of transitions added.
+    """
+    dataset = load_minari_dataset(dataset_id)
+    n_added = 0
+    for ep_idx, episode in enumerate(dataset.iterate_episodes()):
+        raw_obs = np.asarray(episode.observations)
+        if raw_obs.ndim == 4:
+            obs = normalize_image_obs(raw_obs, device).cpu()
+        else:
+            if mask_indices:
+                raw_obs = np.delete(raw_obs, list(mask_indices), axis=-1)
+            obs = torch.as_tensor(raw_obs, dtype=torch.float32)
+        actions = torch.as_tensor(episode.actions)
+        rewards = torch.as_tensor(episode.rewards, dtype=torch.float32)
+        terminations = torch.as_tensor(episode.terminations, dtype=torch.bool)
+        truncations = torch.as_tensor(episode.truncations, dtype=torch.bool)
+        dones = (terminations | truncations).float()
+        steps = rewards.shape[0]
+        u_vals = None
+        if load_u:
+            infos = getattr(episode, "infos", None) or {}
+            if "confounder_u" not in infos:
+                raise ValueError(
+                    f"load_u=True but Minari dataset '{dataset_id}' has no "
+                    "infos['confounder_u']; the per-transition latent U is "
+                    "required by the *_oracle_u variant algos. Regenerate the "
+                    "dataset (bias_confounded) so U is persisted into episode infos."
+                )
+            u_vals = torch.as_tensor(infos["confounder_u"], dtype=torch.float32)
+        for t in range(steps):
+            transition = {
+                "obs": obs[t],
+                "actions": actions[t],
+                "rewards": rewards[t],
+                "next_obs": obs[t + 1],
+                "dones": dones[t],
+            }
+            if u_vals is not None:
+                transition["confounder_u"] = u_vals[t]
+            seq_buffer.add(ep_idx, transition)
+            n_added += 1
+        seq_buffer.mark_episode_end(ep_idx)
+    return n_added
