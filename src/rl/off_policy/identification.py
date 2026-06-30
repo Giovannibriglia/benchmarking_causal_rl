@@ -97,19 +97,27 @@ class OracleU:
 
 
 class Proximal:
-    """STUB latent-class deconfounder (PR-1 scaffolding; the estimator is PR-2).
+    """Latent-class deconfounder via stochastic-EM through the OracleU hook (PR-2b).
 
-    Exercises the episode-grouped sequence plumbing and the runtime gate without
-    pretending to deconfound: ``critic_value`` degrades to ``net(x)`` and ``target``
-    degrades to a bound. ``statistical_diagnostic`` computes the two REAL gate
-    surrogates from a PLACEHOLDER per-episode reward-sum split (not a real
-    posterior — PR-2 replaces it with EM/amortized inference)."""
+    Proximal IS the OracleU critic hook with an INFERRED-and-sampled confounder
+    instead of a read one: ``critic_value`` routes to ``net.q_su(x, u)`` exactly
+    as OracleU, but ``batch["confounder_u"]`` is written ONLY by the proximal
+    agent's E-step sampler (``ProximalEM`` in ``offline/proximal.py``) — a per-step
+    Bernoulli draw from the per-episode posterior ``q(U|tau)`` — NEVER the dataset's
+    realized U. Hence ``requires_confounder_u = False`` (the five-keys invariant:
+    the loader runs ``load_u=False``; proximal never sees the truth). The episode
+    posterior needs whole episodes -> ``needs_episode_grouping = True``.
 
-    requires_confounder_u = False  # infers U, never reads it
+    ``statistical_diagnostic`` computes the two gate surrogates; under the
+    known-cell assumption it is LOGGED, not gating (that routing is Stage C)."""
+
+    requires_confounder_u = False  # infers U via the E-step; never reads the truth
     needs_episode_grouping = True
 
     def critic_value(self, net, x, batch):
-        return net(x)  # degrade to the Observational floor (no Q(s,a,u) fit yet)
+        # Identical to OracleU's hook; the difference is the PROVENANCE of
+        # batch["confounder_u"] (E-step sample, not the loaded realized U).
+        return net.q_su(x, batch["confounder_u"])
 
     def graphical_precondition(self, graph=None) -> bool:
         return True  # "sole per-episode latent" (asserted for Cell 7)

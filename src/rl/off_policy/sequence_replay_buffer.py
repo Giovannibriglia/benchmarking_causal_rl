@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from typing import Deque, Dict, List, Optional
+from typing import Deque, Dict, Iterator, List, Optional
 
 import torch
 
@@ -124,6 +124,17 @@ class SequenceReplayBuffer:
             per_seq = [torch.stack([tr[k] for tr in seq]) for seq in seqs]
             out[k] = torch.stack(per_seq).to(self.device)
         return out
+
+    def iter_episodes(self) -> Iterator[List[Dict[str, torch.Tensor]]]:
+        """Yield each stored episode as its WHOLE list of transition dicts, in
+        insertion order. Additive (the windowed ``sample_sequences`` is unchanged):
+        the proximal E-step needs full variable-length episodes, not fixed (B,T)
+        windows. The transition dicts are the live, MUTABLE stored objects — the
+        E-step writes the per-episode responsibility back as ``tr["r_tau"]``, which
+        ``sample_sequences`` then carries into the (B,T) windows automatically
+        (it stacks every key)."""
+        for ep in self.episodes:
+            yield ep.transitions
 
     def __len__(self) -> int:
         """Total stored transition count (so warmup gates work unchanged)."""

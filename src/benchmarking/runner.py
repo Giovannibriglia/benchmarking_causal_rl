@@ -1165,6 +1165,10 @@ class BenchmarkRunner:
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
 
+        # Hand the episode-grouped buffer to the agent (the proximal E-step needs
+        # whole episodes); a no-op for agents that don't consume it. [PR-2b]
+        getattr(self.agent, "set_sequence_buffer", lambda *_a: None)(self.replay_buffer)
+
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         grad_steps_per_epoch = self.env_cfg.rollout_len
         seq_len = self.offpolicy_seq_len

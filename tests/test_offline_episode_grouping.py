@@ -23,29 +23,11 @@ warnings.filterwarnings("ignore")
 _CPU = torch.device("cpu")
 
 
-def test_proximal_stub_agent_consumes_sequence_batch():
-    """The stub agent's wrapped learn consumes a (B,T,*) batch (flatten + degrade
-    to the floor) and returns finite metrics — the runner->agent contract."""
-    register_default_algorithms()
-    _, agent = registry.get("cql_proximal").builder(
-        obs_dim=4,
-        action_dim=2,
-        action_type="discrete",
-        device=_CPU,
-        action_space=None,
-        obs_shape=(4,),
-    )
-    B, T = 8, 5
-    g = torch.Generator().manual_seed(0)
-    seq_batch = {
-        "obs": torch.randn(B, T, 4, generator=g),
-        "actions": torch.randint(0, 2, (B, T), generator=g),
-        "rewards": torch.randn(B, T, generator=g),
-        "next_obs": torch.randn(B, T, 4, generator=g),
-        "dones": torch.zeros(B, T),
-    }
-    metrics = agent.update(seq_batch)  # (B,T) -> flatten -> floor; must not crash
-    assert all(v == v for v in metrics.values())  # finite
+# NOTE: the PR-2a "stub consumes (B,T)" test was removed — PR-2b replaced the
+# flatten+floor stub with the real ProximalEM (it needs the E-step's per-episode
+# r_tau in the window + a handed-off sequence buffer, so a raw synthetic (B,T) is
+# no longer a valid standalone input). The real EM consumption is exercised
+# end-to-end below (proximal-through-runner) and in test_proximal_estimator.py.
 
 
 # --------------------------------------------------------------------------

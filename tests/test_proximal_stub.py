@@ -13,7 +13,7 @@ import warnings
 import pytest
 import torch
 from src.benchmarking.registry import register_default_algorithms, registry
-from src.rl.off_policy.identification import Observational, Proximal
+from src.rl.off_policy.identification import Observational, OracleU, Proximal
 
 warnings.filterwarnings("ignore")
 
@@ -48,16 +48,25 @@ def test_proximal_agent_carries_proximal_strategy():
     assert agent.is_oracle_u is False  # not an oracle; never reads U
 
 
-def test_proximal_strategy_critic_value_degrades_to_floor():
-    """Stub critic_value is the Observational floor net(x) — no deconfounding."""
-    net = torch.nn.Linear(4, 2)
+def test_proximal_critic_value_routes_through_the_q_su_hook():
+    """PR-2b: Proximal.critic_value is the OracleU q_su hook with an INFERRED-and-
+    sampled confounder_u (the E-step writes it), NOT a degrade-to-floor net(x).
+    Identical routing to OracleU; only the provenance of confounder_u differs."""
+    from src.rl.offline.oracle_u import UMarginalizedQ
+
+    net = UMarginalizedQ(4, 2)
     obs = torch.randn(5, 4)
-    batch = {"obs": obs}
+    u = torch.bernoulli(torch.full((5,), 0.5))
+    batch = {"obs": obs, "confounder_u": u}
     assert torch.equal(
+        Proximal().critic_value(net, obs, batch),
+        OracleU().critic_value(net, obs, batch),  # same hook, q_su(x, u)
+    )
+    # And NOT the Observational floor (it deconfounds via q_su, not plain net(x)).
+    assert not torch.equal(
         Proximal().critic_value(net, obs, batch),
         Observational().critic_value(net, obs, batch),
     )
-    assert Proximal().target() == "bound"  # degrades, never a point estimate
 
 
 # --------------------------------------------------------------------------
