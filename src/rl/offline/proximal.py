@@ -34,7 +34,7 @@ Observational floor. That collapse is the safety proof (the c_r=0 gate).
 from __future__ import annotations
 
 import math
-from typing import Dict, List
+from typing import Dict
 
 import torch
 import torch.nn as nn
@@ -114,117 +114,151 @@ class ProximalEM:
         self._canon_eps = 0.05
         self.seq_buffer = None
         self._updates = 0
+        # Padded episode batch (n_ep, max_len, ·) + mask, cached on-device ONCE by
+        # set_sequence_buffer — collapses the scalar path's 64*n_ep per-run_em
+        # stack+transfer to a single build, and lets the E/M reductions run as
+        # masked batched ops (GPU-fast) instead of a launch-bound per-episode loop.
+        self._batch = None
+        self._episodes = None
 
     # -- handoff (the runner's single set_sequence_buffer line) --
     def set_sequence_buffer(self, seq_buffer) -> None:
-        """Receive the runner-owned SequenceReplayBuffer, WARM-START the per-episode
-        responsibilities from the canonical "higher-reward stratum = U=1" labeling,
-        and run the first E/M pass. Cold r_tau=p is symmetric and lets the EM settle
-        into the label-swapped basin (diagnosed at high sigma, corr(r_tau,U)->-1);
-        the warm-start enters the correct basin."""
+        """Receive the runner-owned SequenceReplayBuffer, build + cache the padded
+        episode batch ON-DEVICE ONCE, WARM-START responsibilities from the canonical
+        "higher-reward stratum = U=1" labeling, and run the first E/M pass. Cold
+        r_tau=p is symmetric and lets the EM settle into the label-swapped basin
+        (diagnosed at high sigma, corr(r_tau,U)->-1); the warm-start enters the
+        correct basin."""
         self.seq_buffer = seq_buffer
-        episodes = list(seq_buffer.iter_episodes())
-        if episodes:
-            # MEAN reward (length-invariant — reward-SUM = episode length on a
-            # unit-reward env, which would spuriously label by length). NO-SPREAD
+        self._episodes = list(seq_buffer.iter_episodes())
+        self._batch = self._build_batch(self._episodes)
+        b = self._batch
+        if b is not None:
+            # MEAN reward per episode (length-invariant — reward-SUM = episode length
+            # on a unit-reward env, which would spuriously label by length). NO-SPREAD
             # FALLBACK: if the mean reward has ~no cross-episode spread (c_r=0,
             # constant per-step reward), there is no separation to label -> symmetric
             # prior (restores r_tau -> p at sigma=0).
-            means = torch.tensor(
-                [
-                    float(torch.stack([tr["rewards"] for tr in ep]).mean())
-                    for ep in episodes
-                ]
-            )
+            means = (b["rew"] * b["mask"]).sum(1) / b["lengths"]
             if float(means.std()) < self._canon_eps:
-                for ep in episodes:
-                    for tr in ep:
-                        tr["r_tau"] = torch.tensor(self.prior_p)
+                r_tau = torch.full_like(means, self.prior_p)
             else:
-                med = float(means.median())
-                for ep, m in zip(episodes, means.tolist()):
-                    init = torch.tensor(1.0 if m > med else 0.0)
-                    for tr in ep:
-                        tr["r_tau"] = init
+                med = means.median()
+                r_tau = (means > med).float()
+            b["r_tau"] = r_tau
+            self._scatter_r_tau(r_tau)
         self.run_em()
 
-    def _ep_tensors(self, ep: List[Dict[str, torch.Tensor]]):
-        obs = torch.stack([tr["obs"] for tr in ep]).to(self.device).float()
-        actions = torch.stack([tr["actions"] for tr in ep]).to(self.device)
-        rewards = torch.stack([tr["rewards"] for tr in ep]).to(self.device).float()
-        r_tau = float(ep[0].get("r_tau", torch.tensor(self.prior_p)))
-        return obs, actions, rewards, r_tau
-
-    def run_em(self) -> None:
-        """One EM pass: M-step on the reward params (responsibility-weighted
-        Gaussian NLL over both strata), then E-step recomputing ``r_tau`` per
-        episode and writing it back into the stored transitions."""
-        if self.seq_buffer is None:
-            return
-        episodes = list(self.seq_buffer.iter_episodes())
+    def _build_batch(self, episodes):
+        """Pad episodes to (n_ep, max_len, ·) + a float length-mask, ONCE, cached on
+        device. Padded positions are 0 and masked out of every reduction; sums divide
+        by TRUE lengths, never max_len. Replaces the scalar path's per-episode
+        stack+``.to(device)`` (64*n_ep tiny transfers per run_em) with one build."""
         if not episodes:
-            return
+            return None
+        dev = self.device
+        n = len(episodes)
+        lengths = torch.tensor(
+            [len(e) for e in episodes], device=dev, dtype=torch.float32
+        )
+        max_len = int(max(len(e) for e in episodes))
+        obs_dim = episodes[0][0]["obs"].shape[-1]
+        obs = torch.zeros(n, max_len, obs_dim, device=dev)
+        act = torch.zeros(n, max_len, dtype=torch.long, device=dev)
+        rew = torch.zeros(n, max_len, device=dev)
+        mask = torch.zeros(n, max_len, device=dev)
+        for i, ep in enumerate(episodes):
+            t = len(ep)
+            obs[i, :t] = torch.stack([tr["obs"] for tr in ep]).to(dev).float()
+            act[i, :t] = torch.stack([tr["actions"] for tr in ep]).to(dev)
+            rew[i, :t] = torch.stack([tr["rewards"] for tr in ep]).to(dev).float()
+            mask[i, :t] = 1.0
+        return {
+            "obs": obs,
+            "act": act,
+            "rew": rew,
+            "mask": mask,
+            "lengths": lengths,
+            "n": n,
+            "max_len": max_len,
+            "obs_dim": obs_dim,
+            "r_tau": torch.full((n,), self.prior_p, device=dev),
+        }
 
-        # M-step (reward params): minimize the responsibility-weighted NLL.
-        for _ in range(self.reward_steps):
-            self.opt.zero_grad(set_to_none=True)
-            loss = torch.zeros((), device=self.device)
-            total = 0
-            for ep in episodes:
-                obs, actions, rewards, r_tau = self._ep_tensors(ep)
-                r_hat = self.rm.reward_at(obs, actions)
-                sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
-                ll0 = -0.5 * ((rewards - r_hat) / sigma) ** 2 - torch.log(sigma)
-                ll1 = -0.5 * (
-                    (rewards - r_hat - self.rm.delta) / sigma
-                ) ** 2 - torch.log(sigma)
-                loss = loss - ((1.0 - r_tau) * ll0 + r_tau * ll1).sum()
-                total += len(ep)
-            # MAP shrinkage: r_tau-independent gradient pins delta->0 absent evidence.
-            loss = loss / max(total, 1) + self.delta_l2 * self.rm.delta**2
-            loss.backward()
-            self.opt.step()
-
-        # E-step: posterior from the per-step reward-sequence LLR (per episode).
-        # Also accumulate the per-episode MEAN RESIDUAL mean_t(r_t - r_hat(s_t,a_t))
-        # — the state-baseline-removed shift signal, the canonical observable.
-        logit_prior = math.log(self.prior_p / (1.0 - self.prior_p))
-        r_taus, residuals = [], []
-        with torch.no_grad():
-            sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
-            for ep in episodes:
-                obs, actions, rewards, _ = self._ep_tensors(ep)
-                r_hat = self.rm.reward_at(obs, actions)
-                ll0 = -0.5 * ((rewards - r_hat) / sigma) ** 2
-                ll1 = -0.5 * ((rewards - r_hat - self.rm.delta) / sigma) ** 2
-                llr = (ll1 - ll0).sum() + logit_prior
-                r_taus.append(float(torch.sigmoid(llr)))
-                residuals.append(float((rewards - r_hat).mean()))
-
-        # GUARDED label canonicalization: enforce "high r_tau = high mean-residual"
-        # (the U=1=higher-reward convention) as an invariant of every E-step, so the
-        # swapped basin is UNREACHABLE (not just un-initialized).
-        # NO-SPREAD FALLBACK: if the shift signal has ~no cross-episode spread (c_r=0
-        # -> residual ~ 0 for all), there is no separation -> symmetric prior, so
-        # r_tau -> p exactly (the literal sigma=0 collapse, mechanism AND substance).
-        rt = torch.tensor(r_taus)
-        res = torch.tensor(residuals)
-        if float(res.std()) < self._canon_eps:
-            r_taus = [self.prior_p] * len(r_taus)
-        else:
-            non_degenerate = (
-                float(self.rm.delta) > self._canon_eps
-                and float(rt.std()) > self._canon_eps
-            )
-            if non_degenerate:
-                corr = float(torch.corrcoef(torch.stack([rt, res]))[0, 1])
-                if corr < 0.0:
-                    r_taus = [1.0 - x for x in r_taus]  # flip into the canonical basin
-
-        for ep, val in zip(episodes, r_taus):
+    def _scatter_r_tau(self, r_tau) -> None:
+        """Write the (n_ep,) responsibilities back into the stored transitions so
+        ``sample_sequences`` carries r_tau into the (B,T) windows (n_ep-length loop,
+        not the hot path)."""
+        for ep, val in zip(self._episodes, r_tau.detach().cpu().tolist()):
             t = torch.tensor(val)
             for tr in ep:
                 tr["r_tau"] = t
+
+    def _reward_at_batch(self, b):
+        """r_hat(s,a) over the padded batch -> (n_ep, max_len). One MLP forward on
+        the flattened (n_ep*max_len, obs_dim) tensor, gathered at the data action."""
+        rhat = self.rm.r_hat(b["obs"].reshape(-1, b["obs_dim"])).reshape(
+            b["n"], b["max_len"], -1
+        )
+        return rhat.gather(-1, b["act"].unsqueeze(-1)).squeeze(-1)
+
+    def run_em(self) -> None:
+        """One EM pass over the cached padded batch: a masked-batched M-step (reward
+        params, responsibility-weighted Gaussian NLL) then a masked-batched E-step
+        (per-episode LLR posterior r_tau + mean residual), scattered back into the
+        stored transitions. Vectorized form of the scalar per-episode loops."""
+        b = self._batch
+        if self.seq_buffer is None or b is None:
+            return
+        rew, mask = b["rew"], b["mask"]
+        total = mask.sum()
+        r_tau = b["r_tau"]  # (n_ep,) responsibilities from warm-start / prior E-step
+
+        # M-step (reward params): masked responsibility-weighted NLL over both strata.
+        for _ in range(self.reward_steps):
+            self.opt.zero_grad(set_to_none=True)
+            r_hat = self._reward_at_batch(b)
+            sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
+            ll0 = -0.5 * ((rew - r_hat) / sigma) ** 2 - torch.log(sigma)
+            ll1 = -0.5 * ((rew - r_hat - self.rm.delta) / sigma) ** 2 - torch.log(sigma)
+            per = -((1.0 - r_tau[:, None]) * ll0 + r_tau[:, None] * ll1)
+            # MAP shrinkage: r_tau-independent gradient pins delta->0 absent evidence.
+            loss = (per * mask).sum() / total + self.delta_l2 * self.rm.delta**2
+            loss.backward()
+            self.opt.step()
+
+        # E-step: masked per-episode reward-sequence LLR posterior + the per-episode
+        # MEAN RESIDUAL mean_t(r_t - r_hat) — the state-baseline-removed shift signal
+        # (the canonical observable). Sums divide by TRUE lengths, never max_len.
+        logit_prior = math.log(self.prior_p / (1.0 - self.prior_p))
+        with torch.no_grad():
+            r_hat = self._reward_at_batch(b)
+            sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
+            ll0 = -0.5 * ((rew - r_hat) / sigma) ** 2
+            ll1 = -0.5 * ((rew - r_hat - self.rm.delta) / sigma) ** 2
+            llr = ((ll1 - ll0) * mask).sum(1) + logit_prior
+            r_taus = torch.sigmoid(llr)
+            residuals = ((rew - r_hat) * mask).sum(1) / b["lengths"]
+
+        # GUARDED label canonicalization: enforce "high r_tau = high mean-residual"
+        # (the U=1=higher-reward convention) as an invariant of every E-step, so the
+        # swapped basin is UNREACHABLE. NO-SPREAD FALLBACK: if the shift signal has
+        # ~no cross-episode spread (c_r=0 -> residual ~ 0 for all), there is no
+        # separation -> symmetric prior, so r_tau -> p exactly (the sigma=0 collapse).
+        if float(residuals.std()) < self._canon_eps:
+            r_taus = torch.full_like(r_taus, self.prior_p)
+        else:
+            non_degenerate = (
+                float(self.rm.delta) > self._canon_eps
+                and float(r_taus.std()) > self._canon_eps
+            )
+            if non_degenerate:
+                corr = float(torch.corrcoef(torch.stack([r_taus, residuals]))[0, 1])
+                if corr < 0.0:
+                    r_taus = 1.0 - r_taus  # flip into the canonical basin
+
+        b["r_tau"] = r_taus
+        self._scatter_r_tau(r_taus)
 
     # -- the M-step entry point the wrapped agent.learn calls --
     def m_step(self, window: Dict[str, torch.Tensor], base_learn):
