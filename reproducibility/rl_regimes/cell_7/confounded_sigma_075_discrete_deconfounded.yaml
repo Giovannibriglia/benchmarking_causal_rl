@@ -1,0 +1,37 @@
+# Cell 7 — Shadowed Vitals, discrete arm, σ = 0.75 — DECONFOUNDING TRIAD.
+# floor (cql) vs proximal (cql_proximal, infers the per-episode U from the five base
+# keys via stochastic-EM) vs the oracle-U ceiling (cql_oracle_u, reads the true U).
+# Apparent value inflates with σ under the floor; proximal removes it toward the
+# oracle ceiling (value-accuracy + policy-recovery; return is invariant — +σ·U is a
+# per-episode nuisance offset preserving the argmax).
+# Gate-passing envs only (CartPole +1/step, Acrobot −1/step) where σ·U induces
+# detectable A→R structure. Datasets must carry the realized U (bias_confounded
+# wrapper writing infos["confounder_u"]) so cql_oracle_u can load it; proximal never
+# reads it.
+# Refs: docs/experimental_design.md §4 Cell 7, §7; proximal PR-2b (968b250);
+# label-fix v2 (012cb4b).
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - cql
+  - cql_proximal
+  - cql_oracle_u
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma075-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma075-v0
+
+behavior_policy: bias_confounded
+behavior_strength: 0.75
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
