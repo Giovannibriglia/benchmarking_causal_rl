@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.rl.nets.mlp import MLP
+from src.rl.off_policy.dqn import DQN
+from src.rl.off_policy.replay_buffer import ReplayBuffer
 from src.rl.on_policy.base_actor_critic import RolloutBatch
 
 CRITIC_ABLATION_COLUMNS: list[str] = [
@@ -37,14 +39,56 @@ CRITIC_ABLATION_COLUMNS: list[str] = [
     "reward_error_mean",
 ]
 
+# Strategy-critic ablation (Cell-7 deconfounding) — a SEPARATE schema/file-path
+# from the V-head columns above. Scored estimation-vs-oracle (ground truth =
+# oracle Q_adj = UMarginalizedQ.forward), NOT against returns; no return metric.
+STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
+    "episode",
+    "algorithm",
+    "environment",
+    "critic",
+    "base_algo",
+    "sigma",
+    "train_loss",
+    "apparent_q_mean",
+    "oracle_q_mean",
+    "q_inflation",
+    "value_mse_to_oracle",
+    "argmax_agreement_oracle",
+    "explained_variance_to_oracle",
+    "pearson_to_oracle",
+    "spearman_to_oracle",
+    "gap_closed_fraction",
+]
+
 _EPS = 1e-8
+
+# Below this, MSE(observational, oracle) is estimator noise, not a confounding
+# gap: the gap-closed RATIO of two noise terms is not a metric, so it is reported
+# ONLY where sigma>0 AND the observational->oracle MSE clears this floor.
+_GAP_NOISE_FLOOR_MSE = 1e-2
+
+# --ablation-critics base-algo name -> proximal/oracle_u builder suffix.
+_BASE_ALGO_SUFFIX: Dict[str, str] = {
+    "offline_dqn": "dqn",
+    "dqn": "dqn",
+    "bcq": "bcq",
+    "cql": "cql",
+    "iql": "iql",
+}
 
 
 @dataclass(frozen=True)
 class CriticSpec:
-    target: str  # returns | td0
+    target: str  # returns | td0 | q_adj
     loss: str  # mse | huber
     architecture: str = "mlp"  # mlp | residual_mlp
+    # "v_head" = the frozen V(s)-from-returns aux critic (byte-identical golden
+    # path). "strategy" = a Q(s,a,u) IDENTIFICATION strategy hosted on the
+    # episode-grouped stream (the Cell-7 deconfounding ablation).
+    kind: str = "v_head"
+    builder: str | None = None  # strategy only: observational | proximal | oracle_u
+    requires_u: bool = False  # strategy only: oracle_u reads the realized U (its fill)
 
 
 CRITIC_LIBRARY: Dict[str, CriticSpec] = {
@@ -53,6 +97,25 @@ CRITIC_LIBRARY: Dict[str, CriticSpec] = {
     # Custom example critic with residual connection; useful for ablation comparisons.
     "residual_reward_model": CriticSpec(
         target="returns", loss="mse", architecture="residual_mlp"
+    ),
+    # Strategy critics (Cell-7 deconfounding ablation). They REUSE the existing
+    # merged builders verbatim — NO reimplementation of ProximalEM /
+    # IdentificationStrategy / UMarginalizedQ: observational = MLP + DQN(
+    # Observational()); proximal = build_proximal_<base>; oracle_u =
+    # build_oracle_u_<base>. MLP row only; the rnn row is deferred behind the
+    # recurrent-offline prerequisite (= cell 8, see StrategyCritic).
+    "observational": CriticSpec(
+        target="q_adj", loss="mse", kind="strategy", builder="observational"
+    ),
+    "proximal": CriticSpec(
+        target="q_adj", loss="mse", kind="strategy", builder="proximal"
+    ),
+    "oracle_u": CriticSpec(
+        target="q_adj",
+        loss="mse",
+        kind="strategy",
+        builder="oracle_u",
+        requires_u=True,
     ),
 }
 
@@ -157,6 +220,128 @@ class AuxiliaryCritic:
         }
 
 
+def _build_strategy_critic(
+    builder: str,
+    base_algo: str,
+    obs_dim: int,
+    action_dim: int,
+    device: torch.device,
+):
+    """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
+    (no estimator reimplementation). ``observational`` is always MLP + DQN(
+    Observational()) — the floor; ``proximal``/``oracle_u`` are the base-
+    parameterized merged builders. Discrete MLP arm only (rnn deferred = cell 8)."""
+    if builder == "observational":
+        q = MLP(obs_dim, action_dim).to(device)
+        tgt = MLP(obs_dim, action_dim).to(device)
+        # Default strategy is Observational() -> critic_value = net(x): the floor.
+        agent = DQN(q, tgt, ReplayBuffer(1_000_000, device), device=device)
+        return q, agent
+
+    suffix = _BASE_ALGO_SUFFIX.get(str(base_algo).split("__")[0])
+    if suffix is None:
+        raise ValueError(
+            f"strategy-critic ablation base algo '{base_algo}' is unsupported; "
+            "choose a discrete offline base: offline_dqn, bcq, cql, iql."
+        )
+    kwargs = dict(
+        obs_dim=obs_dim, action_dim=action_dim, device=device, action_type="discrete"
+    )
+    if builder == "proximal":
+        from src.rl.offline.proximal import (
+            build_proximal_bcq,
+            build_proximal_cql,
+            build_proximal_dqn,
+            build_proximal_iql,
+        )
+
+        fn = {
+            "dqn": build_proximal_dqn,
+            "bcq": build_proximal_bcq,
+            "cql": build_proximal_cql,
+            "iql": build_proximal_iql,
+        }[suffix]
+        return fn(**kwargs)
+    if builder == "oracle_u":
+        from src.rl.offline.oracle_u import (
+            build_oracle_u_bcq,
+            build_oracle_u_cql,
+            build_oracle_u_dqn,
+            build_oracle_u_iql,
+        )
+
+        fn = {
+            "dqn": build_oracle_u_dqn,
+            "bcq": build_oracle_u_bcq,
+            "cql": build_oracle_u_cql,
+            "iql": build_oracle_u_iql,
+        }[suffix]
+        return fn(**kwargs)
+    raise ValueError(f"unknown strategy-critic builder '{builder}'.")
+
+
+class StrategyCritic:
+    """A Cell-7 deconfounding critic = a ``(net, agent)`` from the merged builders,
+    fit on the SHARED episode-grouped stream and scored estimation-vs-oracle.
+
+    The identification is entirely the strategy + net the agent was built with
+    (Observational / Proximal / OracleU × plain-MLP / UMarginalizedQ) — this class
+    only routes the shared window into the right consumer and exposes the deployed
+    ``Q_adj`` for scoring:
+
+      * ``proximal`` consumes the ``(B, T, *)`` window NATIVELY (its wrapped
+        ``learn`` = ``ProximalEM.m_step`` samples the INFERRED u and flattens).
+      * ``observational`` / ``oracle_u`` are flat learners: the SAME window is
+        flattened ``(B, T)->(B*T)`` exactly as proximal's own flatten, so all
+        three provably fit identical transitions.
+
+    Five-keys: only an ``oracle_u`` critic reads the realized U (its fill runs
+    ``load_u=True``); ``observational``/``proximal`` never see it.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        spec: CriticSpec,
+        base_algo: str,
+        obs_dim: int,
+        action_dim: int,
+        device: torch.device,
+    ) -> None:
+        self.name = name
+        self.spec = spec
+        self.device = device
+        self.requires_u = spec.requires_u
+        _net, agent = _build_strategy_critic(
+            spec.builder, base_algo, obs_dim, action_dim, device
+        )
+        self.agent = agent
+        # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
+        # for UMarginalizedQ (proximal/oracle), plain Q(s,.) for observational.
+        self.net = agent.q_network
+        # Only proximal both consumes (B,T) natively and wants the episode buffer
+        # (its E-step needs whole episodes for the per-episode posterior).
+        self.consumes_sequences = spec.builder == "proximal"
+        self.wants_sequence_buffer = hasattr(agent, "set_sequence_buffer")
+
+    def set_sequence_buffer(self, seq_buffer) -> None:
+        if self.wants_sequence_buffer:
+            self.agent.set_sequence_buffer(seq_buffer)
+
+    def update(self, window: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        if self.consumes_sequences:
+            return self.agent.update(window)  # m_step flattens + samples inferred u
+        flat = {
+            k: (v.flatten(0, 1) if torch.is_tensor(v) and v.dim() >= 2 else v)
+            for k, v in window.items()
+        }
+        return self.agent.update(flat)
+
+    def predict_q_adj(self, obs: torch.Tensor) -> torch.Tensor:
+        with torch.no_grad():
+            return self.net(obs)
+
+
 class CriticAblationManager:
     def __init__(
         self,
@@ -164,6 +349,9 @@ class CriticAblationManager:
         device: torch.device,
         config: CriticAblationConfig,
         gamma: float = 0.99,
+        *,
+        base_algo: str | None = None,
+        action_dim: int | None = None,
     ) -> None:
         self.config = config
         self.gamma = gamma
@@ -175,6 +363,49 @@ class CriticAblationManager:
         )
         self.config.critics = list(selected_critics)
 
+        # Kind detection: strategy critics take a wholly separate path (episode-
+        # grouped stream, estimation-vs-oracle scoring). Unknown names fall through
+        # to the V-head loop below, preserving its exact "Unknown ablation critic"
+        # error. Mixing the two kinds in one ablation is rejected.
+        _resolved = [
+            CRITIC_LIBRARY[k.lower().strip()]
+            for k in selected_critics
+            if k.lower().strip() in CRITIC_LIBRARY
+        ]
+        self.is_strategy = any(s.kind == "strategy" for s in _resolved)
+        if self.is_strategy:
+            if any(s.kind != "strategy" for s in _resolved):
+                raise ValueError(
+                    "Cannot mix V-head and strategy critics in one ablation."
+                )
+            if base_algo is None or action_dim is None:
+                raise ValueError(
+                    "strategy-critic ablation requires base_algo and action_dim."
+                )
+            self.base_algo = str(base_algo).split("__")[0]
+            strat: Dict[str, StrategyCritic] = {}
+            for name in selected_critics:
+                key = name.lower().strip()
+                if key in strat:
+                    continue
+                strat[key] = StrategyCritic(
+                    key,
+                    CRITIC_LIBRARY[key],
+                    self.base_algo,
+                    obs_dim,
+                    action_dim,
+                    device,
+                )
+            if not strat:
+                raise ValueError("At least one ablation critic must be configured.")
+            self.strategy_critics = strat
+            self.critics: Dict[str, AuxiliaryCritic] = {}  # V-head path unused
+            self._eval_obs: torch.Tensor | None = None
+            self._eval_act: torch.Tensor | None = None
+            return
+
+        # ---- V-head path (unchanged; golden-pinned) ----
+        self.strategy_critics = None
         critics: Dict[str, AuxiliaryCritic] = {}
         for name in selected_critics:
             key = name.lower().strip()
@@ -241,6 +472,126 @@ class CriticAblationManager:
                 name: critic.state_dict() for name, critic in self.critics.items()
             },
         }
+
+    # -- strategy-critic ablation (Cell-7 deconfounding; separate from V-head) --
+    def needs_u(self) -> bool:
+        """True iff any hosted strategy critic reads the realized U (oracle_u) —
+        the runner ORs this into the episode-grouped fill's ``load_u``. The
+        five-keys invariant holds: only the oracle critic's estimator ever reads
+        ``confounder_u``; observational/proximal never do."""
+        if not self.is_strategy:
+            return False
+        return any(c.requires_u for c in self.strategy_critics.values())
+
+    def set_sequence_buffer(self, seq_buffer) -> None:
+        """Fan the shared episode buffer out to any strategy critic that wants it
+        (proximal's E-step warm-start), then cache a fixed eval set of ``(obs,
+        a_data)`` transitions for estimation-vs-oracle scoring. The eval set reads
+        ONLY the five base keys (never U)."""
+        obs_list: list[torch.Tensor] = []
+        act_list: list[torch.Tensor] = []
+        for ep in seq_buffer.iter_episodes():
+            for tr in ep:
+                obs_list.append(tr["obs"])
+                act_list.append(tr["actions"])
+        # Fan-out AFTER reading transitions (proximal's warm-start mutates tr in
+        # place with r_tau, but never obs/actions).
+        for critic in self.strategy_critics.values():
+            critic.set_sequence_buffer(seq_buffer)
+        if not obs_list:
+            return
+        obs = torch.stack(obs_list).float().to(self.device)
+        act = torch.stack(act_list).long().to(self.device)
+        n = obs.shape[0]
+        if n > 4000:  # fixed, deterministic subsample of the shared stream
+            idx = torch.linspace(0, n - 1, 4000).long()
+            obs, act = obs[idx], act[idx]
+        self._eval_obs, self._eval_act = obs, act
+
+    def update_strategy(self, window: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """Fit every strategy critic on the SAME ``(B, T, *)`` window (proximal
+        native; observational/oracle_u on the identical flatten)."""
+        losses: Dict[str, float] = {}
+        for name, critic in self.strategy_critics.items():
+            m = critic.update(window)
+            losses[name] = float(m.get("loss", m.get("q_loss", 0.0))) if m else 0.0
+        return losses
+
+    def checkpoint_rows_strategy(
+        self,
+        episode: int,
+        algorithm: str,
+        environment: str,
+        sigma: float,
+        latest_losses: Dict[str, float] | None = None,
+    ) -> list[dict]:
+        """Estimation-vs-oracle scoring rows. Ground truth = the oracle critic's
+        deployed ``Q_adj`` (``UMarginalizedQ.forward``); the deconfounded value the
+        others infer/ignore. NO return metric (the confounder is an action-
+        independent nuisance -> no return gap even for the oracle)."""
+        losses = latest_losses or {}
+        obs_e, act_e = self._eval_obs, self._eval_act
+        rows: list[dict] = []
+        if obs_e is None:
+            return rows
+
+        oracle = self.strategy_critics.get("oracle_u")
+        q_oracle = pi_oracle = None
+        if oracle is not None:
+            q_all = oracle.predict_q_adj(obs_e)
+            q_oracle = q_all.gather(1, act_e.unsqueeze(-1)).squeeze(-1)
+            pi_oracle = q_all.argmax(1)
+
+        # Observational->oracle MSE = the denominator for the gap-closed fraction.
+        obs_mse = None
+        obs_c = self.strategy_critics.get("observational")
+        if oracle is not None and obs_c is not None:
+            q_obs = (
+                obs_c.predict_q_adj(obs_e).gather(1, act_e.unsqueeze(-1)).squeeze(-1)
+            )
+            obs_mse = float(torch.mean((q_obs - q_oracle) ** 2).item())
+
+        for name, critic in self.strategy_critics.items():
+            row = {col: "" for col in STRATEGY_CRITIC_ABLATION_COLUMNS}
+            q_all = critic.predict_q_adj(obs_e)
+            q_c = q_all.gather(1, act_e.unsqueeze(-1)).squeeze(-1)
+            row.update(
+                episode=episode,
+                algorithm=algorithm,
+                environment=environment,
+                critic=name,
+                base_algo=self.base_algo,
+                sigma=float(sigma),
+                train_loss=losses.get(name, ""),
+                apparent_q_mean=float(q_c.mean().item()),
+            )
+            if q_oracle is not None:
+                mse = float(torch.mean((q_c - q_oracle) ** 2).item())
+                tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
+                row.update(
+                    oracle_q_mean=float(q_oracle.mean().item()),
+                    q_inflation=float((q_c.mean() - q_oracle.mean()).item()),
+                    value_mse_to_oracle=mse,
+                    argmax_agreement_oracle=float(
+                        (q_all.argmax(1) == pi_oracle).float().mean().item()
+                    ),
+                    explained_variance_to_oracle=_explained_variance(tgt, pred),
+                    pearson_to_oracle=_pearson(tgt, pred),
+                    spearman_to_oracle=_spearman(tgt, pred),
+                )
+                # Gap-closed: proximal only, and ONLY where a real gap exists
+                # (sigma>0 AND obs->oracle MSE above the noise floor). At sigma=0
+                # the two-noise-terms ratio is not a metric -> left blank (the
+                # absolute value_mse_to_oracle IS the control).
+                if (
+                    name == "proximal"
+                    and obs_mse is not None
+                    and sigma > 0.0
+                    and obs_mse > _GAP_NOISE_FLOOR_MSE
+                ):
+                    row["gap_closed_fraction"] = 1.0 - mse / obs_mse
+            rows.append(row)
+        return rows
 
 
 def _to_vector(x: torch.Tensor) -> torch.Tensor:

@@ -17,8 +17,10 @@ from src.benchmarking.aux_models import (
 )
 from src.benchmarking.critic_ablation import (
     CRITIC_ABLATION_COLUMNS,
+    CRITIC_LIBRARY,
     CriticAblationConfig,
     CriticAblationManager,
+    STRATEGY_CRITIC_ABLATION_COLUMNS,
 )
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.seeding import set_seed
@@ -134,6 +136,18 @@ class AlgorithmSpec:
     # Default False. PR-1 registers the flag + the Proximal stub; wiring the
     # offline loop to honor it (Minari -> SequenceReplayBuffer) is PR-2.
     needs_episode_grouping: bool = False
+
+
+def _is_strategy_ablation(cfg: CriticAblationConfig | None) -> bool:
+    """True iff the requested ablation critics are Cell-7 strategy critics (they
+    fit the episode-grouped stream, not the on-policy V-head path)."""
+    if cfg is None or not cfg.critics:
+        return False
+    return any(
+        CRITIC_LIBRARY.get(str(c).lower().strip())
+        and CRITIC_LIBRARY[str(c).lower().strip()].kind == "strategy"
+        for c in cfg.critics
+    )
 
 
 def _validate_algos_against_behavior_policy(
@@ -395,17 +409,44 @@ class BenchmarkRunner:
         )
         self.critic_ablation = None
         if critic_ablation_cfg is not None:
-            if self.algo_spec.kind != "on_policy":
-                raise ValueError(
-                    "Critic ablation mode is supported only for on-policy algorithms."
-                )
             gamma = float(getattr(self.agent, "gamma", 0.99))
-            self.critic_ablation = CriticAblationManager(
-                obs_dim=self.obs_dim,
-                device=self.device,
-                config=critic_ablation_cfg,
-                gamma=gamma,
-            )
+            if _is_strategy_ablation(critic_ablation_cfg):
+                # Strategy-critic ablation (Cell-7 deconfounding): the three critics
+                # {observational, proximal, oracle_u} fit a SHARED episode-grouped
+                # confounded stream, scored estimation-vs-oracle. Guard swap: the
+                # on-policy-only requirement becomes an episode-grouped-stream
+                # requirement. Implemented for the OFFLINE regime (cell-7 datasets;
+                # routed via _train_offline_grouped); the online (bias_confounded)
+                # and rnn rows are deferred behind the recurrent-offline
+                # prerequisite (= cell 8).
+                if self.algo_spec.data_regime != "offline":
+                    raise ValueError(
+                        "strategy-critic ablation (observational/proximal/oracle_u) "
+                        "requires an offline cell-7 dataset base (data_regime="
+                        "'offline'); the online bias_confounded and rnn regimes are "
+                        "deferred (recurrent-offline prerequisite = cell 8)."
+                    )
+                self.critic_ablation = CriticAblationManager(
+                    obs_dim=self.obs_dim,
+                    device=self.device,
+                    config=critic_ablation_cfg,
+                    gamma=gamma,
+                    base_algo=self.train_cfg.algorithm,
+                    action_dim=self.action_dim,
+                )
+            else:
+                # V-head ablation (standard_mlp/residual): the frozen on-policy path.
+                if self.algo_spec.kind != "on_policy":
+                    raise ValueError(
+                        "Critic ablation mode is supported only for on-policy "
+                        "algorithms."
+                    )
+                self.critic_ablation = CriticAblationManager(
+                    obs_dim=self.obs_dim,
+                    device=self.device,
+                    config=critic_ablation_cfg,
+                    gamma=gamma,
+                )
 
         # Auxiliary reward/next-state models (opt-in, off by default; orthogonal
         # to kind/data_regime, so available in all three loops). Built AFTER the
@@ -758,7 +799,13 @@ class BenchmarkRunner:
             critic_ctx = (
                 CSVLogger(
                     os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
-                    fieldnames=CRITIC_ABLATION_COLUMNS,
+                    # Strategy ablation writes its own estimation-vs-oracle schema to
+                    # the same filename; the V-head schema is untouched (golden).
+                    fieldnames=(
+                        STRATEGY_CRITIC_ABLATION_COLUMNS
+                        if self.critic_ablation.is_strategy
+                        else CRITIC_ABLATION_COLUMNS
+                    ),
                 )
                 if self.critic_ablation is not None
                 else nullcontext(None)
@@ -818,7 +865,7 @@ class BenchmarkRunner:
                 # _train_offline reads this to emit apparent-value rows per epoch.
                 self._offline_value_trace_logger = value_trace_log
                 if self.algo_spec.data_regime == "offline":
-                    self._train_offline(train_log, eval_log, aux_log)
+                    self._train_offline(train_log, eval_log, aux_log, critic_log)
                 elif self.algo_spec.kind == "on_policy":
                     self._train_on_policy(train_log, eval_log, critic_log, aux_log)
                 else:
@@ -844,7 +891,14 @@ class BenchmarkRunner:
         """True iff this run consumes episode-grouped sequences: a recurrent run OR
         an algo flagged needs_episode_grouping (the *_proximal latent-class
         variants). Gates the OFFLINE grouped path (Minari -> SequenceReplayBuffer).
-        Non-grouped offline stays on the flat ReplayBuffer path, byte-identical."""
+        Non-grouped offline stays on the flat ReplayBuffer path, byte-identical.
+
+        A strategy-critic ablation (observational/proximal/oracle_u) also forces the
+        grouped path — the strategy critics need whole episodes (proximal's E-step)
+        and the shared (B,T) window — even when the BASE algo is a plain flat learner
+        (e.g. cql). The base agent's window is flattened for it in that loop."""
+        if self.critic_ablation is not None and self.critic_ablation.is_strategy:
+            return True
         return self._is_recurrent_run() or getattr(
             self.algo_spec, "needs_episode_grouping", False
         )
@@ -943,6 +997,7 @@ class BenchmarkRunner:
         train_logger: CSVLogger,
         eval_logger: CSVLogger,
         aux_logger: CSVLogger | None = None,
+        critic_logger: CSVLogger | None = None,
     ) -> None:
         """Offline (fixed-dataset) training.
 
@@ -964,7 +1019,9 @@ class BenchmarkRunner:
         # Episode-grouped offline (proximal / future recurrent-offline): a parallel
         # path so the flat path below stays byte-frozen (golden 63/1). [PR-2a]
         if self._needs_episode_grouping_run():
-            return self._train_offline_grouped(train_logger, eval_logger, aux_logger)
+            return self._train_offline_grouped(
+                train_logger, eval_logger, aux_logger, critic_logger
+            )
         assert self.replay_buffer is not None
         dataset_id = self.env_cfg.offline_dataset
         if not dataset_id:
@@ -1095,6 +1152,7 @@ class BenchmarkRunner:
         train_logger: CSVLogger,
         eval_logger: CSVLogger,
         aux_logger: CSVLogger | None = None,
+        critic_logger: CSVLogger | None = None,
     ) -> None:
         """Episode-grouped offline training (proximal latent-class variants; later
         offline-recurrent). Parallel to ``_train_offline`` so the flat path stays
@@ -1155,12 +1213,22 @@ class BenchmarkRunner:
         self.replay_buffer = SequenceReplayBuffer(
             capacity=1_000_000, device=self.device
         )
+        # Five-keys: the base algo's own load_u OR an oracle_u strategy critic in
+        # the ablation (only the oracle critic's estimator ever reads the realized
+        # U; observational/proximal never do). A plain-cql base has load_u=False, so
+        # U is loaded here SOLELY for the oracle_u critic.
+        strategy_ablation = (
+            self.critic_ablation is not None and self.critic_ablation.is_strategy
+        )
+        load_u = self._requires_confounder_u or (
+            strategy_ablation and self.critic_ablation.needs_u()
+        )
         n_added = fill_sequence_buffer_from_minari(
             dataset_id,
             self.replay_buffer,
             self.device,
             mask_indices=getattr(self.env_cfg, "mask_indices", None),
-            load_u=self._requires_confounder_u,
+            load_u=load_u,
         )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
@@ -1169,17 +1237,56 @@ class BenchmarkRunner:
         # whole episodes); a no-op for agents that don't consume it. [PR-2b]
         getattr(self.agent, "set_sequence_buffer", lambda *_a: None)(self.replay_buffer)
 
+        # Fan the SAME shared buffer out to the strategy critics (proximal's E-step
+        # warm-start + the fixed eval set for estimation-vs-oracle scoring).
+        if strategy_ablation:
+            self.critic_ablation.set_sequence_buffer(self.replay_buffer)
+        # sigma (confounding strength) for the strategy scoring rows: prefer the
+        # dataset's recorded value, else the run's behavior_strength.
+        _sigma = 0.0
+        if strategy_ablation:
+            _meta = getattr(dataset.storage, "metadata", {}) or {}
+            _sigma = float(
+                _meta.get(
+                    "behavior_strength_sigma",
+                    getattr(self.env_cfg, "behavior_strength", 0.0) or 0.0,
+                )
+            )
+        # A strategy ablation's base agent may be a plain flat learner (e.g. cql)
+        # that cannot consume (B,T); flatten the shared window for it. Proximal /
+        # recurrent bases own their (B,T) consumption, so they are left untouched.
+        base_consumes_sequences = self._is_recurrent_run() or getattr(
+            self.algo_spec, "needs_episode_grouping", False
+        )
+
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         grad_steps_per_epoch = self.env_cfg.rollout_len
         seq_len = self.offpolicy_seq_len
         batch_size = self.offpolicy_batch_size
         metrics_cache = None
+        critic_losses: Dict[str, float] = {}
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
             for _ in range(grad_steps_per_epoch):
                 if not self.replay_buffer.can_sample(seq_len):
                     break  # no episode long enough yet (skip-short semantics)
                 batch = self.replay_buffer.sample_sequences(batch_size, seq_len)
-                metrics_cache = self.agent.update(batch)  # agent owns (B,T) consumption
+                if strategy_ablation and not base_consumes_sequences:
+                    # Flatten (B,T)->(B*T) for the plain base learner; the strategy
+                    # critics still receive the ORIGINAL (B,T) window below, so all
+                    # consumers fit the identical transitions (shared stream).
+                    base_batch = {
+                        k: (
+                            v.flatten(0, 1)
+                            if torch.is_tensor(v) and v.dim() >= 2
+                            else v
+                        )
+                        for k, v in batch.items()
+                    }
+                else:
+                    base_batch = batch
+                metrics_cache = self.agent.update(base_batch)  # base actor
+                if strategy_ablation:
+                    critic_losses = self.critic_ablation.update_strategy(batch)
             if ep in checkpoint_eps:
                 self._save_checkpoint(ep)
                 eval_metrics = self.evaluate(ep)
@@ -1200,3 +1307,12 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
+                if strategy_ablation and critic_logger is not None:
+                    for row in self.critic_ablation.checkpoint_rows_strategy(
+                        episode=ep,
+                        algorithm=self.train_cfg.algorithm,
+                        environment=self.env_cfg.env_id,
+                        sigma=_sigma,
+                        latest_losses=critic_losses,
+                    ):
+                        critic_logger.log(row)
