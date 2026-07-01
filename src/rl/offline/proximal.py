@@ -60,8 +60,18 @@ class _RewardModel(nn.Module):
     def __init__(self, obs_dim: int, action_dim: int) -> None:
         super().__init__()
         self.r_hat = MLP(obs_dim, action_dim)
-        self.delta = nn.Parameter(torch.tensor(1.0))  # init >0 to bias the U=1 label
+        # delta = softplus(raw_delta) >= 0 is a LABELING CONVENTION: "U=1 is the
+        # higher-reward stratum." It makes the label-swapped (-delta) EM basin
+        # UNREACHABLE — that basin (r_tau anti-correlated with the true U, delta
+        # dragged through 0) is what stalled sigma=1.0 (diagnosed corr(r_tau,U)
+        # -> -1.0). softplus(raw)->0 is still reachable, so the c_r=0 collapse +
+        # the delta_l2 shrinkage are untouched. raw init 0.5413 -> delta ~ 1.0.
+        self.raw_delta = nn.Parameter(torch.tensor(0.5413))
         self.log_sigma = nn.Parameter(torch.tensor(0.0))
+
+    @property
+    def delta(self) -> torch.Tensor:
+        return torch.nn.functional.softplus(self.raw_delta)
 
     def reward_at(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         return self.r_hat(obs).gather(1, actions.long().view(-1, 1)).squeeze(-1)
@@ -97,17 +107,45 @@ class ProximalEM:
         # the data evidences it" -> at c_r=0 delta->0, r_tau->prior, robust collapse;
         # at c_r>0 the data likelihood overcomes the small L2 and delta->c_r.
         self.delta_l2 = float(delta_l2)
+        # Label-swap convention threshold: the E-step canonicalizes "high r_tau =
+        # high reward-sum" ONLY when responsibilities are non-degenerate (delta and
+        # r_tau-spread both above this eps). At c_r=0 (delta->0, r_tau->p uniform)
+        # the guard never fires, so the collapse is untouched.
+        self._canon_eps = 0.05
         self.seq_buffer = None
         self._updates = 0
 
     # -- handoff (the runner's single set_sequence_buffer line) --
     def set_sequence_buffer(self, seq_buffer) -> None:
-        """Receive the runner-owned SequenceReplayBuffer, cold-start the
-        responsibilities to the prior, and run the first E/M pass."""
+        """Receive the runner-owned SequenceReplayBuffer, WARM-START the per-episode
+        responsibilities from the canonical "higher-reward stratum = U=1" labeling,
+        and run the first E/M pass. Cold r_tau=p is symmetric and lets the EM settle
+        into the label-swapped basin (diagnosed at high sigma, corr(r_tau,U)->-1);
+        the warm-start enters the correct basin."""
         self.seq_buffer = seq_buffer
-        for ep in seq_buffer.iter_episodes():
-            for tr in ep:
-                tr["r_tau"] = torch.tensor(self.prior_p)
+        episodes = list(seq_buffer.iter_episodes())
+        if episodes:
+            # MEAN reward (length-invariant — reward-SUM = episode length on a
+            # unit-reward env, which would spuriously label by length). NO-SPREAD
+            # FALLBACK: if the mean reward has ~no cross-episode spread (c_r=0,
+            # constant per-step reward), there is no separation to label -> symmetric
+            # prior (restores r_tau -> p at sigma=0).
+            means = torch.tensor(
+                [
+                    float(torch.stack([tr["rewards"] for tr in ep]).mean())
+                    for ep in episodes
+                ]
+            )
+            if float(means.std()) < self._canon_eps:
+                for ep in episodes:
+                    for tr in ep:
+                        tr["r_tau"] = torch.tensor(self.prior_p)
+            else:
+                med = float(means.median())
+                for ep, m in zip(episodes, means.tolist()):
+                    init = torch.tensor(1.0 if m > med else 0.0)
+                    for tr in ep:
+                        tr["r_tau"] = init
         self.run_em()
 
     def _ep_tensors(self, ep: List[Dict[str, torch.Tensor]]):
@@ -147,8 +185,11 @@ class ProximalEM:
             loss.backward()
             self.opt.step()
 
-        # E-step: posterior from the per-step reward-sequence LLR; write back.
+        # E-step: posterior from the per-step reward-sequence LLR (per episode).
+        # Also accumulate the per-episode MEAN RESIDUAL mean_t(r_t - r_hat(s_t,a_t))
+        # — the state-baseline-removed shift signal, the canonical observable.
         logit_prior = math.log(self.prior_p / (1.0 - self.prior_p))
+        r_taus, residuals = [], []
         with torch.no_grad():
             sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
             for ep in episodes:
@@ -157,9 +198,33 @@ class ProximalEM:
                 ll0 = -0.5 * ((rewards - r_hat) / sigma) ** 2
                 ll1 = -0.5 * ((rewards - r_hat - self.rm.delta) / sigma) ** 2
                 llr = (ll1 - ll0).sum() + logit_prior
-                r_tau = torch.sigmoid(llr).detach().cpu()
-                for tr in ep:
-                    tr["r_tau"] = r_tau
+                r_taus.append(float(torch.sigmoid(llr)))
+                residuals.append(float((rewards - r_hat).mean()))
+
+        # GUARDED label canonicalization: enforce "high r_tau = high mean-residual"
+        # (the U=1=higher-reward convention) as an invariant of every E-step, so the
+        # swapped basin is UNREACHABLE (not just un-initialized).
+        # NO-SPREAD FALLBACK: if the shift signal has ~no cross-episode spread (c_r=0
+        # -> residual ~ 0 for all), there is no separation -> symmetric prior, so
+        # r_tau -> p exactly (the literal sigma=0 collapse, mechanism AND substance).
+        rt = torch.tensor(r_taus)
+        res = torch.tensor(residuals)
+        if float(res.std()) < self._canon_eps:
+            r_taus = [self.prior_p] * len(r_taus)
+        else:
+            non_degenerate = (
+                float(self.rm.delta) > self._canon_eps
+                and float(rt.std()) > self._canon_eps
+            )
+            if non_degenerate:
+                corr = float(torch.corrcoef(torch.stack([rt, res]))[0, 1])
+                if corr < 0.0:
+                    r_taus = [1.0 - x for x in r_taus]  # flip into the canonical basin
+
+        for ep, val in zip(episodes, r_taus):
+            t = torch.tensor(val)
+            for tr in ep:
+                tr["r_tau"] = t
 
     # -- the M-step entry point the wrapped agent.learn calls --
     def m_step(self, window: Dict[str, torch.Tensor], base_learn):
