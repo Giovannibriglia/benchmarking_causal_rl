@@ -11,7 +11,7 @@ main.py:661:            critic_ablation_cfg = None
 main.py:662:            if mode == "critic_ablation":
 main.py:663:                critic_ablation_cfg = CriticAblationConfig(
 main.py:680:                critic_ablation_cfg=critic_ablation_cfg,
-src/benchmarking/plotting.py:1826:        split == "both" and mode == "critic_ablation"
+src/benchmarking/plotting.py:1996:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:77:    critic_path = run_dir / "critic_ablation_metrics.csv"
 src/benchmarking/plotting.py:83:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/runner.py:1221:            self.critic_ablation is not None and self.critic_ablation.is_strategy

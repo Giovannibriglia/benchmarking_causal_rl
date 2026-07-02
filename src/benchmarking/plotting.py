@@ -1358,6 +1358,176 @@ def plot_critic_metric(
         plt.close(fig)
 
 
+# Across-critic comparison renderer (the `critic_compare` split). This is the
+# scientific view the strategy-critic ablation actually needs: for a fixed
+# (base, env, sigma) the three identification strategies are OVERLAID on one
+# axis per estimation metric, so the observational floor, the proximal estimate
+# and the oracle_u ceiling are read against each other. It deliberately does NOT
+# reuse plot_critic_metric's path: that renderer averages the critic dimension
+# away (algos-as-lines); here `critic` IS the series/hue and no _collapse_envs
+# is applied. Additive — plot_critic_metric and the `critic` split are untouched.
+
+# Estimation-vs-oracle payload columns, in panel order. An ALLOWLIST, so the
+# constant/nuisance columns (sigma, train_loss, apparent_q_mean, oracle_q_mean)
+# never leak in as junk panels.
+_CRITIC_COMPARE_PANELS: List[Tuple[str, str]] = [
+    ("value_mse_to_oracle", "value MSE to oracle"),
+    ("q_inflation", "Q inflation"),
+    ("argmax_agreement_oracle", "argmax agreement w/ oracle"),
+    ("gap_closed_fraction", "gap-closed fraction"),
+]
+
+# Per-critic hue + linestyle, borrowing the value-trace pair convention: the
+# oracle reference is DASHED (ceiling), the observational floor and the proximal
+# estimate are solid. Unknown critics fall back to a solid Set2 cycle color.
+_CRITIC_COMPARE_STYLE: Dict[str, Tuple[str, str]] = {
+    "observational": ("#d62728", "-"),  # red — the confounded floor
+    "proximal": ("#1f77b4", "-"),  # blue — the deconfounding estimate
+    "oracle_u": ("#2ca02c", "--"),  # green dashed — the oracle-U ceiling
+}
+_CRITIC_COMPARE_ORDER = ["observational", "proximal", "oracle_u"]
+
+
+def _critic_compare_style(critic: str, fallback_idx: int) -> Tuple[str, str]:
+    if critic in _CRITIC_COMPARE_STYLE:
+        return _CRITIC_COMPARE_STYLE[critic]
+    import matplotlib
+
+    color = matplotlib.colormaps["Set2"](fallback_idx % 8)
+    return color, "-"
+
+
+def _ordered_critics(critics: Iterable[str]) -> List[str]:
+    present = list(dict.fromkeys(critics))
+    known = [c for c in _CRITIC_COMPARE_ORDER if c in present]
+    extra = sorted(c for c in present if c not in _CRITIC_COMPARE_ORDER)
+    return known + extra
+
+
+def plot_critic_compare(
+    critic_df: pd.DataFrame,
+    outdir: Path,
+    formats: Iterable[str],
+    x_axis: str,
+    x_label: str,
+    aggregation: str = "iqm",
+    rollout_len: int = 1,
+) -> None:
+    """Overlay the identification strategies (``critic``) on shared axes.
+
+    One figure per ``(base_algo, environment, sigma)`` facet; within it, one row
+    per estimation metric in ``_CRITIC_COMPARE_PANELS``. Each panel overlays the
+    critics as colored lines (``critic`` is the hue), with IQR/std bands where a
+    curve has >=2 points. ``compute_critic_aggregates`` is reused verbatim (it
+    already groups by ``[environment, algorithm, critic, x]``); the critic
+    dimension is NOT collapsed.
+
+    Blank handling: ``compute_critic_aggregates`` drops rows whose metric is NaN,
+    so ``gap_closed_fraction`` naturally yields a proximal-only curve (it is
+    withheld for observational/oracle_u), and at ``sigma=0`` — where the gap is
+    withheld for every critic — the aggregate is empty and that panel is skipped
+    entirely (no empty axis, no crash).
+
+    The ``value_mse_to_oracle`` panel uses a symlog y-scale: the oracle sits at
+    exactly 0 (unplottable on a pure log axis) while the proximal MSE is small
+    but nonzero, so a linear axis pins them together at the floor. symlog keeps
+    0 representable and still separates proximal from oracle by decades.
+
+    Writes ``plots/critic_compare/<base>__<env>__sigma<sigma>.{png,pdf}``.
+    """
+    if critic_df is None or critic_df.empty or "critic" not in critic_df.columns:
+        return
+
+    df = critic_df
+    base_col = "base_algo" if "base_algo" in df.columns else "algorithm"
+    has_sigma = "sigma" in df.columns
+    group_cols = [base_col, "environment"] + (["sigma"] if has_sigma else [])
+
+    for keys, fsub in df.groupby(group_cols, dropna=False):
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        base = keys[0]
+        env = keys[1]
+        sigma = keys[2] if has_sigma else None
+
+        # Aggregate each allowlisted panel metric, keeping the critic dimension.
+        panels: List[Tuple[str, str, pd.DataFrame]] = []
+        for metric, ylabel in _CRITIC_COMPARE_PANELS:
+            if metric not in fsub.columns:
+                continue
+            agg = compute_critic_aggregates(
+                fsub, metric, x_axis, aggregation, rollout_len
+            )
+            if agg.empty:
+                continue  # e.g. gap_closed_fraction at sigma=0 (all-NaN -> empty)
+            agg = agg.dropna(subset=["center"])
+            if agg.empty:
+                continue
+            panels.append((metric, ylabel, agg))
+
+        if not panels:
+            continue
+
+        n = len(panels)
+        fig, axes = plt.subplots(
+            n, 1, sharex=True, figsize=(6, 2.4 * n + 0.6), dpi=500, squeeze=False
+        )
+        axes = axes[:, 0]
+
+        handles: Dict[str, object] = {}
+        for ax, (metric, ylabel, agg) in zip(axes, panels):
+            critics = _ordered_critics(agg["critic"].unique())
+            for i, critic in enumerate(critics):
+                sub = agg[agg["critic"] == critic].sort_values("x")
+                if sub.empty:
+                    continue
+                color, ls = _critic_compare_style(critic, i)
+                x = sub["x"].to_numpy()
+                y = sub["center"].to_numpy()
+                spread = sub["spread"].fillna(0).to_numpy()
+                (line,) = ax.plot(
+                    x,
+                    y,
+                    color=color,
+                    linestyle=ls,
+                    linewidth=1.4,
+                    marker="o",
+                    markersize=3,
+                    label=critic,
+                )
+                handles.setdefault(critic, line)
+                if len(sub) >= 2:
+                    ax.fill_between(x, y - spread, y + spread, color=color, alpha=0.15)
+            if metric == "value_mse_to_oracle":
+                positives = agg.loc[agg["center"] > 0, "center"]
+                linthresh = float(positives.min()) * 0.5 if len(positives) else 1.0
+                linthresh = max(linthresh, 1e-9)
+                ax.set_yscale("symlog", linthresh=linthresh)
+            ax.set_ylabel(ylabel)
+            ax.grid(True, alpha=0.3)
+
+        axes[-1].set_xlabel(x_label)
+        sigma_txt = "" if sigma is None else f", σ={sigma}"
+        fig.suptitle(f"critic comparison — {base} / {env}{sigma_txt}")
+        ordered = _ordered_critics(handles.keys())
+        fig.legend(
+            [handles[c] for c in ordered],
+            ordered,
+            loc="upper right",
+            bbox_to_anchor=(0.995, 0.965),
+            fontsize=8,
+        )
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
+
+        subdir = outdir / "plots" / "critic_compare"
+        _ensure_dir(subdir)
+        sigma_slug = "" if sigma is None else f"__sigma{sigma}"
+        stem = f"{base}__{env}{sigma_slug}".replace("/", "-")
+        fname = subdir / stem
+        for fmt in formats:
+            fig.savefig(fname.with_suffix(f".{fmt}"), dpi=300)
+        plt.close(fig)
+
+
 def _escape_latex(text: str) -> str:
     return text.replace("_", "\\_")
 
@@ -1868,6 +2038,22 @@ def run_plotting(
                 n_envs=n_envs,
             )
 
+    # Across-critic comparison (the strategy-critic ablation view): overlay the
+    # identification strategies on shared axes, one figure per (base, env, sigma).
+    # Additive and independent of the `critic` split above — gated on the real
+    # ablation CSV (no train-df "standard" fallback, which would collapse to a
+    # single pointless line). Folded into `all`.
+    if split in ("critic_compare", "all") and not critic_df.empty:
+        plot_critic_compare(
+            critic_df,
+            outdir,
+            formats,
+            x_axis,
+            x_label,
+            aggregation=aggregation,
+            rollout_len=rollout_len,
+        )
+
     # Per-context (Cell 2): gated on eval_per_context.csv existence. Skips
     # silently for non-masked runs (no file). Included in the "all" umbrella.
     if split in ("per_context", "all"):
@@ -1922,6 +2108,7 @@ def main():
             "train",
             "eval",
             "critic",
+            "critic_compare",
             "per_context",
             "per_context_final",
             "value_trace",
