@@ -113,12 +113,27 @@ class DQN(BaseOffPolicy):
         next_obs = batch["next_obs"]  # (B, T, D)
         dones = batch["dones"]  # (B, T)
 
-        q_all, _ = self.q_network(obs)  # (B, T, A), zero-init
-        q_values = q_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, T)
-        with torch.no_grad():
-            tq_all, _ = self.target_network(next_obs)  # (B, T, A), independent
-            next_q = tq_all.max(dim=-1).values  # (B, T)
-            target = rewards + self.gamma * next_q * (1.0 - dones)
+        if hasattr(self.q_network, "q_su"):
+            # Cell 8 strategy-aware recurrent branch: the U-conditioned critic
+            # (RecurrentUMarginalizedQ) routes the sequence eval through
+            # q_su(x, u) — the recurrent analog of the flat learn's strategy hook.
+            # confounder_u is the E-step SAMPLE (proximal) or the READ realized U
+            # (oracle_u); either way one batched trunk call over (B, T, D+1).
+            u = batch["confounder_u"]  # (B, T)
+            q_all, _ = self.q_network.q_su(obs, u)  # (B, T, A), zero-init
+            q_values = q_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, T)
+            with torch.no_grad():
+                tq_all, _ = self.target_network.q_su(next_obs, u)  # (B, T, A)
+                next_q = tq_all.max(dim=-1).values  # (B, T)
+                target = rewards + self.gamma * next_q * (1.0 - dones)
+        else:
+            # Plain recurrent trunk (online DQN-LSTM): BYTE-FROZEN original path.
+            q_all, _ = self.q_network(obs)  # (B, T, A), zero-init
+            q_values = q_all.gather(-1, actions.unsqueeze(-1)).squeeze(-1)  # (B, T)
+            with torch.no_grad():
+                tq_all, _ = self.target_network(next_obs)  # (B, T, A), independent
+                next_q = tq_all.max(dim=-1).values  # (B, T)
+                target = rewards + self.gamma * next_q * (1.0 - dones)
         loss = F.mse_loss(q_values, target)
         self.optimizer.zero_grad()
         loss.backward()

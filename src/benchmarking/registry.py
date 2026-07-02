@@ -411,3 +411,52 @@ def register_default_algorithms() -> None:
                 needs_episode_grouping=True,
             ),
         )
+
+    # Cell 8 (Dark Ages): recurrent × {proximal, oracle_u}. The critic is
+    # RecurrentUMarginalizedQ (LSTM/GRU/RNN over [obs,u]) -> POMDP estimation
+    # (BPTT) AND U-conditioned identification (q_su) compose. Registered WITHOUT
+    # _offpolicy_recurrent_guard (the whole point is to ACCEPT critic_network=lstm);
+    # DQN base only, no recurrent cql/iql/bcq. Runner routing needs no change —
+    # _needs_episode_grouping_run already ORs is_recurrent (config critic!=mlp)
+    # with needs_episode_grouping. This same net unblocks the ablation RNN row.
+    from src.rl.offline.dqn import build_offline_dqn_recurrent
+    from src.rl.offline.oracle_u import build_recurrent_oracle_u_dqn
+    from src.rl.offline.proximal import build_recurrent_proximal_dqn
+
+    # Recurrent OBSERVATIONAL floor: a plain recurrent Q (no strategy, no q_su ->
+    # _learn_recurrent's byte-frozen else-branch). Completes the Cell-8 triad
+    # (floor / proximal / oracle_u). Registered WITHOUT _offpolicy_recurrent_guard;
+    # offline_dqn (MLP) + the guard stay untouched, so cql/iql/bcq lstm still
+    # reject (deferred) and the offline_dqn goldens stay byte-frozen.
+    registry.register(
+        "offline_dqn_recurrent",
+        AlgorithmSpec(
+            builder=build_offline_dqn_recurrent,
+            kind="off_policy",
+            data_regime="offline",
+            # is_recurrent (config critic!=mlp) already routes it to the grouped
+            # path; set the flag too for parity with the triad's other rows.
+            needs_episode_grouping=True,
+        ),
+    )
+    registry.register(
+        "offline_dqn_recurrent_proximal",
+        AlgorithmSpec(
+            builder=build_recurrent_proximal_dqn,
+            kind="off_policy",
+            data_regime="offline",
+            # Five-keys: infers U (load_u stays False); episode-grouped for the
+            # per-episode posterior AND for the recurrent sequence windows.
+            needs_episode_grouping=True,
+        ),
+    )
+    registry.register(
+        "offline_dqn_recurrent_oracle_u",
+        AlgorithmSpec(
+            builder=build_recurrent_oracle_u_dqn,
+            kind="off_policy",
+            data_regime="offline",
+            # Fenced oracle reference: reads the realized U (load_u=True).
+            requires_confounder_u=True,
+        ),
+    )

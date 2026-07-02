@@ -31,7 +31,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from src.rl.models.backbone import select_backbone
+from src.rl.models.backbone import build_trunk, select_backbone
 from src.rl.off_policy.dqn import DQN
 from src.rl.off_policy.identification import OracleU
 from src.rl.off_policy.replay_buffer import ReplayBuffer
@@ -84,6 +84,73 @@ class UMarginalizedQ(nn.Module):
         return (1.0 - self.p_u1) * self.q_at(obs, 0.0) + self.p_u1 * self.q_at(obs, 1.0)
 
 
+class RecurrentUMarginalizedQ(nn.Module):
+    """Recurrent U-conditioned critic for Cell 8 (POMDP × confounded).
+
+    Same public surface as ``UMarginalizedQ`` (``q_su`` / ``q_at`` / ``forward`` =
+    ``Q_adj``) but the inner net is a RECURRENT trunk over ``[obs, u]`` (``build_
+    trunk("lstm"/"gru"/"rnn", ...)``) instead of an MLP. Two properties compose:
+
+      * it exposes ``initial_state`` -> ``DQN.is_recurrent`` fires -> the sequence
+        ``_learn_recurrent`` path engages (POMDP estimation via BPTT);
+      * ``q_su`` threads hidden state through ``(B, T)`` sequences (proximal/oracle
+        identification via ``q_su(x, u)``).
+
+    GPU-efficiency requirement: ``u`` is concatenated on the FEATURE axis over the
+    WHOLE ``(B, T, obs_dim+1)`` tensor and fed through ONE batched trunk call —
+    cuDNN unrolls time internally; there is NO per-timestep Python loop. ``forward``
+    (the DEPLOYED ``Q_adj``) stays U-free, so ``act``/value-trace deploy unchanged.
+
+    Actor stays Greedy (nuisance U; Cell 8 matched-cell, not the gated/bound path).
+    """
+
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        network: str = "lstm",
+        p_u1: float = _P_U1,
+        **trunk_kwargs,
+    ) -> None:
+        super().__init__()
+        # Recurrent trunk over obs_dim + 1 (the appended U scalar). build_trunk
+        # rejects non-recurrent-capable network types; **trunk_kwargs carries
+        # hidden_dim/num_layers from the YAML dict form.
+        self.inner = build_trunk(
+            network, (obs_dim + 1,), obs_dim + 1, action_dim, **trunk_kwargs
+        )
+        self.p_u1 = float(p_u1)
+
+    def initial_state(self, batch_size: int, device=None):
+        """Delegate to the trunk so ``DQN.is_recurrent`` (hasattr check) fires."""
+        return self.inner.initial_state(batch_size, device=device)
+
+    def _cat_u(self, obs: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Append ``u`` on the feature axis: ``obs (..., D)`` + ``u`` broadcast to
+        ``(..., 1)`` -> ``(..., D+1)``. ``u`` carries one value per obs position
+        (``(B, T)`` for sequences, ``(B,)`` for a single step)."""
+        u = u.to(dtype=obs.dtype, device=obs.device).reshape(*obs.shape[:-1], 1)
+        return torch.cat([obs, u], dim=-1)
+
+    def q_su(self, obs: torch.Tensor, u: torch.Tensor, state=None):
+        """``Q(s, ., u)`` over a ``(B, T, D)`` sequence (or ``(B, D)`` step) at the
+        per-position ``u``; ONE batched trunk call. Returns ``(q_all, new_state)``."""
+        return self.inner(self._cat_u(obs, u), state)
+
+    def q_at(self, obs: torch.Tensor, u_value: float, state=None):
+        """``Q(s, ., u_value)`` at a CONSTANT ``u`` (e.g. the u=0 anchor / the
+        E_u endpoints). Returns ``(q_all, new_state)``."""
+        u = torch.full(obs.shape[:-1], float(u_value), device=obs.device)
+        return self.inner(self._cat_u(obs, u), state)
+
+    def forward(self, obs: torch.Tensor, state=None):
+        """Backdoor-adjusted ``Q_adj = E_u[Q(s,.,u)]`` (U-free deploy). Returns
+        ``(q_all, new_state)`` so ``act``'s recurrent path threads hidden state."""
+        q0, new_state = self.q_at(obs, 0.0, state)
+        q1, _ = self.q_at(obs, 1.0, state)
+        return (1.0 - self.p_u1) * q0 + self.p_u1 * q1, new_state
+
+
 # --------------------------------------------------------------------------
 # Builders: base learner × OracleU strategy, with U-conditioned UMarginalizedQ
 # critics. Discrete vector Cell-7 arm only.
@@ -96,6 +163,14 @@ def _assert_discrete(name: str, kwargs) -> None:
         )
 
 
+def _recurrent_trunk_kwargs(kwargs) -> dict:
+    """Optional recurrent-trunk kwargs (hidden_dim, num_layers) from the YAML dict
+    form; absent/None entries are dropped so the trunk's own defaults apply."""
+    return {
+        k: kwargs[k] for k in ("hidden_dim", "num_layers") if kwargs.get(k) is not None
+    }
+
+
 def build_oracle_u_dqn(**kwargs):
     _assert_discrete("offline_dqn", kwargs)
     obs_dim, action_dim, device = (
@@ -105,6 +180,26 @@ def build_oracle_u_dqn(**kwargs):
     )
     q = UMarginalizedQ(obs_dim, action_dim).to(device)
     tgt = UMarginalizedQ(obs_dim, action_dim).to(device)
+    buffer = ReplayBuffer(capacity=1_000_000, device=device)
+    agent = DQN(q, tgt, buffer, device=device, strategy=OracleU())
+    return q, agent
+
+
+def build_recurrent_oracle_u_dqn(**kwargs):
+    """Cell 8 oracle-U ceiling: recurrent × OracleU. ``RecurrentUMarginalizedQ``
+    (LSTM/GRU/RNN over [obs,u]) fires ``is_recurrent`` -> ``_learn_recurrent``
+    routes the sequence TD eval through ``q_su(x, u)`` on the READ realized U (the
+    fenced reference). DQN base only (no recurrent cql/iql/bcq)."""
+    _assert_discrete("offline_dqn", kwargs)
+    obs_dim, action_dim, device = (
+        kwargs["obs_dim"],
+        kwargs["action_dim"],
+        kwargs["device"],
+    )
+    network = kwargs.get("critic_network", "lstm")
+    tk = _recurrent_trunk_kwargs(kwargs)
+    q = RecurrentUMarginalizedQ(obs_dim, action_dim, network=network, **tk).to(device)
+    tgt = RecurrentUMarginalizedQ(obs_dim, action_dim, network=network, **tk).to(device)
     buffer = ReplayBuffer(capacity=1_000_000, device=device)
     agent = DQN(q, tgt, buffer, device=device, strategy=OracleU())
     return q, agent

@@ -47,7 +47,11 @@ from src.rl.off_policy.replay_buffer import ReplayBuffer
 from src.rl.offline.bcq import DiscreteBCQ
 from src.rl.offline.cql import CQL
 from src.rl.offline.iql import IQL
-from src.rl.offline.oracle_u import UMarginalizedQ
+from src.rl.offline.oracle_u import (
+    _recurrent_trunk_kwargs,
+    RecurrentUMarginalizedQ,
+    UMarginalizedQ,
+)
 
 _PRIOR_P = 0.5  # Bernoulli(p) prior on U (matches confounded.py)
 
@@ -114,6 +118,11 @@ class ProximalEM:
         self._canon_eps = 0.05
         self.seq_buffer = None
         self._updates = 0
+        # Set by _install_proximal_em from the wrapped agent. When the base critic
+        # is recurrent (Cell 8: RecurrentUMarginalizedQ), m_step must NOT flatten
+        # (B,T)->(B*T) — that would collapse seq_len to 1 and kill BPTT. Default
+        # False keeps the MLP proximal path (the flatten) BYTE-FROZEN.
+        self.is_recurrent = False
         # Padded episode batch (n_ep, max_len, ·) + mask, cached on-device ONCE by
         # set_sequence_buffer — collapses the scalar path's 64*n_ep per-run_em
         # stack+transfer to a single build, and lets the E/M reductions run as
@@ -273,6 +282,11 @@ class ProximalEM:
         u_row = torch.bernoulli(r_tau[:, 0].clamp(0.0, 1.0))  # (B,)
         u = u_row.unsqueeze(1).expand_as(r_tau)  # (B, T)
         window = {**window, "confounder_u": u}
+        if self.is_recurrent:
+            # Cell 8: keep the (B,T) window intact so the recurrent base's
+            # _learn_recurrent sees the sequence (BPTT) and reads q_su(x, u) at the
+            # inferred u. Flattening (below) would destroy the sequence structure.
+            return base_learn(window)
         flat = {
             k: (v.flatten(0, 1) if torch.is_tensor(v) and v.dim() >= 2 else v)
             for k, v in window.items()
@@ -288,6 +302,9 @@ def _install_proximal_em(agent, em: ProximalEM) -> None:
     agent.learn = lambda batch: em.m_step(batch, base_learn)
     agent.set_sequence_buffer = em.set_sequence_buffer
     agent._proximal_em = em  # keep a ref alive + testable
+    # Recurrent base -> m_step keeps (B,T) intact (no flatten); see m_step. MLP
+    # base (is_recurrent False) keeps the byte-frozen flatten path.
+    em.is_recurrent = bool(getattr(agent, "is_recurrent", False))
 
 
 # --------------------------------------------------------------------------
@@ -306,6 +323,25 @@ def build_proximal_dqn(**kwargs):
     obs_dim, action_dim, device = _dims(kwargs)
     q = UMarginalizedQ(obs_dim, action_dim).to(device)
     tgt = UMarginalizedQ(obs_dim, action_dim).to(device)
+    agent = DQN(
+        q, tgt, ReplayBuffer(1_000_000, device), device=device, strategy=Proximal()
+    )
+    _install_proximal_em(agent, ProximalEM(obs_dim, action_dim, device))
+    return q, agent
+
+
+def build_recurrent_proximal_dqn(**kwargs):
+    """Cell 8 contribution: recurrent × proximal. ``RecurrentUMarginalizedQ``
+    (LSTM/GRU/RNN over [obs,u]) fires ``is_recurrent`` -> ``_learn_recurrent``
+    routes the sequence TD eval through ``q_su(x, u)`` at the INFERRED-and-sampled
+    u (the E-step never reads the realized U — five-keys). ``ProximalEM`` is the
+    SAME estimator (run_em untouched); only ``m_step`` learns it must not flatten
+    the (B,T) window (set via ``_install_proximal_em``). DQN base only."""
+    obs_dim, action_dim, device = _dims(kwargs)
+    network = kwargs.get("critic_network", "lstm")
+    tk = _recurrent_trunk_kwargs(kwargs)
+    q = RecurrentUMarginalizedQ(obs_dim, action_dim, network=network, **tk).to(device)
+    tgt = RecurrentUMarginalizedQ(obs_dim, action_dim, network=network, **tk).to(device)
     agent = DQN(
         q, tgt, ReplayBuffer(1_000_000, device), device=device, strategy=Proximal()
     )

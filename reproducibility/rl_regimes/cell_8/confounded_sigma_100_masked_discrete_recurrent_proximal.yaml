@@ -1,0 +1,52 @@
+# Cell 8 — Dark Ages, discrete arm, σ = 1.00 — RECURRENT DECONFOUNDING (Gate B).
+# The worst cell handled by the contribution: Z hidden (velocity masked per §5 ->
+# POMDP) AND U present (confounded bias_confounded DGP at σ=1). A recurrent
+# U-conditioned critic (RecurrentUMarginalizedQ, LSTM over [obs,u]) composes both
+# fixes: the LSTM carries the missing velocity through hidden state (POMDP
+# estimation, BPTT over (B,T) windows) while q_su(x,u) deconfounds the +σ·U reward
+# bonus (identification). The RECURRENT TRIAD: offline_dqn_recurrent (observational
+# floor — plain recurrent Q, no U) vs offline_dqn_recurrent_proximal (INFERS the
+# per-episode U from the five base keys via stochastic-EM, never reads it) vs
+# offline_dqn_recurrent_oracle_u (reads the realized U — the fenced ceiling).
+# Apparent Q inflates under the recurrent floor; recurrent proximal removes it
+# toward the recurrent oracle (value-accuracy; return is a per-episode nuisance
+# offset preserving the argmax). σ=1 = maximal confounding = largest wedge.
+# Gate-passing envs only (CartPole +1/step, Acrobot −1/step). Datasets reused from
+# Cell 7 (σ-encoded ids) with the velocity mask applied at load time.
+# Refs: docs/experimental_design.md §4 Cell 8, §5 masks, §7; proximal PR-2b;
+# Cell-8 Gate B (recurrent × proximal).
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - name: offline_dqn_recurrent
+    networks:
+      critic: lstm
+  - name: offline_dqn_recurrent_proximal
+    networks:
+      critic: lstm
+  - name: offline_dqn_recurrent_oracle_u
+    networks:
+      critic: lstm
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma100-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma100-v0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+  Acrobot-v1: [4, 5]
+
+behavior_policy: bias_confounded
+behavior_strength: 1.0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0
