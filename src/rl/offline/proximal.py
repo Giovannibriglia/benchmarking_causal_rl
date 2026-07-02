@@ -81,6 +81,29 @@ class _RewardModel(nn.Module):
         return self.r_hat(obs).gather(1, actions.long().view(-1, 1)).squeeze(-1)
 
 
+class _ActionRewardModel(nn.Module):
+    """Action-CONDITIONAL reward model (action-dependent confounder cell): the U=1
+    shift is a PER-ACTION vector ``delta[a]`` instead of the scalar ``_RewardModel``
+    delta. The generative confounder ``r += c_r*U*1[a=a_bad]`` puts the U-signal on
+    ONLY the a_bad transitions, so the estimator must localize the shift to that
+    action — a single scalar delta would smear it across all actions.
+
+    Same label convention as ``_RewardModel`` (``delta[a] = softplus(raw_delta[a]) >=
+    0`` per action, so the -delta basin is unreachable) and the same L2 shrinkage
+    (now summed over the vector, so unused actions' delta -> 0). Separate class; the
+    additive scalar ``_RewardModel`` is untouched (byte-frozen)."""
+
+    def __init__(self, obs_dim: int, action_dim: int) -> None:
+        super().__init__()
+        self.r_hat = MLP(obs_dim, action_dim)
+        self.raw_delta = nn.Parameter(torch.full((action_dim,), 0.5413))
+        self.log_sigma = nn.Parameter(torch.tensor(0.0))
+
+    @property
+    def delta(self) -> torch.Tensor:  # (action_dim,) >= 0, per-action U=1 shift
+        return torch.nn.functional.softplus(self.raw_delta)
+
+
 class ProximalEM:
     """The proximal-specific machinery: a reward model + the soft-EM E/M for the
     per-episode latent, plus the per-window u-sampler that feeds the OracleU hook.
@@ -97,10 +120,27 @@ class ProximalEM:
         reward_steps: int = 64,
         estep_interval: int = 20,
         delta_l2: float = 0.05,
+        reward_model_kind: str = "additive",
     ) -> None:
         self.device = device
         self.prior_p = float(prior_p)
-        self.rm = _RewardModel(obs_dim, action_dim).to(device)
+        # Reward-model kind: "additive" (default, BYTE-FROZEN cells 7/8) uses the
+        # scalar-delta _RewardModel; "action_conditional" (the action-dependent
+        # confounder cell) uses the per-action delta[a] _ActionRewardModel. The flag
+        # only switches the delta shape + how run_em applies it (a small branch);
+        # everything else — warm-start, L2 shrinkage, no-spread fallback, residual
+        # canonicalization, the u-sampler — is shared.
+        if reward_model_kind not in ("additive", "action_conditional"):
+            raise ValueError(
+                f"reward_model_kind must be 'additive' or 'action_conditional', got "
+                f"{reward_model_kind!r}."
+            )
+        self.action_conditional = reward_model_kind == "action_conditional"
+        self.rm = (
+            _ActionRewardModel(obs_dim, action_dim)
+            if self.action_conditional
+            else _RewardModel(obs_dim, action_dim)
+        ).to(device)
         self.opt = torch.optim.Adam(self.rm.parameters(), lr=lr)
         self.reward_steps = int(reward_steps)
         self.estep_interval = max(1, int(estep_interval))
@@ -241,6 +281,13 @@ class ProximalEM:
         )
         return rhat.gather(-1, b["act"].unsqueeze(-1)).squeeze(-1)
 
+    def _delta_at_batch(self, b):
+        """Per-transition U=1 reward shift. ADDITIVE: the scalar ``self.rm.delta``
+        (broadcast over (n,T) — byte-identical to the inlined scalar path). ACTION_
+        CONDITIONAL: the per-action ``delta[a]`` gathered at the data action, so the
+        U shift lands only on a_bad transitions."""
+        return self.rm.delta[b["act"]] if self.action_conditional else self.rm.delta
+
     def run_em(self) -> None:
         """One EM pass over the cached padded batch: a masked-batched M-step (reward
         params, responsibility-weighted Gaussian NLL) then a masked-batched E-step
@@ -257,12 +304,20 @@ class ProximalEM:
         for _ in range(self.reward_steps):
             self.opt.zero_grad(set_to_none=True)
             r_hat = self._reward_at_batch(b)
+            delta_t = self._delta_at_batch(b)
             sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
             ll0 = -0.5 * ((rew - r_hat) / sigma) ** 2 - torch.log(sigma)
-            ll1 = -0.5 * ((rew - r_hat - self.rm.delta) / sigma) ** 2 - torch.log(sigma)
+            ll1 = -0.5 * ((rew - r_hat - delta_t) / sigma) ** 2 - torch.log(sigma)
             per = -((1.0 - r_tau[:, None]) * ll0 + r_tau[:, None] * ll1)
             # MAP shrinkage: r_tau-independent gradient pins delta->0 absent evidence.
-            loss = (per * mask).sum() / total + self.delta_l2 * self.rm.delta**2
+            # Action-conditional sums the per-action delta^2 (unused actions -> 0);
+            # additive keeps the scalar delta^2 (byte-identical to the frozen path).
+            l2 = (
+                (self.rm.delta**2).sum()
+                if self.action_conditional
+                else self.rm.delta**2
+            )
+            loss = (per * mask).sum() / total + self.delta_l2 * l2
             loss.backward()
             self.opt.step()
 
@@ -272,9 +327,10 @@ class ProximalEM:
         logit_prior = math.log(self.prior_p / (1.0 - self.prior_p))
         with torch.no_grad():
             r_hat = self._reward_at_batch(b)
+            delta_t = self._delta_at_batch(b)
             sigma = self.rm.log_sigma.exp().clamp_min(1e-3)
             ll0 = -0.5 * ((rew - r_hat) / sigma) ** 2
-            ll1 = -0.5 * ((rew - r_hat - self.rm.delta) / sigma) ** 2
+            ll1 = -0.5 * ((rew - r_hat - delta_t) / sigma) ** 2
             llr = ((ll1 - ll0) * mask).sum(1) + logit_prior
             r_taus = torch.sigmoid(llr)
             residuals = ((rew - r_hat) * mask).sum(1) / b["lengths"]
@@ -287,9 +343,15 @@ class ProximalEM:
         if float(residuals.std()) < self._canon_eps:
             r_taus = torch.full_like(r_taus, self.prior_p)
         else:
+            # Action-conditional: the guard reads the LARGEST per-action delta (a_bad);
+            # additive: the scalar delta (byte-identical).
+            delta_scalar = (
+                float(self.rm.delta.max())
+                if self.action_conditional
+                else float(self.rm.delta)
+            )
             non_degenerate = (
-                float(self.rm.delta) > self._canon_eps
-                and float(r_taus.std()) > self._canon_eps
+                delta_scalar > self._canon_eps and float(r_taus.std()) > self._canon_eps
             )
             if non_degenerate:
                 corr = float(torch.corrcoef(torch.stack([r_taus, residuals]))[0, 1])
@@ -343,6 +405,27 @@ def _install_proximal_em(agent, em: ProximalEM) -> None:
     em.is_recurrent = bool(getattr(agent, "is_recurrent", False))
 
 
+class UReferenceStratumQ(UMarginalizedQ):
+    """U-conditioned critic whose DEPLOY is the U=0 REFERENCE STRATUM, not the prior
+    marginal (the action-dependent confounder cell).
+
+    Under ``r += c_r*U*1[a=a_bad]`` the prior-marginal deploy ``E_u[Q]`` bakes in
+    ``+0.5*c_r`` on a_bad, so for strong confounding (``0.5*c_r > clean_gap``) even
+    the oracle's marginal keeps picking a_bad (Gate-A finding). The U=0 stratum is the
+    CLEAN world (the gate is off at U=0), so ``Q(s,.,u=0) = r_clean`` exactly and its
+    argmax is the clean-optimal policy. The clean eval env IS the U=0 world, so this is
+    the correct deploy target here.
+
+    Only ``forward`` (the deployed / ``act`` / eval path) changes -> ``q_at(obs, 0)``.
+    ``q_su`` (the learn-time hook the Proximal strategy routes through) is inherited
+    UNCHANGED, so training is identical to the marginal critic; and it is five-keys-
+    safe: a forward at a FIXED u=0, never a realized-U read. cells 7/8 keep
+    ``UMarginalizedQ`` (marginal ``forward``) untouched."""
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        return self.q_at(obs, 0.0)
+
+
 # --------------------------------------------------------------------------
 # Builders: base learner x Proximal strategy, UMarginalizedQ critics, + the EM.
 # Discrete vector Cell-7 arm only; all four route through the OracleU hook.
@@ -363,6 +446,29 @@ def build_proximal_dqn(**kwargs):
         q, tgt, ReplayBuffer(1_000_000, device), device=device, strategy=Proximal()
     )
     _install_proximal_em(agent, ProximalEM(obs_dim, action_dim, device))
+    return q, agent
+
+
+def build_proximal_action_dqn(**kwargs):
+    """Action-DEPENDENT confounder cell: proximal with an ACTION-CONDITIONAL reward
+    model (``delta[a]``) and the U=0 REFERENCE-STRATUM deploy (``UReferenceStratumQ``).
+
+    Same base learner (DQN) × ``Proximal`` strategy × U-conditioned critic as
+    ``build_proximal_dqn``; the two differences are (1) the critic deploys at u=0
+    (``UReferenceStratumQ.forward``) instead of the prior marginal, and (2) the EM's
+    reward model is ``reward_model_kind="action_conditional"`` so the inferred U-shift
+    localizes to a_bad. Five-keys preserved (infers U; u=0 deploy is a fixed-u forward).
+    The additive ``build_proximal_dqn`` + scalar reward model are untouched."""
+    obs_dim, action_dim, device = _dims(kwargs)
+    q = UReferenceStratumQ(obs_dim, action_dim).to(device)
+    tgt = UReferenceStratumQ(obs_dim, action_dim).to(device)
+    agent = DQN(
+        q, tgt, ReplayBuffer(1_000_000, device), device=device, strategy=Proximal()
+    )
+    _install_proximal_em(
+        agent,
+        ProximalEM(obs_dim, action_dim, device, reward_model_kind="action_conditional"),
+    )
     return q, agent
 
 

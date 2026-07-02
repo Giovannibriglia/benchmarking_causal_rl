@@ -254,7 +254,8 @@ class BenchmarkRunner:
         # gate-failed/missing) and writes the critic's apparent Q per epoch to
         # offline_value_trace.csv. Closed => no file, no work (goldens intact).
         self._value_trace_gate_open: bool = (
-            getattr(env_cfg, "behavior_policy", "agent") == "bias_confounded"
+            getattr(env_cfg, "behavior_policy", "agent")
+            in ("bias_confounded", "bias_confounded_action")
             and algo_spec.data_regime == "offline"
         )
         # Oracle-U ceiling: the deconfounding variant (*_oracle_u) reads the
@@ -300,13 +301,17 @@ class BenchmarkRunner:
         # per-episode latent U biases the action AND perturbs the reward while
         # never entering the obs -> unobserved confounding. Opt-in; default
         # leaves train_env byte-identical (off-policy golden bitwise).
-        if getattr(env_cfg, "behavior_policy", "agent") == "bias_confounded":
+        _bp = getattr(env_cfg, "behavior_policy", "agent")
+        if _bp in ("bias_confounded", "bias_confounded_action"):
             from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 
             _sigma = getattr(env_cfg, "behavior_strength", None)
             _sigma = 1.0 if _sigma is None else float(_sigma)
+            # action_gated (action-dependent cell) gates r += c_r*U on a==a_bad;
+            # additive (default) is the byte-frozen cells-7/8 path.
+            _kind = "action_gated" if _bp == "bias_confounded_action" else "additive"
             self.train_env = ConfoundedCollectionWrapper(
-                self.train_env, c_a=_sigma, c_r=_sigma
+                self.train_env, c_a=_sigma, c_r=_sigma, confounder_kind=_kind
             )
         self.eval_env = build_env(
             env_id=env_cfg.env_id,

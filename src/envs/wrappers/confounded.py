@@ -39,6 +39,8 @@ class ConfoundedCollectionWrapper:
         c_r: float = 1.0,
         u_dist: str = "bernoulli",
         seed: int | None = None,
+        confounder_kind: str = "additive",
+        a_bad: int = 1,
     ):
         self.env = env
         self.c_a = float(c_a)
@@ -46,6 +48,20 @@ class ConfoundedCollectionWrapper:
         self.u_dist = u_dist
         self.n_envs = env.n_envs
         self.device = env.device
+        # Confounder kind (issue: action-dependent confounding, new cell). "additive"
+        # (default) is the BYTE-FROZEN cells-7/8 path: r += c_r*U on every step.
+        # "action_gated" gates the shift on the taken action == a_bad, so U inflates
+        # ONE action's apparent reward -> U changes the confounded-optimal policy (a
+        # stronger regime). a_bad defaults to 1, the U=1-preferred action that
+        # ConfoundedBehaviorPolicy already biases toward (pref = round(U)); both edges
+        # then land on the same action (U -> A and the gated U -> R).
+        if confounder_kind not in ("additive", "action_gated"):
+            raise ValueError(
+                f"confounder_kind must be 'additive' or 'action_gated', got "
+                f"{confounder_kind!r}."
+            )
+        self.confounder_kind = confounder_kind
+        self.a_bad = int(a_bad)
         # Isolated U RNG only when a seed is given; None keeps the global stream
         # (see class doc). The generator lives on the sampling device so the
         # generator/tensor devices match for both CPU and CUDA generation.
@@ -81,7 +97,11 @@ class ConfoundedCollectionWrapper:
         obs, reward, terminated, truncated, info = self.env.step(action)
         # Perturb the reward with THIS episode's U (shared with the action that
         # produced it), then expose U; obs is passed through untouched.
-        reward = reward + self.c_r * self.current_u
+        if self.confounder_kind == "additive":
+            reward = reward + self.c_r * self.current_u  # cells 7/8 — BYTE-FROZEN
+        else:  # action_gated: shift ONLY on the a_bad transitions (U changes argmax)
+            gate = (action == self.a_bad).to(reward.dtype)
+            reward = reward + self.c_r * self.current_u * gate
         info = {**info, "confounder_u": self.current_u.clone()}
         # Resample U for sub-envs whose episode just ended (after perturbing the
         # terminal reward) so the next episode draws a fresh latent.

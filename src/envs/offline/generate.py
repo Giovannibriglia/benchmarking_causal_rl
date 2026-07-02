@@ -115,8 +115,13 @@ def dataset_name(
     slug = env_id.split("-v")[0].lower().replace("/", "-")
     if behavior_policy == "agent":
         suffix = ""
-    elif behavior_policy == "bias_confounded" and behavior_strength is not None:
-        suffix = f"-bias_confounded{_sigma_suffix(float(behavior_strength))}"
+    elif (
+        behavior_policy in ("bias_confounded", "bias_confounded_action")
+        and behavior_strength is not None
+    ):
+        # action-gated carries its own name so its datasets never collide with the
+        # additive confounder's; both encode sigma for the strength sweep.
+        suffix = f"-{behavior_policy}{_sigma_suffix(float(behavior_strength))}"
     else:
         suffix = f"-{behavior_policy}"
     return f"generated/{slug}/{tier}{suffix}-v0"
@@ -129,16 +134,23 @@ def build_rollout_env(
     from src.envs.registry import build_env
 
     env = build_env(env_id=env_id, n_envs=n_envs, device=device, seed=seed)
-    if behavior_policy == "bias_confounded":
+    if behavior_policy in ("bias_confounded", "bias_confounded_action"):
         from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 
         sig = 1.0 if strength is None else float(strength)
-        # Thread the generation seed into the wrapper's isolated U RNG (issue #36)
-        # so the confounding latent — and thus the gate-test signature — is
-        # reproducible regardless of cumulative process RNG state. Passed directly:
-        # the wrapper's per-instance Generator already decouples it from build_env's
-        # env seeding, so no namespacing offset is needed.
-        env = ConfoundedCollectionWrapper(env, c_a=sig, c_r=sig, seed=seed)
+        # action_gated (action-dependent cell) gates the reward shift on a==a_bad;
+        # additive (default) is the byte-frozen cells-7/8 path. Thread the generation
+        # seed into the wrapper's isolated U RNG (issue #36) so the confounding latent
+        # — and thus the gate-test signature — is reproducible regardless of cumulative
+        # process RNG state.
+        kind = (
+            "action_gated"
+            if behavior_policy == "bias_confounded_action"
+            else "additive"
+        )
+        env = ConfoundedCollectionWrapper(
+            env, c_a=sig, c_r=sig, seed=seed, confounder_kind=kind
+        )
     return env
 
 

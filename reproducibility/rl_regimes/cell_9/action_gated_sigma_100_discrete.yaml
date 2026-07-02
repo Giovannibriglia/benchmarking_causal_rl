@@ -1,0 +1,39 @@
+# Cell 9 — ACTION-DEPENDENT (policy) confounding, discrete arm.
+# Reward: r += c_r·U·1[a=a_bad]  (a_bad = action 1, the U-preferred action the
+# ConfoundedBehaviorPolicy already biases toward). Unlike cells 7/8 (additive,
+# argmax-preserving nuisance U -> no return gap), here U inflates ONE suboptimal
+# action's apparent reward, so the confounded FLOOR is lured into a_bad and loses
+# eval RETURN; deconfounding recovers it. This is the deconfounding RETURN headline.
+#
+# Deploy = U=0 REFERENCE STRATUM (UReferenceStratumQ), NOT the prior-marginal: the
+# clean eval env is the U=0 world, and the marginal bakes in +0.5·c_r on a_bad
+# (still wrong at strong c_r — the Gate-A/B finding). Triad: floor (cql) < proximal
+# (offline_dqn_proximal_action, infers U) ~ oracle_u (reads U, ceiling).
+# Refs: docs/experimental_design.md (action-dependent confounder); Gate A/B probes.
+
+envs:
+  - CartPole-v1
+
+algos:
+  - cql                            # observational FLOOR (lured into a_bad)
+  - offline_dqn_proximal_action    # PROXIMAL: action-conditional delta[a] + U=0 deploy
+  - offline_dqn_oracle_u           # ORACLE ceiling (reads realized U)
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded_action-sigma100-v0
+
+# Dataset rolled out under the action-gated confounder at σ=1.00 (scales c_a, c_r);
+# offline training reads the metadata gate. Generate with:
+#   tools/generate_offline.py --env CartPole-v1 --tier random \
+#     --behavior-policy bias_confounded_action --behavior-strength 1.0
+behavior_policy: bias_confounded_action
+behavior_strength: 1.0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

@@ -453,6 +453,7 @@ _STRENGTH_PARAM = {
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
     "bias_confounded": "strength",  # confounding-strength dial (scales c_a, c_r)
+    "bias_confounded_action": "strength",  # action-dependent confounder (same dial)
 }
 
 # name -> BehaviorPolicy subclass, for class-level introspection (e.g.
@@ -465,6 +466,10 @@ _BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
     "bias_suboptimal": SuboptimalBehaviorPolicy,
     "curiosity": CuriosityBehaviorPolicy,
     "bias_confounded": ConfoundedBehaviorPolicy,
+    # Action-dependent confounder (new cell): SAME behavior policy (biases the action
+    # toward pref=round(U)=a_bad, the U->A edge); only the reward wrapper differs
+    # (confounder_kind="action_gated"), wired at the wrapper construction sites.
+    "bias_confounded_action": ConfoundedBehaviorPolicy,
 }
 
 
@@ -498,9 +503,12 @@ def build_collection_policy(
         return SuboptimalBehaviorPolicy(agent, action_type, action_space, **kw)
     if name == "curiosity":
         return CuriosityBehaviorPolicy(agent, action_type, action_space, **kw)
-    if name == "bias_confounded":
+    if name in ("bias_confounded", "bias_confounded_action"):
+        # Same U-biased action policy for both; the action-gated REWARD shift lives in
+        # ConfoundedCollectionWrapper (confounder_kind), selected by the name upstream.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
     raise ValueError(
         f"Unknown behavior policy '{name}'. Choose from: agent, anti_reward, "
-        "bias_skew, bias_suboptimal, curiosity, bias_confounded."
+        "bias_skew, bias_suboptimal, curiosity, bias_confounded, "
+        "bias_confounded_action."
     )

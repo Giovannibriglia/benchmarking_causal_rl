@@ -387,6 +387,7 @@ def register_default_algorithms() -> None:
     # degrades to the Observational floor; the estimator math is PR-2. Same
     # discrete bases; selecting a continuous *_proximal is a clean KeyError.
     from src.rl.offline.proximal import (
+        build_proximal_action_dqn,
         build_proximal_bcq,
         build_proximal_cql,
         build_proximal_dqn,
@@ -411,6 +412,23 @@ def register_default_algorithms() -> None:
                 needs_episode_grouping=True,
             ),
         )
+
+    # Action-DEPENDENT confounder cell (r += c_r*U*1[a=a_bad]): the deconfounding
+    # RETURN-gap headline. Same offline episode-grouped proximal path, but the builder
+    # wires an action-conditional reward model (delta[a]) + the U=0 reference-stratum
+    # deploy (UReferenceStratumQ). Five-keys (infers U); paired in configs with a plain
+    # floor (cql/offline_dqn) and the offline_dqn_oracle_u ceiling.
+    registry.register(
+        "offline_dqn_proximal_action",
+        AlgorithmSpec(
+            builder=_offpolicy_recurrent_guard(
+                "offline_dqn_proximal_action", build_proximal_action_dqn
+            ),
+            kind="off_policy",
+            data_regime="offline",
+            needs_episode_grouping=True,
+        ),
+    )
 
     # Gate B: ONLINE proximal — the online-collected analog of cell-7's fixed-behavior
     # offline setting (NOT the co-adapting cells 5-6). data_regime="online" +
