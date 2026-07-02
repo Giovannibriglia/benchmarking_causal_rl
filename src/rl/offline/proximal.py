@@ -123,6 +123,15 @@ class ProximalEM:
         # (B,T)->(B*T) — that would collapse seq_len to 1 and kill BPTT. Default
         # False keeps the MLP proximal path (the flatten) BYTE-FROZEN.
         self.is_recurrent = False
+        # Online (rolling-buffer) mode. Default False keeps the OFFLINE m_step path
+        # byte-frozen (cadence = bare run_em over the once-cached static batch). When
+        # True (set by the online-grouped collection loop), the cadence instead
+        # REFRESHES the episode view from the turning-over buffer AND re-applies the
+        # warm-start canonicalization every refresh (the label-persistence fix), so
+        # the U=1 labeling is re-anchored to the reward-mean observable and cannot
+        # flip across turnover. Estimator math (run_em/m_step body) is otherwise
+        # unchanged — online only changes WHEN the cached batch is rebuilt.
+        self.online = False
         # Padded episode batch (n_ep, max_len, ·) + mask, cached on-device ONCE by
         # set_sequence_buffer — collapses the scalar path's 64*n_ep per-run_em
         # stack+transfer to a single build, and lets the E/M reductions run as
@@ -139,7 +148,28 @@ class ProximalEM:
         (diagnosed at high sigma, corr(r_tau,U)->-1); the warm-start enters the
         correct basin."""
         self.seq_buffer = seq_buffer
-        self._episodes = list(seq_buffer.iter_episodes())
+        self._rebuild_and_solve()
+
+    def refresh(self) -> None:
+        """Online cadence: rebuild the episode view from the (rolling, turning-over)
+        buffer and re-solve. Re-applies the SAME warm-start canonicalization + run_em
+        (i.e. the offline label-fix convention) on EVERY refresh, not just first fill,
+        so the "higher-reward stratum = U=1" labeling is re-anchored to the
+        reward-mean/residual observable and its sign cannot flip across buffer
+        turnover. No-op until the first set_sequence_buffer handoff wired the buffer.
+        A bare run_em() here would re-fit the STALE once-cached batch (offline
+        semantics); refresh() is the only online-correct rebuild."""
+        if self.seq_buffer is None:
+            return
+        self._rebuild_and_solve()
+
+    def _rebuild_and_solve(self) -> None:
+        """Rebuild the cached padded batch from the CURRENT buffer contents, warm-start
+        responsibilities from the canonical labeling, and run one E/M pass. Shared
+        verbatim by set_sequence_buffer (first fill, offline + online) and refresh
+        (online cadence) — so both paths use the identical canonicalization; no new
+        convention is introduced."""
+        self._episodes = list(self.seq_buffer.iter_episodes())
         self._batch = self._build_batch(self._episodes)
         b = self._batch
         if b is not None:
@@ -276,7 +306,13 @@ class ProximalEM:
         (which routes q_su(x, u) via the Proximal hook)."""
         self._updates += 1
         if self._updates % self.estep_interval == 0:
-            self.run_em()
+            # OFFLINE: bare run_em over the once-cached static batch (byte-frozen).
+            # ONLINE: refresh() rebuilds the view from the rolling buffer AND re-runs
+            # the warm-start canonicalization (label persistence across turnover).
+            if self.online:
+                self.refresh()
+            else:
+                self.run_em()
         r_tau = window["r_tau"]  # (B, T), constant over T within each episode-window
         # U is per-episode -> one Bernoulli draw per window row, broadcast over T.
         u_row = torch.bernoulli(r_tau[:, 0].clamp(0.0, 1.0))  # (B,)

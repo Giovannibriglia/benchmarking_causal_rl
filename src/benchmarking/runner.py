@@ -868,6 +868,11 @@ class BenchmarkRunner:
                     self._train_offline(train_log, eval_log, aux_log, critic_log)
                 elif self.algo_spec.kind == "on_policy":
                     self._train_on_policy(train_log, eval_log, critic_log, aux_log)
+                elif self._is_online_grouped_run():
+                    # Online episode-grouped off-policy (proximal latent-class variant
+                    # under a fixed confounded behavior policy). Parallel to the flat
+                    # _train_off_policy (untouched/golden-pinned).
+                    self._train_off_policy_grouped(train_log, eval_log, aux_log)
                 else:
                     self._train_off_policy(train_log, eval_log, aux_log)
         finally:
@@ -885,6 +890,18 @@ class BenchmarkRunner:
         return (
             getattr(self.train_cfg, "actor_network", "mlp") != "mlp"
             or getattr(self.train_cfg, "critic_network", "mlp") != "mlp"
+        )
+
+    def _is_online_grouped_run(self) -> bool:
+        """True iff this is an ONLINE off-policy run that needs episode grouping (the
+        proximal latent-class variant collected live under a fixed confounded behavior
+        policy — Gate B). Routes run() to _train_off_policy_grouped. Gated on the spec
+        flag ONLY (not is_recurrent), so an online recurrent DQN keeps its existing
+        _train_off_policy -> collect_off_policy_recurrent path untouched."""
+        return (
+            self.algo_spec.kind == "off_policy"
+            and self.algo_spec.data_regime == "online"
+            and getattr(self.algo_spec, "needs_episode_grouping", False)
         )
 
     def _needs_episode_grouping_run(self) -> bool:
@@ -991,6 +1008,80 @@ class BenchmarkRunner:
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
                 self._log_aux_rows(aux_logger, last_batch, ep)
+
+    def _train_off_policy_grouped(
+        self,
+        train_logger: CSVLogger,
+        eval_logger: CSVLogger,
+        aux_logger: CSVLogger | None = None,
+    ) -> None:
+        """Online EPISODE-GROUPED off-policy training (Gate B: the proximal
+        latent-class variant collected live under a FIXED confounded behavior policy).
+
+        Parallel to _train_off_policy (flat, golden-pinned) and _train_offline_grouped
+        (static Minari fill). The RUNNER owns a rolling SequenceReplayBuffer (the
+        proximal builder makes a flat one that is unused here, exactly as the offline
+        grouped path does). The estimator is put in ONLINE mode so its m_step cadence
+        REFRESHES the rolling episode view (rebuild + re-canonicalize) rather than
+        re-fitting the once-cached static batch.
+
+        Scope: a fixed behavior policy => a stationary episode distribution (NOT the
+        co-adapting cells 5-6). bias_confounded at full strength is purely U-indexed;
+        train-env confounding + the collection policy were already wired at __init__.
+        Five-keys: the stored transitions carry no realized U (the estimator infers).
+        """
+        from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
+
+        self.replay_buffer = SequenceReplayBuffer(
+            capacity=1_000_000, device=self.device
+        )
+        # Put the proximal estimator in online (rolling-buffer) mode: m_step refreshes
+        # the view on cadence. A no-op for any agent without a proximal EM attached.
+        em = getattr(self.agent, "_proximal_em", None)
+        if em is not None:
+            em.online = True
+
+        checkpoint_eps = self.train_cfg.checkpoint_episodes()
+        obs, _ = self.train_env.reset()
+        total_steps = self.env_cfg.rollout_len
+        metrics_cache = None
+        handed_off = False
+        for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
+            obs, metrics_cache, handed_off = (
+                self.experience_source.collect_off_policy_grouped(
+                    self.agent,
+                    self.replay_buffer,
+                    obs,
+                    collection_policy=self.collection_policy,
+                    n_steps=total_steps,
+                    n_envs=self.env_cfg.n_train_envs,
+                    warmup=self.offpolicy_warmup,
+                    batch_size=self.offpolicy_batch_size,
+                    seq_len=self.offpolicy_seq_len,
+                    metrics_cache=metrics_cache,
+                    handed_off=handed_off,
+                )
+            )
+            if ep in checkpoint_eps:
+                self._save_checkpoint(ep)
+                eval_metrics = self.evaluate(ep)
+                eval_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                eval_row = self._make_row(EVAL_COLUMNS, eval_metrics, ep)
+                train_metrics = (metrics_cache or {}).copy()
+                train_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
+                train_logger.log(train_row)
+                eval_logger.log(eval_row)
 
     def _train_offline(
         self,

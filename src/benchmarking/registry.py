@@ -412,6 +412,26 @@ def register_default_algorithms() -> None:
             ),
         )
 
+    # Gate B: ONLINE proximal — the online-collected analog of cell-7's fixed-behavior
+    # offline setting (NOT the co-adapting cells 5-6). data_regime="online" +
+    # needs_episode_grouping routes run() to _train_off_policy_grouped: live rollouts
+    # under a FIXED bias_confounded behavior policy fill a rolling SequenceReplayBuffer,
+    # the E-step refreshes over completed episodes on a cadence (label persistence via
+    # the reused canonicalization). Same build_proximal_dqn agent (estimator math
+    # unchanged); five-keys preserved (requires_confounder_u=False, the learner infers).
+    # DQN base only, mirroring the online off-policy DQN loop it plugs into.
+    registry.register(
+        "online_dqn_proximal",
+        AlgorithmSpec(
+            builder=_offpolicy_recurrent_guard(
+                "online_dqn_proximal", build_proximal_dqn
+            ),
+            kind="off_policy",
+            data_regime="online",
+            needs_episode_grouping=True,
+        ),
+    )
+
     # Cell 8 (Dark Ages): recurrent × {proximal, oracle_u}. The critic is
     # RecurrentUMarginalizedQ (LSTM/GRU/RNN over [obs,u]) -> POMDP estimation
     # (BPTT) AND U-conditioned identification (q_su) compose. Registered WITHOUT

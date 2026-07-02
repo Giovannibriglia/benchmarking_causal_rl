@@ -466,3 +466,81 @@ class OnlineSource(ExperienceSource):
                     aux_models.update(batch)
                 last_batch = batch
         return obs, metrics_cache, last_batch
+
+    def collect_off_policy_grouped(
+        self,
+        agent: Algorithm,
+        replay_buffer,
+        obs: torch.Tensor,
+        *,
+        collection_policy,
+        n_steps: int,
+        n_envs: int,
+        warmup: int,
+        batch_size: int,
+        seq_len: int = 8,
+        metrics_cache: Optional[Dict[str, float]] = None,
+        handed_off: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, float]], bool]:
+        """Online EPISODE-GROUPED off-policy collection for the proximal latent-class
+        variant (Gate B). Parallel to the flat ``collect_off_policy`` and the
+        recurrent ``collect_off_policy_recurrent`` — both stay untouched/golden-pinned.
+
+        Scope: a FIXED confounded behavior policy (``bias_confounded`` at full
+        strength = purely U-indexed, independent of the learner -> stationary episode
+        distribution). NOT the co-adapting case (cells 5-6, out of scope).
+
+        Per step: the FIXED ``collection_policy`` picks the action (it may CONDITION
+        on the env's per-episode U via ``current_u``), the env perturbs the reward by
+        that same U, and the transition is stored EPISODE-STRUCTURED
+        (``add(env_id, ..)`` + ``mark_episode_end`` on done) with ONLY the five base
+        keys — the realized U is NEVER stored (five-keys-online: the learner infers).
+
+        Once warmed up and a full episode exists, the buffer is HANDED OFF once
+        (``set_sequence_buffer`` -> first E/M warm-start); thereafter the estimator
+        REFRESHES its rolling episode view on its own cadence inside ``m_step``
+        (``online=True``), re-applying the label-persistence canonicalization each
+        refresh. Each step then samples a same-episode ``(B, T, *)`` window ->
+        ``agent.update`` (the proximal ``m_step``, which flattens for the MLP base).
+        Returns the carried obs, the latest metrics, and whether the handoff fired."""
+        # Seed every stored transition with a DEFAULT r_tau = prior. The E-step only
+        # scatters posteriors into episodes present at a refresh; online, fresh
+        # episodes are added between refreshes and could be sampled first — without a
+        # default, sample_sequences (which stacks every key) KeyErrors on r_tau. The
+        # cadence refresh overwrites this with the real posterior; until then u ~
+        # Bernoulli(prior) is the safe observational default. (Offline never needs
+        # this: its buffer is static and fully scattered at handoff.) r_tau is the
+        # INFERRED latent, not the realized U -> five-keys is untouched.
+        em = getattr(agent, "_proximal_em", None)
+        prior = float(getattr(em, "prior_p", 0.5))
+        for _ in range(n_steps):
+            actions = collection_policy.act(obs).action
+            next_obs, reward, terminated, truncated, _ = self.env.step(actions)
+            done = torch.logical_or(terminated, truncated).float()
+            for i in range(n_envs):
+                replay_buffer.add(
+                    i,
+                    {
+                        "obs": obs[i].detach(),
+                        "actions": actions[i].detach(),
+                        "rewards": reward[i].detach(),
+                        "next_obs": next_obs[i].detach(),
+                        "dones": done[i].detach(),
+                        "r_tau": torch.tensor(prior),
+                    },
+                )
+                if bool(done[i]):
+                    replay_buffer.mark_episode_end(i)
+            obs = next_obs
+
+            if len(replay_buffer) > max(
+                warmup, batch_size
+            ) and replay_buffer.can_sample(seq_len):
+                if not handed_off:
+                    # First fill: hand the rolling buffer to the estimator (warm-start
+                    # + first E/M). Subsequent rebuilds happen via m_step's refresh.
+                    agent.set_sequence_buffer(replay_buffer)
+                    handed_off = True
+                batch = replay_buffer.sample_sequences(batch_size, seq_len)
+                metrics_cache = agent.update(batch)
+        return obs, metrics_cache, handed_off
