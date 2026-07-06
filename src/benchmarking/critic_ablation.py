@@ -68,14 +68,22 @@ _EPS = 1e-8
 # ONLY where sigma>0 AND the observational->oracle MSE clears this floor.
 _GAP_NOISE_FLOOR_MSE = 1e-2
 
-# --ablation-critics base-algo name -> proximal/oracle_u builder suffix.
+# --ablation-critics base-algo name -> proximal/oracle_u builder suffix. The
+# recurrent base (offline_dqn_recurrent, the Cell-8 POMDP floor) resolves to the
+# SAME "dqn" family — the recurrent-vs-MLP axis is the ORTHOGONAL ``encoder``
+# argument, not the suffix (which only selects the base-learner family).
 _BASE_ALGO_SUFFIX: Dict[str, str] = {
     "offline_dqn": "dqn",
+    "offline_dqn_recurrent": "dqn",
     "dqn": "dqn",
     "bcq": "bcq",
     "cql": "cql",
     "iql": "iql",
 }
+
+# ``encoder`` values that select the Cell-8 recurrent arm (else "mlp" = the
+# byte-frozen Cell-7 MLP arm). Mirrors the recurrent builders' critic_network.
+_RECURRENT_ENCODERS: frozenset[str] = frozenset({"rnn", "lstm", "gru"})
 
 
 @dataclass(frozen=True)
@@ -226,17 +234,44 @@ def _build_strategy_critic(
     obs_dim: int,
     action_dim: int,
     device: torch.device,
+    encoder: str = "mlp",
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
-    (no estimator reimplementation). ``observational`` is always MLP + DQN(
-    Observational()) — the floor; ``proximal``/``oracle_u`` are the base-
-    parameterized merged builders. Discrete MLP arm only (rnn deferred = cell 8)."""
+    (no estimator reimplementation). ``builder`` selects the identification arm
+    (observational floor / proximal / oracle_u); ``encoder`` selects the
+    ORTHOGONAL architecture axis:
+
+      * ``encoder="mlp"`` (default, BYTE-FROZEN — the Cell-7 MLP row):
+        observational = MLP + DQN(Observational()); proximal/oracle_u =
+        ``build_{proximal,oracle_u}_<base>`` (flat UMarginalizedQ, is_recurrent
+        False -> the caller flattens (B,T)->(B*T)).
+      * ``encoder`` in {"rnn","lstm","gru"} (the Cell-8 recurrent row, POMDP ×
+        confounded): observational = ``build_offline_dqn_recurrent`` (plain
+        recurrent Q, NO q_su, NO U); proximal = ``build_recurrent_proximal_dqn``;
+        oracle_u = ``build_recurrent_oracle_u_dqn`` (RecurrentUMarginalizedQ +
+        the cell-8 ProximalEM / OracleU). All three fire ``is_recurrent`` and
+        consume (B,T) windows NATIVELY via the batched ``q_su``. DQN base only.
+    """
+    recurrent = str(encoder or "mlp").lower() in _RECURRENT_ENCODERS
+
     if builder == "observational":
-        q = MLP(obs_dim, action_dim).to(device)
-        tgt = MLP(obs_dim, action_dim).to(device)
-        # Default strategy is Observational() -> critic_value = net(x): the floor.
-        agent = DQN(q, tgt, ReplayBuffer(1_000_000, device), device=device)
-        return q, agent
+        if not recurrent:
+            q = MLP(obs_dim, action_dim).to(device)
+            tgt = MLP(obs_dim, action_dim).to(device)
+            # Default strategy is Observational() -> critic_value = net(x): the floor.
+            agent = DQN(q, tgt, ReplayBuffer(1_000_000, device), device=device)
+            return q, agent
+        # Recurrent observational floor: plain recurrent Q (no q_su, no U). Reuses
+        # the merged cell-8 builder verbatim (no reimplementation).
+        from src.rl.offline.dqn import build_offline_dqn_recurrent
+
+        return build_offline_dqn_recurrent(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=device,
+            action_type="discrete",
+            critic_network=encoder,
+        )
 
     suffix = _BASE_ALGO_SUFFIX.get(str(base_algo).split("__")[0])
     if suffix is None:
@@ -244,10 +279,20 @@ def _build_strategy_critic(
             f"strategy-critic ablation base algo '{base_algo}' is unsupported; "
             "choose a discrete offline base: offline_dqn, bcq, cql, iql."
         )
+    if recurrent and suffix != "dqn":
+        raise ValueError(
+            f"recurrent strategy-critic ablation is DQN-base only (Cell 8): base "
+            f"'{base_algo}' -> '{suffix}' has no recurrent proximal/oracle_u "
+            "builder. Use offline_dqn or offline_dqn_recurrent as the base."
+        )
     kwargs = dict(
         obs_dim=obs_dim, action_dim=action_dim, device=device, action_type="discrete"
     )
     if builder == "proximal":
+        if recurrent:
+            from src.rl.offline.proximal import build_recurrent_proximal_dqn
+
+            return build_recurrent_proximal_dqn(critic_network=encoder, **kwargs)
         from src.rl.offline.proximal import (
             build_proximal_bcq,
             build_proximal_cql,
@@ -263,6 +308,10 @@ def _build_strategy_critic(
         }[suffix]
         return fn(**kwargs)
     if builder == "oracle_u":
+        if recurrent:
+            from src.rl.offline.oracle_u import build_recurrent_oracle_u_dqn
+
+            return build_recurrent_oracle_u_dqn(critic_network=encoder, **kwargs)
         from src.rl.offline.oracle_u import (
             build_oracle_u_bcq,
             build_oracle_u_cql,
@@ -307,21 +356,25 @@ class StrategyCritic:
         obs_dim: int,
         action_dim: int,
         device: torch.device,
+        encoder: str = "mlp",
     ) -> None:
         self.name = name
         self.spec = spec
         self.device = device
         self.requires_u = spec.requires_u
         _net, agent = _build_strategy_critic(
-            spec.builder, base_algo, obs_dim, action_dim, device
+            spec.builder, base_algo, obs_dim, action_dim, device, encoder
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
         # for UMarginalizedQ (proximal/oracle), plain Q(s,.) for observational.
         self.net = agent.q_network
-        # Only proximal both consumes (B,T) natively and wants the episode buffer
-        # (its E-step needs whole episodes for the per-episode posterior).
-        self.consumes_sequences = spec.builder == "proximal"
+        # Recurrent critics (encoder=lstm/gru/rnn) fire is_recurrent and consume the
+        # (B,T) window NATIVELY (batched q_su); the MLP proximal also consumes (B,T)
+        # (its m_step flattens internally). Only MLP observational/oracle_u are flat
+        # learners that the caller flattens (B,T)->(B*T).
+        self.is_recurrent = bool(getattr(agent, "is_recurrent", False))
+        self.consumes_sequences = spec.builder == "proximal" or self.is_recurrent
         self.wants_sequence_buffer = hasattr(agent, "set_sequence_buffer")
 
     def set_sequence_buffer(self, seq_buffer) -> None:
@@ -339,7 +392,13 @@ class StrategyCritic:
 
     def predict_q_adj(self, obs: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            return self.net(obs)
+            out = self.net(obs)
+            # Recurrent nets (RecurrentUMarginalizedQ / plain recurrent trunk)
+            # return (q_all, new_state); the flat (N, obs_dim) eval set is one
+            # zero-state single step. MLP nets return the bare (N, A) tensor.
+            if isinstance(out, tuple):
+                out = out[0]
+            return out
 
 
 class CriticAblationManager:
@@ -352,10 +411,15 @@ class CriticAblationManager:
         *,
         base_algo: str | None = None,
         action_dim: int | None = None,
+        encoder: str = "mlp",
     ) -> None:
         self.config = config
         self.gamma = gamma
         self.device = device
+        # Architecture axis for the strategy critics: "mlp" (Cell-7 row, frozen)
+        # or lstm/gru/rnn (Cell-8 recurrent row). Derived by the runner from the
+        # base algo's critic_network so the base and the triad share one encoder.
+        self.encoder = str(encoder or "mlp")
         selected_critics = (
             [str(name) for name in config.critics]
             if config.critics
@@ -395,6 +459,7 @@ class CriticAblationManager:
                     obs_dim,
                     action_dim,
                     device,
+                    self.encoder,
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")

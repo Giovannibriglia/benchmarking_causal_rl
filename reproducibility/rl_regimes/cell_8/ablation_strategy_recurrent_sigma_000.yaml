@@ -1,0 +1,43 @@
+# Cell 8 — STRATEGY-CRITIC ABLATION, RECURRENT row (encoder = lstm), σ = 0.00.
+# The COLLAPSE ANCHOR for the recurrent strategy-critic ablation: same masked
+# (POMDP) setup, but the UNCONFOUNDED σ=0 dataset (no +σ·U reward bonus). With no
+# confounding to remove, the proximal E-step must COLLAPSE — q_su(.,0) ≈ q_su(.,1)
+# -> Q_adj ≈ the plain recurrent Q — so rnn-proximal reduces to the rnn-
+# observational floor and value_mse_to_oracle ≈ the observational control (nothing
+# invented from an unconfounded stream). gap_closed_fraction is withheld at σ=0 by
+# construction (the two-noise-terms ratio is not a metric); the absolute
+# value_mse_to_oracle IS the control. The confounding gate is skipped (unconfounded
+# baseline). Pair with the σ=0.50 config to bound the deconfounding wedge.
+# Refs: docs/experimental_design.md §4 Cell 8; proximal c_r=0 collapse.
+
+envs:
+  - CartPole-v1
+
+algos:
+  - name: offline_dqn_recurrent
+    networks:
+      critic: lstm
+
+mode: critic_ablation
+ablation_critics:
+  - observational
+  - proximal
+  - oracle_u
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma000-v0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+
+behavior_policy: bias_confounded
+behavior_strength: 0.0
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

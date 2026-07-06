@@ -1,0 +1,48 @@
+# Cell 8 — STRATEGY-CRITIC ABLATION, RECURRENT row (encoder = lstm), σ = 0.50.
+# The recurrent analog of the Cell-7 MLP strategy-critic ablation. ONE recurrent
+# observational actor (offline_dqn_recurrent) drives a SHARED episode-grouped
+# confounded+MASKED (POMDP) stream; the triad {observational, proximal, oracle_u}
+# — all recurrent (RecurrentUMarginalizedQ + the cell-8 ProximalEM / OracleU) —
+# estimates on that stream and is scored estimation-vs-oracle. The encoder is
+# derived from the base algo's critic_network (lstm here), so the base actor and
+# the triad share one architecture.
+#
+# Signal (σ>0): rnn-observational INFLATES (confounded reward baked into the
+# recurrent Q); rnn-proximal CLOSES a positive gap toward rnn-oracle on value AND
+# argmax (gap_closed_fraction > 0). rnn-oracle is the fenced ceiling (reads the
+# realized U; never reported as a deployable method). Requires confounded+MASKED
+# (POMDP) data — the RNN row only has signal where velocity is hidden.
+# Pair with the σ=0 config (collapse anchor).
+# Refs: docs/experimental_design.md §4 Cell 8; Cell-7 strategy-critic ablation.
+
+envs:
+  - CartPole-v1
+
+algos:
+  - name: offline_dqn_recurrent
+    networks:
+      critic: lstm
+
+mode: critic_ablation
+ablation_critics:
+  - observational
+  - proximal
+  - oracle_u
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma050-v0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+
+behavior_policy: bias_confounded
+behavior_strength: 0.5
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

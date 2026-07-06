@@ -416,20 +416,22 @@ class BenchmarkRunner:
         if critic_ablation_cfg is not None:
             gamma = float(getattr(self.agent, "gamma", 0.99))
             if _is_strategy_ablation(critic_ablation_cfg):
-                # Strategy-critic ablation (Cell-7 deconfounding): the three critics
+                # Strategy-critic ablation (Cell-7/8 deconfounding): the three critics
                 # {observational, proximal, oracle_u} fit a SHARED episode-grouped
                 # confounded stream, scored estimation-vs-oracle. Guard swap: the
                 # on-policy-only requirement becomes an episode-grouped-stream
-                # requirement. Implemented for the OFFLINE regime (cell-7 datasets;
-                # routed via _train_offline_grouped); the online (bias_confounded)
-                # and rnn rows are deferred behind the recurrent-offline
-                # prerequisite (= cell 8).
+                # requirement. The MLP arm (encoder=mlp) is the Cell-7 confounded-only
+                # row; the recurrent arm (encoder=lstm/gru/rnn, base
+                # offline_dqn_recurrent) is the Cell-8 confounded+MASKED (POMDP) row —
+                # both offline, both routed via _train_offline_grouped. The encoder is
+                # derived from the base algo's critic_network so the base actor and the
+                # triad share one architecture. The online (bias_confounded) row stays
+                # deferred.
                 if self.algo_spec.data_regime != "offline":
                     raise ValueError(
                         "strategy-critic ablation (observational/proximal/oracle_u) "
-                        "requires an offline cell-7 dataset base (data_regime="
-                        "'offline'); the online bias_confounded and rnn regimes are "
-                        "deferred (recurrent-offline prerequisite = cell 8)."
+                        "requires an offline cell-7/8 dataset base (data_regime="
+                        "'offline'); the online bias_confounded regime is deferred."
                     )
                 self.critic_ablation = CriticAblationManager(
                     obs_dim=self.obs_dim,
@@ -438,6 +440,7 @@ class BenchmarkRunner:
                     gamma=gamma,
                     base_algo=self.train_cfg.algorithm,
                     action_dim=self.action_dim,
+                    encoder=getattr(self.train_cfg, "critic_network", "mlp") or "mlp",
                 )
             else:
                 # V-head ablation (standard_mlp/residual): the frozen on-policy path.
