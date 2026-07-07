@@ -255,22 +255,56 @@ def _build_strategy_critic(
     recurrent = str(encoder or "mlp").lower() in _RECURRENT_ENCODERS
 
     if builder == "observational":
-        if not recurrent:
+        if recurrent:
+            # Recurrent observational floor: plain recurrent Q (no q_su, no U).
+            # DQN is the ONLY recurrent base (cql/iql/bcq have no recurrent path),
+            # so the encoder fully determines the base regardless of --algos.
+            # Reuses the merged cell-8 builder verbatim (no reimplementation).
+            from src.rl.offline.dqn import build_offline_dqn_recurrent
+
+            return build_offline_dqn_recurrent(
+                obs_dim=obs_dim,
+                action_dim=action_dim,
+                device=device,
+                action_type="discrete",
+                critic_network=encoder,
+            )
+        # BASE PARITY: the observational floor MUST use the SAME base learner as
+        # proximal/oracle_u so the ablation isolates the IDENTIFICATION strategy,
+        # not the base learner. Build the base algo's OWN class with Observational()
+        # (a literal pass-through -> plain Q(s,.)). Building a bare DQN here would
+        # make --algos cql compare CQL-proximal against a DQN-observational: CQL's
+        # conservative regularization curbs value overestimation independent of
+        # deconfounding, so a DQN floor inflates the observational->proximal gap
+        # with a CQL-vs-DQN base confound.
+        suffix = _BASE_ALGO_SUFFIX.get(str(base_algo).split("__")[0])
+        if suffix is None:
+            raise ValueError(
+                f"strategy-critic ablation base algo '{base_algo}' is unsupported; "
+                "choose a discrete offline base: offline_dqn, bcq, cql, iql."
+            )
+        if suffix == "dqn":
+            # DQN floor UNCHANGED (byte-frozen golden): MLP + DQN default strategy
+            # (== Observational()). DQN-vs-DQN, so there is no base confound here.
             q = MLP(obs_dim, action_dim).to(device)
             tgt = MLP(obs_dim, action_dim).to(device)
-            # Default strategy is Observational() -> critic_value = net(x): the floor.
             agent = DQN(q, tgt, ReplayBuffer(1_000_000, device), device=device)
             return q, agent
-        # Recurrent observational floor: plain recurrent Q (no q_su, no U). Reuses
-        # the merged cell-8 builder verbatim (no reimplementation).
-        from src.rl.offline.dqn import build_offline_dqn_recurrent
+        # cql/iql/bcq floor: the base builder with a plain (U-free) Q-net + the
+        # Observational() strategy. Reuses the merged base builders (no learner
+        # reimplementation); each accepts a ``strategy`` override.
+        from src.rl.off_policy.identification import Observational
+        from src.rl.offline.bcq import build_bcq
+        from src.rl.offline.cql import build_cql
+        from src.rl.offline.iql import build_iql
 
-        return build_offline_dqn_recurrent(
+        fn = {"cql": build_cql, "iql": build_iql, "bcq": build_bcq}[suffix]
+        return fn(
             obs_dim=obs_dim,
             action_dim=action_dim,
             device=device,
             action_type="discrete",
-            critic_network=encoder,
+            strategy=Observational(),
         )
 
     suffix = _BASE_ALGO_SUFFIX.get(str(base_algo).split("__")[0])
