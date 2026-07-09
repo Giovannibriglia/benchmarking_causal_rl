@@ -62,11 +62,15 @@ from typing import Dict
 
 import torch
 
+from src.rl.models.backbone import build_trunk
+from src.rl.off_policy.dqn import DQN
 from src.rl.off_policy.identification import SensitivityBounds
+from src.rl.off_policy.replay_buffer import ReplayBuffer
 from src.rl.offline.bcq import build_bcq
 from src.rl.offline.cql import build_cql
 from src.rl.offline.dqn import build_offline_dqn
 from src.rl.offline.iql import build_iql
+from src.rl.offline.oracle_u import _recurrent_trunk_kwargs
 
 
 class _SensitivityReweighter:
@@ -162,3 +166,58 @@ def build_sensitivity_iql(**kwargs):
 
 def build_sensitivity_bcq(**kwargs):
     return _build(build_bcq, **kwargs)
+
+
+def build_sensitivity_dqn_recurrent(**kwargs):
+    """Cell 8 (POMDP × confounded) recurrent SensitivityBounds — DQN base only.
+
+    Mirrors ``build_offline_dqn_recurrent`` (the recurrent OBSERVATIONAL floor): a
+    PLAIN recurrent trunk (``build_trunk`` over ``critic_network``, NO ``q_su`` — so
+    ``DQN._learn_recurrent`` takes its byte-frozen else-branch and reads the reweighted
+    ``batch["rewards"]`` directly), but with the ``SensitivityBounds(Γ)`` strategy and
+    the reward reweighter installed. ``_install_sensitivity`` auto-detects the recurrent
+    agent (``initial_state`` -> ``DQN.is_recurrent``) and flips the reweighter's
+    ``is_recurrent`` branch (which unpacks the ``(q_all, state)`` tuple and preserves the
+    ``(B, T)`` reward shape) — so the reweighter itself is unchanged from the flat path.
+
+    DQN base only, matching the recurrent proximal/oracle_u builders: CQL/IQL/BCQ have
+    no recurrent learn path (their ``learn`` assumes flat ``(B, A)``), so recurrent CQL
+    sensitivity is out of scope. Registered WITHOUT ``_offpolicy_recurrent_guard`` (the
+    whole point is to ACCEPT ``critic_network=lstm``); the config's ``critic: lstm``
+    routes the run to the offline-grouped SequenceReplayBuffer path.
+
+    Byte-identity @ Γ=1: same ``build_trunk`` nets in the same RNG order as the floor,
+    the strategy is inert in ``_learn_recurrent`` (``critic_value`` is never called there),
+    and the Γ=1 reweighter early-returns the untouched batch -> identical to the floor.
+    """
+    if kwargs.get("action_type", "discrete") != "discrete":
+        raise ValueError(
+            "offline_dqn_recurrent_sensitivity is discrete-only (the Cell-8 recurrent "
+            "arm); use a continuous offline algo for continuous action spaces."
+        )
+    obs_dim = kwargs["obs_dim"]
+    action_dim = kwargs["action_dim"]
+    device = kwargs["device"]
+    obs_shape = kwargs.get("obs_shape", (obs_dim,))
+    # Recurrent-only, exactly like the floor: mlp would defeat the purpose (that is
+    # what offline_dqn_sensitivity is for). Default lstm so a bare recurrent name
+    # (no networks block) is still recurrent; networks:{critic: gru} overrides.
+    network = kwargs.get("critic_network", "lstm") or "lstm"
+    if network == "mlp":
+        raise ValueError(
+            "offline_dqn_recurrent_sensitivity requires a recurrent critic_network "
+            "(lstm/gru/rnn); for an MLP sensitivity critic use offline_dqn_sensitivity."
+        )
+    tk = _recurrent_trunk_kwargs(kwargs)
+    gamma_s = _gamma(kwargs)
+    q_net = build_trunk(network, obs_shape, obs_dim, action_dim, **tk)
+    target_net = build_trunk(network, obs_shape, obs_dim, action_dim, **tk)
+    agent = DQN(
+        q_net.to(device),
+        target_net.to(device),
+        ReplayBuffer(capacity=1_000_000, device=device),
+        device=device,
+        strategy=SensitivityBounds(gamma_s),
+    )
+    _install_sensitivity(agent, _SensitivityReweighter(agent.q_network, gamma_s))
+    return q_net.to(device), agent

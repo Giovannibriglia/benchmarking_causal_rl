@@ -532,3 +532,23 @@ def register_default_algorithms() -> None:
             requires_confounder_u=True,
         ),
     )
+
+    # Cell 8 recurrent SensitivityBounds (Kallus-Zhou MSM) — the POMDP × confounded
+    # analog of the flat *_sensitivity algos. A PLAIN recurrent Q (no q_su) + the
+    # SensitivityBounds strategy + the reward reweighter; DQN base only, matching the
+    # recurrent proximal/oracle_u rows (CQL/IQL/BCQ have no recurrent learn path).
+    # Registered WITHOUT _offpolicy_recurrent_guard (accepts critic_network=lstm).
+    # Five-keys (requires_confounder_u=False, never reads U); needs_episode_grouping
+    # for parity with the triad (config critic:lstm already routes the grouped path).
+    from src.rl.offline.sensitivity import build_sensitivity_dqn_recurrent
+
+    registry.register(
+        "offline_dqn_recurrent_sensitivity",
+        AlgorithmSpec(
+            builder=build_sensitivity_dqn_recurrent,
+            kind="off_policy",
+            data_regime="offline",
+            requires_confounder_u=False,
+            needs_episode_grouping=True,
+        ),
+    )
