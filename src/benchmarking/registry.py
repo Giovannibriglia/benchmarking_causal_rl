@@ -413,6 +413,40 @@ def register_default_algorithms() -> None:
             ),
         )
 
+    # SensitivityBounds deconfounding variants (Kallus-Zhou 2020 MSM). base ×
+    # SensitivityBounds() strategy: pessimistic REWARD reweighting with a scalar
+    # confounding bound Γ. Five-keys (requires_confounder_u=False, never reads U) and
+    # PER-TRANSITION (needs_episode_grouping=False) -> rides the byte-frozen FLAT
+    # offline path (NO grouped path, NO fit-hook: the reweighting uses the agent's own
+    # current Q, no BC estimator). Γ is threaded per-algo via the `networks:` map
+    # (network_kwargs -> builder kwargs); Γ=1 recovers the Observational floor exactly.
+    # Same discrete bases; selecting a continuous *_sensitivity is a clean KeyError.
+    from src.rl.offline.sensitivity import (
+        build_sensitivity_bcq,
+        build_sensitivity_cql,
+        build_sensitivity_dqn,
+        build_sensitivity_iql,
+    )
+
+    for _sname, _sbuilder in (
+        ("offline_dqn_sensitivity", build_sensitivity_dqn),
+        ("bcq_sensitivity", build_sensitivity_bcq),
+        ("cql_sensitivity", build_sensitivity_cql),
+        ("iql_sensitivity", build_sensitivity_iql),
+    ):
+        registry.register(
+            _sname,
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(_sname, _sbuilder),
+                kind="off_policy",
+                data_regime="offline",
+                # Five-keys: bounds confounding by Γ, never reads U. Per-transition
+                # reweighting -> the flat path (no episode grouping, no U load).
+                requires_confounder_u=False,
+                needs_episode_grouping=False,
+            ),
+        )
+
     # Action-DEPENDENT confounder cell (r += c_r*U*1[a=a_bad]): the deconfounding
     # RETURN-gap headline. Same offline episode-grouped proximal path, but the builder
     # wires an action-conditional reward model (delta[a]) + the U=0 reference-stratum

@@ -161,3 +161,59 @@ class Proximal:
         point estimate (no estimator). PR-2 returns the fitted Q_adj when the
         gate passes."""
         return "bound"
+
+
+class SensitivityBounds:
+    """Kallus-Zhou (2020, arXiv:2002.04518) marginal sensitivity model (MSM).
+
+    PESSIMISTIC REWARD REWEIGHTING with a scalar confounding bound ``Γ >= 1``.
+    Unlike ``Proximal`` (which needs proxy variables to POINT-identify the causal
+    Q), this needs only ``Γ`` and produces a robust ``Q_lower`` valid against any
+    confounding of strength up to ``Γ``. The rung between the confounded floor and
+    the proxy-precise Proximal: ``Observational -> SensitivityBounds (safe,
+    Γ-conservative) -> Proximal (precise) -> OracleU (ceiling)``.
+
+    KEY ARCHITECTURAL FACT (Gate-A finding): the reweighting adjusts the REWARD in
+    the Bellman target, which the ``critic_value`` hook CANNOT touch (it returns the
+    (B,A) Q-matrix; the learner adds ``rewards`` raw). So this strategy's
+    ``critic_value`` is a literal PASS-THROUGH (identical to ``Observational``); the
+    pessimism is injected UPSTREAM by ``_SensitivityReweighter`` (offline/sensitivity
+    .py), which wraps ``agent.learn`` and mutates ``batch["rewards"]`` before the
+    byte-frozen base backup — the ``ProximalEM._install_*`` seam, minus the EM and
+    any ``q_su``/network change.
+
+    Five-keys invariant: ``requires_confounder_u = False`` — uses only (S,A,R,S'),
+    never reads the realized U. ``needs_episode_grouping = False`` — per-transition,
+    so it rides the byte-frozen FLAT offline path.
+
+    KNOWN LIMITATION (documented for paper §5.3): the MSM bounds the ``U -> A``
+    action-confounding path but NOT direct ``U -> R`` reward-shift confounding (U
+    shifting the reward distribution independently of A). Our confounder is exactly
+    ``r += c_r*U`` — a direct ``U -> R`` shift — so SensitivityBounds is SAFE (never
+    worse than observational in the pessimistic direction) but does NOT close the gap
+    toward OracleU the way Proximal does. That is not a failure: it is an honest
+    empirical demonstration of the MSM's theoretical scope — sensitivity bounds
+    protect against action-confounding but not reward-confounding; when U enters the
+    reward directly, proxy-based methods (Proximal) are necessary."""
+
+    requires_confounder_u = False  # five-keys: only (S,A,R,S'); never reads U
+    needs_episode_grouping = False  # per-transition; rides the flat offline path
+
+    def __init__(self, gamma_sensitivity: float = 2.0) -> None:
+        if gamma_sensitivity < 1.0:
+            raise ValueError(
+                f"gamma_sensitivity (Γ) must be >= 1.0 (Γ=1 = no confounding = "
+                f"Observational); got {gamma_sensitivity}."
+            )
+        self.gamma_s = float(gamma_sensitivity)
+
+    def critic_value(self, net, x, batch):
+        # Literal pass-through — identical to Observational. The pessimism lives in
+        # the reward-reweighting wrapper, NOT here (critic_value can't touch reward).
+        return net(x)
+
+    def graphical_precondition(self, graph=None) -> bool:
+        return True  # MSM assumes confounding is BOUNDED by Γ, not absent
+
+    def statistical_diagnostic(self, batch_or_fit) -> dict:
+        return {"gamma_sensitivity": self.gamma_s}
