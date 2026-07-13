@@ -50,6 +50,7 @@ def main() -> None:
             "bias_suboptimal",
             "curiosity",
             "bias_confounded",
+            "bias_confounded_action",
         ],
         help="rollout behavior (provenance axis). Composes with --offline-tier.",
     )

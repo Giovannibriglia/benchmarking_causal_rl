@@ -1,0 +1,19 @@
+envs:
+  - CartPole-v1
+algos:
+  - cql
+  - offline_dqn_proximal_action
+  - {name: offline_dqn_sensitivity, networks: {gamma_sensitivity: 4.0}}
+  - offline_dqn_oracle_u
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded_action-sigma100-v0
+behavior_policy: bias_confounded_action
+behavior_strength: 1.0
+n_episodes: 100
+n_checkpoints: 10
+rollout_len: 512
+n_train_envs: 8
+n_eval_envs: 8
+aggregation: iqm
+deterministic: true
+seed: 0
