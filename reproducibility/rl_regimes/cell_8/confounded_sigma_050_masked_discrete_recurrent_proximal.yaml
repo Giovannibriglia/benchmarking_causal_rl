@@ -1,15 +1,14 @@
-# Cell 8 — Dark Ages, discrete arm, σ = 0.00 — RECURRENT COLLAPSE ANCHOR (Gate B).
-# The safety anchor for the recurrent deconfounding config: same masked (POMDP)
-# setup, but the unconfounded σ=0 dataset (no +σ·U reward bonus). With no
-# confounding to remove, the proximal E-step must COLLAPSE: the reward-shift
-# spread falls below the no-spread ε, delta -> 0, r_tau -> the prior p, so the
-# sampled u is prior noise and q_su(.,0) ≈ q_su(.,1) -> Q_adj ≈ the plain
-# recurrent Q. i.e. recurrent proximal must reduce to the recurrent observational
-# floor at σ=0 (nothing invented from an unconfounded stream). The σ=0 confounding
-# gate is skipped by construction (unconfounded baseline). Pair with the σ=1
-# config to bound the deconfounding wedge (collapse @σ0 -> wedge @σ1).
-# Refs: docs/experimental_design.md §4 Cell 8; proximal c_r=0 collapse (the safety
-# proof); Cell-8 Gate B.
+# Cell 8 — Dark Ages, discrete arm, σ = 0.50 — RECURRENT DECONFOUNDING WEDGE (Gate B).
+# The confounded working point for the recurrent deconfounding config: masked
+# (POMDP) setup on the σ=0.5 dataset (+σ·U reward bonus present). With real
+# confounding to remove, the proximal E-step must NOT collapse: the reward-shift
+# spread clears the no-spread ε, delta > 0, r_tau departs the prior p, so the
+# inferred u carries signal and q_su(.,0) ≠ q_su(.,1) -> Q_adj corrects the plain
+# recurrent Q. i.e. recurrent proximal should open a wedge above the recurrent
+# observational floor and toward the oracle_u ceiling (deconfounding on a
+# confounded stream). Pair with the σ=0 collapse anchor to bound the wedge
+# (collapse @σ0 -> wedge @σ0.5).
+# Refs: docs/experimental_design.md §4 Cell 8; proximal σ>0 wedge; Cell-8 Gate B.
 
 envs:
   - CartPole-v1
@@ -27,8 +26,8 @@ algos:
       critic: lstm
 
 offline_dataset:
-  CartPole-v1: generated/cartpole/random-bias_confounded-sigma000-v0
-  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma000-v0
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma050-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma050-v0
 
 mask_indices:
   CartPole-v1: [1, 3]
