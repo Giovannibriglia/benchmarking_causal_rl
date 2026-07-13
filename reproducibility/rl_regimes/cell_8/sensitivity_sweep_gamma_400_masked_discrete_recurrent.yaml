@@ -1,0 +1,57 @@
+# Cell 8 — Dark Ages (POMDP × confounded), discrete arm, σ = 0.50 — RECURRENT
+# SENSITIVITY-BOUNDS Γ-SWEEP. The POMDP analog of the cell_7 flat sensitivity sweep:
+# Kallus-Zhou (2020) marginal sensitivity model as a recurrent DQN critic, Γ = 4.0
+# (this file). Sweep Γ ∈ {1.0, 2.0, 4.0, 8.0}, ×100 filename convention (gamma_100 =
+# Γ=1.0 … gamma_800 = Γ=8.0), matching the σ-sweep and the cell_7 sensitivity sweep.
+#
+# Masked observation (mask_indices) makes it a POMDP -> the recurrent (LSTM) critic
+# must integrate history; the confounded σ=0.50 dataset carries the per-episode U
+# reward bonus. Ladder: recurrent floor (offline_dqn_recurrent) → recurrent
+# sensitivity (offline_dqn_recurrent_sensitivity, pessimistic reward reweighting
+# bounded by Γ) → recurrent oracle-U ceiling (offline_dqn_recurrent_oracle_u, reads
+# the true U). Γ=1.0 recovers the recurrent floor EXACTLY (byte-identical), so
+# gamma_100 is the observational anchor.
+#
+# SensitivityBounds reads no U (five-keys); it only assumes confounding is bounded by
+# Γ and reweights the Bellman-target reward toward the worst case. KNOWN LIMITATION
+# (paper §5.3): the MSM bounds U→A action-confounding but NOT the direct U→R reward-
+# shift here (r += c_r·U), so it is SAFE but does not close the gap toward oracle the
+# way proximal does. DQN base only (CQL/IQL/BCQ have no recurrent learn path).
+# Refs: docs/experimental_design.md §4 Cell 8, §5.3; cell_7 sensitivity_sweep_*;
+# recurrent proximal/oracle triad (confounded_sigma_*_masked_discrete_recurrent_*).
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - name: offline_dqn_recurrent
+    networks:
+      critic: lstm
+  - name: offline_dqn_recurrent_sensitivity
+    networks:
+      critic: lstm
+      gamma_sensitivity: 4.0
+  - name: offline_dqn_recurrent_oracle_u
+    networks:
+      critic: lstm
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma050-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma050-v0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+  Acrobot-v1: [4, 5]
+
+behavior_policy: bias_confounded
+behavior_strength: 0.5
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

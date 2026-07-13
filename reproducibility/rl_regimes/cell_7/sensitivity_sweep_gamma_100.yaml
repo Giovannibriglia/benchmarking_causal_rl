@@ -1,0 +1,44 @@
+# Cell 7 — Shadowed Vitals, discrete arm, σ = 0.50 — SENSITIVITY-BOUNDS Γ-SWEEP.
+# Kallus-Zhou (2020, arXiv:2002.04518) marginal sensitivity model: pessimistic
+# reward reweighting with a scalar confounding bound Γ = 1.0 (this file). The
+# sweep is Γ ∈ {1.0, 2.0, 4.0, 8.0}, ×100 filename convention matching the σ-sweep
+# (gamma_100 = Γ=1.0, gamma_200 = Γ=2.0, gamma_400 = Γ=4.0, gamma_800 = Γ=8.0).
+#
+# Ladder: cql (confounded floor) → cql_sensitivity (safe, Γ-conservative) →
+# cql_oracle_u (reads the true U — the ceiling). SensitivityBounds INFERS nothing
+# and reads no U; it only assumes confounding is bounded by Γ and reweights the
+# Bellman-target reward toward the worst case. Γ=1.0 recovers the floor EXACTLY
+# (byte-identical), so gamma_100 is the observational anchor of the sweep.
+#
+# KNOWN LIMITATION (paper §5.3): the MSM bounds U→A action-confounding but NOT the
+# direct U→R reward-shift here (r += c_r·U). So SensitivityBounds is SAFE but does
+# NOT close the gap toward oracle the way Proximal does — the honest empirical
+# demonstration that proxy-based methods are needed for reward-confounding.
+# Same gate-passing envs + dataset as the deconfounded triad (confounded_sigma_050_
+# discrete_deconfounded.yaml); the dataset carries the realized U for cql_oracle_u.
+# Refs: docs/experimental_design.md §4 Cell 7, §5.3; SensitivityBounds strategy.
+
+envs:
+  - CartPole-v1
+  - Acrobot-v1
+
+algos:
+  - cql
+  - {name: cql_sensitivity, networks: {gamma_sensitivity: 1.0}}
+  - cql_oracle_u
+
+offline_dataset:
+  CartPole-v1: generated/cartpole/random-bias_confounded-sigma050-v0
+  Acrobot-v1: generated/acrobot/random-bias_confounded-sigma050-v0
+
+behavior_policy: bias_confounded
+behavior_strength: 0.5
+
+n_episodes: 250
+rollout_len: 1024
+n_train_envs: 16
+n_eval_envs: 16
+n_checkpoints: 25
+aggregation: iqm
+deterministic: true
+seed: 0

@@ -138,7 +138,15 @@ def _normalize_algo(entry) -> dict:
                 f"algos[{entry['name']!r}].networks must be a map "
                 f"{{actor, critic, ...}}; got {type(nets).__name__}."
             )
-        nkw = {k: nets[k] for k in ("hidden_dim", "num_layers") if k in nets}
+        # network_kwargs is the per-algo builder-kwargs channel. hidden_dim/
+        # num_layers feed recurrent trunks; gamma_sensitivity (Γ) feeds the
+        # SensitivityBounds reweighter (offline_dqn/bcq/cql/iql _sensitivity). All are
+        # spread into the builder as **kwargs; builders ignore keys they don't read.
+        nkw = {
+            k: nets[k]
+            for k in ("hidden_dim", "num_layers", "gamma_sensitivity")
+            if k in nets
+        }
         return {
             "name": entry["name"],
             "actor": nets.get("actor", "mlp"),
