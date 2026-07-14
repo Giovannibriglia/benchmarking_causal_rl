@@ -63,10 +63,19 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # ORTHOGONAL to the (β, σ) regime axes. Logged (blank for non-sensitivity
     # critics) but NEVER folded into the dataset/(β,σ) path encoding.
     "gamma",
-    # NULL-CALIBRATION control: at the (β=0, σ=0) origin every critic must agree
-    # with the oracle within estimator noise. True iff value_mse_to_oracle clears
-    # the noise floor AT the origin (σ=0); blank off-origin (undefined there).
+    # NULL-CALIBRATION control for the ADAPTIVE critics ONLY (observational /
+    # proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin (no
+    # correction / posterior->prior / A⊥U), so at the origin they must agree with
+    # the oracle within estimator noise. True iff value_mse_to_oracle clears the
+    # noise floor AT the origin (σ=0); blank off-origin (undefined). The
+    # NON-ADAPTIVE sensitivity critic is EXEMPT (always blank) — its unconditional
+    # Γ-bound is pessimism BY DESIGN, reported as ``pessimism_cost`` instead.
     "null_calibrated",
+    # PESSIMISM COST (sensitivity critic ONLY, at the origin): oracle_q_mean -
+    # apparent_q_mean = the value given up to the Γ-bound when there was NOTHING to
+    # be robust against (σ=0). A REPORTED RESULT, not a failure mode; blank
+    # off-origin and blank for every non-sensitivity critic.
+    "pessimism_cost",
 ]
 
 _EPS = 1e-8
@@ -108,8 +117,11 @@ class CriticSpec:
     requires_u: bool = False  # strategy only: oracle_u reads the realized U (its fill)
     # Γ >= 1, the sensitivity critic's MSM confounding bound (a METHOD parameter,
     # not a regime axis). Read ONLY by builder="sensitivity"; inert (unread) for
-    # the other strategy critics. Γ=1 is the "no assumed confounding" null (=
-    # byte-identical Observational), so 1.0 is the safe default for every spec.
+    # the other strategy critics — the 1.0 field default is just that inert value.
+    # NB: Γ=1 is the MSM null (byte-identical Observational) — the deterministic
+    # ANCHOR of a Γ sweep, NOT a sensible default for the sensitivity critic (at
+    # Γ=1 its ablation row is a verbatim copy of the observational row, which
+    # silently deletes the method). The sensitivity spec sets Γ=2.0 explicitly.
     gamma: float = 1.0
 
 
@@ -147,21 +159,19 @@ CRITIC_LIBRARY: Dict[str, CriticSpec] = {
     # got. Γ is the method's bound, read from THIS spec, logged as the ``gamma``
     # column, and NEVER folded into the (β, σ) path encoding.
     #
-    # DEFAULT Γ=1.0 — the MSM NULL (no assumed unmeasured confounding). At Γ=1 the
-    # reweighter early-returns the untouched batch, so the critic is BYTE-IDENTICAL
-    # to CQL-Observational: it manufactures ZERO gap over the floor at the origin,
-    # which is exactly what the NULL-CALIBRATION gate demands (a Γ>1 critic is
-    # pessimistic BY DESIGN and would legitimately disagree at the origin — that is
-    # the method working, not a miscalibration). Γ>1 is the analyst's opt-in dial
-    # (set per-algo via the networks map); its safe-but-doesn't-close-the-gap
-    # pessimism is the σ>0 confounded-regime story, outside the null gate's scope.
-    # Discrete-only; the recurrent (Cell-8) arm is DQN-base only.
+    # DEFAULT Γ=2.0 — a GENUINELY ACTIVE MSM bound (NOT the Γ=1 no-op, which would
+    # make the ablation row a verbatim copy of observational and silently delete
+    # the method from the paper). The sensitivity critic is NON-ADAPTIVE: it
+    # applies the worst-case Γ-bound unconditionally with no σ=0 detector, so it is
+    # EXEMPT from the null-calibration gate; its origin deviation is a REPORTED
+    # result (``pessimism_cost``), not a miscalibration. Γ=1 is the byte-identity
+    # anchor of a Γ sweep, not the default. Discrete-only; recurrent = DQN-base.
     "sensitivity": CriticSpec(
         target="q_adj",
         loss="mse",
         kind="strategy",
         builder="sensitivity",
-        gamma=1.0,
+        gamma=2.0,
     ),
 }
 
@@ -742,14 +752,23 @@ class CriticAblationManager:
             if q_oracle is not None:
                 mse = float(torch.mean((q_c - q_oracle) ** 2).item())
                 tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
-                # NULL-CALIBRATION: at the (β=0, σ=0) origin the confounder is inert,
-                # so EVERY critic must land within estimator noise of the oracle. A
-                # critic that disagrees here (e.g. a bare-DQN floor scored against a
-                # CQL oracle) carries a base-learner confound, not deconfounding —
-                # this gate flags it. Defined only at σ=0 (off-origin a real gap is
-                # expected, so the flag is left blank there).
-                if float(sigma) == 0.0:
+                at_origin = float(sigma) == 0.0
+                is_sensitivity = critic.spec.builder == "sensitivity"
+                # NULL-CALIBRATION — ADAPTIVE critics only. At the (β=0, σ=0) origin
+                # observational/proximal/oracle_u each self-null (no correction /
+                # posterior->prior / A⊥U), so they must land within estimator noise
+                # of the oracle; a disagreement (e.g. a bare-DQN floor scored against
+                # a CQL oracle) is a base-learner confound the gate flags. The
+                # NON-ADAPTIVE sensitivity critic applies its Γ-bound unconditionally
+                # with no σ=0 detector, so it is EXEMPT (blank) — see pessimism_cost.
+                if at_origin and not is_sensitivity:
                     row["null_calibrated"] = bool(mse < _GAP_NOISE_FLOOR_MSE)
+                # PESSIMISM COST (sensitivity only, at the origin): the value given
+                # up to the Γ-bound when there was NOTHING to be robust against.
+                # Exactly 0 at Γ=1 (byte-identity with observational), > 0 and rising
+                # with Γ. A reported result; blank off-origin and for other critics.
+                if at_origin and is_sensitivity:
+                    row["pessimism_cost"] = float((q_oracle.mean() - q_c.mean()).item())
                 row.update(
                     oracle_q_mean=float(q_oracle.mean().item()),
                     q_inflation=float((q_c.mean() - q_oracle.mean()).item()),

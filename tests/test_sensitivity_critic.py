@@ -1,21 +1,23 @@
 """feat/sensitivity-critic (PR 4) — the sensitivity-bounds critic in the ablation
-library + the NULL-CALIBRATION gate. Tests J1-J5.
+library + the NULL-CALIBRATION gate. Tests J1-J6.
 
 The sensitivity critic REUSES ``build_sensitivity_<base>`` verbatim (the merged
 Kallus-Zhou MSM reward-reweighter), so it SHARES THE BASE ALGO'S CLASS
 (CQL-sensitivity, not a bare-DQN floor) — the same base-parity fix the
 observational floor carries, so ``--algos cql`` compares like-with-like. Γ is a
 METHOD parameter (orthogonal to the (β, σ) regime axes): read from the critic
-spec, logged as its own column, never folded into the dataset/(β,σ) path.
+spec, logged as its own column, never folded into the dataset/(β,σ) path. Default
+Γ=2.0 — a genuinely active bound (Γ=1 would make the ablation row a verbatim copy
+of observational and silently delete the method).
 
-NULL-CALIBRATION (the point of the PR). At the (β=0, σ=0) origin the confounder is
-inert, so every critic must agree with the oracle within estimator noise; the
-``null_calibrated`` column reports ``value_mse_to_oracle < _GAP_NOISE_FLOOR_MSE``
-there (blank off-origin). The sensitivity critic defaults to Γ=1 — the MSM NULL,
-byte-identical to Observational — so it manufactures ZERO null-origin gap (J4). A
-bare-DQN floor scored against a CQL oracle inflates Q above the conservative
-oracle even at the origin: a base-learner gap masquerading as deconfounding, which
-the gate must flag (J5).
+NULL-CALIBRATION applies to the three ADAPTIVE critics ONLY (observational /
+proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin, so they must agree
+with the oracle within estimator noise — the anti-artifact check that still
+catches a bare-DQN base confound (J5). The sensitivity critic is NON-ADAPTIVE (an
+unconditional worst-case Γ-bound, no σ=0 detector) so it is EXEMPT from the gate
+(J4'); its origin deviation is a REPORTED result, ``pessimism_cost`` = the value
+given up to the Γ-bound when there was nothing to be robust against, exactly 0 at
+Γ=1 (byte-identity with observational) and rising with Γ (J6).
 """
 
 from __future__ import annotations
@@ -125,9 +127,9 @@ def _rows_with_stubs(stubs: list[_StubCritic], sigma: float) -> dict:
 # --------------------------------------------------------------------------- #
 def test_j1_sensitivity_registered_flat_and_recurrent():
     assert _SPEC.kind == "strategy" and _SPEC.builder == "sensitivity"
-    assert _SPEC.gamma == 1.0  # default = the MSM null (null-calibrated)
-    assert "gamma" in STRATEGY_CRITIC_ABLATION_COLUMNS
-    assert "null_calibrated" in STRATEGY_CRITIC_ABLATION_COLUMNS
+    assert _SPEC.gamma == 2.0  # a GENUINELY ACTIVE default (not the Γ=1 no-op)
+    for col in ("gamma", "null_calibrated", "pessimism_cost"):
+        assert col in STRATEGY_CRITIC_ABLATION_COLUMNS
 
     flat = StrategyCritic("sensitivity", _SPEC, "cql", _OBS, _ACT, _CPU, "mlp")
     rec = StrategyCritic(
@@ -144,7 +146,7 @@ def test_j1_sensitivity_registered_flat_and_recurrent():
     mgr.update_strategy(buf.sample_sequences(8, 6))
     rows = {r["critic"]: r for r in mgr.checkpoint_rows_strategy(1, "cql", "X", 0.0)}
     assert "sensitivity" in rows
-    assert rows["sensitivity"]["gamma"] == 1.0  # method param, logged as a column
+    assert rows["sensitivity"]["gamma"] == 2.0  # method param, logged as a column
     assert rows["oracle_u"]["gamma"] == ""  # non-sensitivity: no MSM bound -> blank
 
 
@@ -196,11 +198,14 @@ def test_j3_sensitivity_shares_base_algo_class(base, cls):
 
 
 # --------------------------------------------------------------------------- #
-# J4 — NULL CALIBRATION: gate PASSES when all critics agree at the origin       #
+# J4' — NULL CALIBRATION: the three ADAPTIVE critics agree at the origin;        #
+#        sensitivity is EXEMPT (blank) and reports pessimism_cost instead        #
 # --------------------------------------------------------------------------- #
-def test_j4_null_gate_passes_when_all_critics_agree_at_origin():
-    # Controlled Q: all four within estimator noise of the oracle -> every critic
-    # null_calibrated True at σ=0. Off-origin (σ>0) the flag is undefined -> blank.
+def test_j4_prime_null_gate_adaptive_critics_only():
+    # Controlled Q: the three adaptive critics land within estimator noise of the
+    # oracle at σ=0 -> null_calibrated True. The NON-ADAPTIVE sensitivity critic is
+    # pessimistic BY DESIGN (apparent_q below the oracle), so it is EXEMPT from the
+    # gate: its null_calibrated is BLANK and its origin deviation is pessimism_cost.
     g = torch.Generator().manual_seed(7)
     base_q = torch.randn(30, _ACT, generator=g)
 
@@ -213,26 +218,34 @@ def test_j4_null_gate_passes_when_all_critics_agree_at_origin():
         _StubCritic("oracle_u", base_q, "oracle_u"),
         _StubCritic("observational", near(11), "observational"),
         _StubCritic("proximal", near(12), "proximal"),
-        _StubCritic("sensitivity", near(13), "sensitivity", gamma=1.0),
+        _StubCritic("sensitivity", base_q - 0.4, "sensitivity", gamma=2.0),  # pessim.
     ]
     rows0 = _rows_with_stubs(stubs, sigma=0.0)
-    for name in ("oracle_u", "observational", "proximal", "sensitivity"):
+
+    # the three adaptive critics: gate applies and PASSES
+    for name in ("oracle_u", "observational", "proximal"):
         assert rows0[name]["null_calibrated"] is True, name
         assert float(rows0[name]["value_mse_to_oracle"]) < _GAP_NOISE_FLOOR_MSE
-    assert rows0["sensitivity"]["gamma"] == 1.0
-    assert rows0["observational"]["gamma"] == ""
+        assert rows0[name]["pessimism_cost"] == ""  # adaptive: no pessimism column
 
-    rows_off = _rows_with_stubs(stubs, sigma=0.5)  # off-origin -> undefined -> blank
+    # sensitivity: EXEMPT from the gate (blank), reports pessimism_cost > 0 instead
+    assert rows0["sensitivity"]["null_calibrated"] == ""
+    assert float(rows0["sensitivity"]["pessimism_cost"]) == pytest.approx(0.4, abs=1e-5)
+    assert rows0["sensitivity"]["gamma"] == 2.0
+
+    # off-origin: BOTH origin-only columns are undefined -> blank for everyone
+    rows_off = _rows_with_stubs(stubs, sigma=0.5)
     for name in ("oracle_u", "observational", "proximal", "sensitivity"):
         assert rows_off[name]["null_calibrated"] == "", name
+        assert rows_off[name]["pessimism_cost"] == "", name
 
 
-def test_j4_sensitivity_gamma1_manufactures_no_null_gap():
-    # At the MSM null Γ=1 the reweighter early-returns the untouched batch, so the
-    # sensitivity critic is BYTE-IDENTICAL to the CQL observational floor: same
-    # weights (same seed, same base builder), same updates, same Q. It therefore
-    # adds ZERO gap over the floor at the origin -> shares the floor's verdict. No
-    # convergence needed: this is exact equality, the deterministic null anchor.
+# --------------------------------------------------------------------------- #
+# J6 — pessimism_cost: 0 at the Γ=1 byte-identity anchor, rising with Γ         #
+# --------------------------------------------------------------------------- #
+def test_j6_pessimism_cost_zero_at_gamma1_and_rises_with_gamma():
+    # Train one shared oracle + observational + sensitivity(Γ) on the SAME stream,
+    # score at the origin, read the pessimism_cost column across Γ ∈ {1, 2, 4}.
     windows = None
 
     def fit(spec):
@@ -242,15 +255,53 @@ def test_j4_sensitivity_gamma1_manufactures_no_null_gap():
         buf = _unconfounded_buffer(0)
         if windows is None:
             random.seed(0)
-            windows = [buf.sample_sequences(8, 6) for _ in range(60)]
+            windows = [buf.sample_sequences(8, 6) for _ in range(120)]
         for w in windows:
             c.update(w)
-        eval_set = torch.randn(30, _OBS, generator=torch.Generator().manual_seed(99))
-        return c.predict_q_adj(eval_set)
+        return c
 
-    q_obs = fit(CRITIC_LIBRARY["observational"])
-    q_sens = fit(CRITIC_LIBRARY["sensitivity"])  # Γ=1 default
-    assert torch.equal(q_obs, q_sens)
+    def sens_spec(gamma):
+        return CriticSpec(
+            target="q_adj",
+            loss="mse",
+            kind="strategy",
+            builder="sensitivity",
+            gamma=gamma,
+        )
+
+    oracle = fit(CRITIC_LIBRARY["oracle_u"])
+    observ = fit(CRITIC_LIBRARY["observational"])
+    eval_set = torch.randn(30, _OBS, generator=torch.Generator().manual_seed(99))
+
+    def pessimism_cost(gamma):
+        sens = fit(sens_spec(gamma))
+        mgr = _manager(["oracle_u"])  # any real init; overwritten for the score
+        mgr.strategy_critics = {"oracle_u": oracle, "sensitivity": sens}
+        mgr._eval_obs, mgr._eval_act = (
+            eval_set,
+            torch.randint(0, _ACT, (30,), generator=torch.Generator().manual_seed(5)),
+        )
+        row = {
+            r["critic"]: r for r in mgr.checkpoint_rows_strategy(1, "cql", "X", 0.0)
+        }["sensitivity"]
+        assert row["null_calibrated"] == ""  # exempt at every Γ
+        return float(row["pessimism_cost"]), sens
+
+    pc1, sens1 = pessimism_cost(1.0)
+    pc2, _ = pessimism_cost(2.0)
+    pc4, _ = pessimism_cost(4.0)
+
+    # Γ=1 = the byte-identity ANCHOR: sensitivity(Γ=1) IS the CQL observational
+    # floor (the reweighter early-returns), so the Γ-bound gives up EXACTLY nothing
+    # over the no-bound baseline. The marginal cost at Γ=1 is exactly 0 —
+    # deterministic, no convergence needed. This is the anchor, not the default.
+    assert torch.equal(sens1.predict_q_adj(eval_set), observ.predict_q_adj(eval_set))
+
+    # pessimism_cost (oracle-referenced) RISES with Γ: each higher bound gives up
+    # strictly more value at the origin, where there was nothing to be robust
+    # against. pc1 is the floor's own oracle-gap (= 0 once observational nulls onto
+    # the oracle in a converged run); pc2, pc4 add strictly positive pessimism.
+    assert pc1 < pc2 < pc4
 
 
 # --------------------------------------------------------------------------- #
