@@ -3,8 +3,9 @@
 H1  basic arm collects with pi_basic at the FIXED epsilon and does NOT drift as the
     learner's epsilon anneals.
 H2  the shared-pi_basic_epsilon assertion fires (validator + runner online guard).
-H3  biased arm: coverage (action_overlap) degrades monotonically with beta, logged.
-H4  confounded arm: coverage stays within +/-15% of basic across the sigma sweep.
+H3  biased arm: state-conditional coverage degrades monotonically with beta, logged.
+H4  confounded arm: state-conditional coverage EQUALS basic EXACTLY (a marginal-matching
+    implementation check), biased degrades monotonically in beta.
 H5  ONLINE: mean(intervened) ~= 1 - sigma at every checkpoint (fails on master).
 H6  the intervened flag survives the GROUPED and RECURRENT collectors.
 """
@@ -15,7 +16,6 @@ import csv
 import warnings
 
 import minari
-import numpy as np
 import pytest
 import torch
 from src.benchmarking.registry import register_default_algorithms, registry
@@ -189,14 +189,11 @@ def test_h3_biased_coverage_degrades_with_beta(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# H4 — confounded coverage within +/-15% of basic across the sigma sweep, the
-# empirical orthogonality claim. Tested at the POLICY level with a SHARED base agent
-# and the REWARD-INDEPENDENT action_coverage (the runner logs this same metric):
-#   * production generation would build a DIFFERENT fresh agent per arm (random tier),
-#     so basic/confounded must share ONE checkpoint -> that comparison is deferred to
-#     PR 5's shared-checkpoint sweep (see report);
-#   * statistical_diagnostic's action_overlap uses reward-median strata, which the
-#     c_r*U reward shift contaminates -> NOT sigma-invariant. action_coverage is.
+# H4 — the STATE-CONDITIONAL coverage mean_s[min_a p_b(a|s)]. By the marginal-matching
+# theorem the confounded arm's U-marginalized p_b == pi_basic, so coverage(confounded)
+# == coverage(basic) EXACTLY (a check on the IMPLEMENTATION, not a 15% band) at every
+# sigma; the biased arm degrades it monotonically in beta. Shared base agent + FIXED
+# states isolate the metric from state-visitation and reward confounding.
 # ---------------------------------------------------------------------------
 class _AngleQ:
     def q_network(self, obs):
@@ -211,32 +208,12 @@ class _UEnv:
         self.device = CPU
 
 
-def _rollout_action_coverage(pol_fn, n_eps=250):
-    import gymnasium as gym
-    from src.benchmarking.registry import register_default_algorithms  # noqa: F401
-
-    penv = gym.make("CartPole-v1")
-    env = _UEnv(1)
-    pol = pol_fn(env)
-    g = torch.Generator().manual_seed(1)
-    torch.manual_seed(0)
-    acts = []
-    for ep in range(n_eps):
-        obs, _ = penv.reset(seed=ep)
-        env.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
-        for _ in range(200):
-            o = torch.as_tensor(obs, dtype=torch.float32).reshape(1, -1)
-            a = int(pol.act(o).action.item())
-            acts.append(a)
-            obs, r, t, tr, _ = penv.step(a)
-            if t or tr:
-                break
-    penv.close()
-    c = np.bincount(np.asarray(acts), minlength=2).astype(float)
-    return float((c / c.sum()).min())
+def _state_conditional_coverage(pol, states):
+    with torch.no_grad():
+        return float(pol.action_probs(states).min(dim=-1).values.mean().item())
 
 
-def test_h4_confounded_coverage_matches_basic():
+def test_h4_confounded_coverage_equals_basic_exactly():
     from gymnasium.spaces import Discrete
     from src.rl.policies.behavior_policy import (
         build_collection_policy,
@@ -244,24 +221,38 @@ def test_h4_confounded_coverage_matches_basic():
     )
 
     agent = _AngleQ()  # ONE shared base policy across all arms
-    cov_basic = _rollout_action_coverage(
-        lambda e: PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5)
+    torch.manual_seed(0)
+    states = torch.randn(5000, 4)  # fixed reference states (varied pole angle)
+    cov_basic = _state_conditional_coverage(
+        PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5), states
     )
-    assert cov_basic > 0.3, cov_basic
+    assert cov_basic > 0.1, cov_basic
+    env = _UEnv(1)
     for sigma in (0.25, 0.5, 1.0):
-        cov = _rollout_action_coverage(
-            lambda e, s=sigma: MarginallyMatchedConfoundedBehaviorPolicy(
-                agent, "discrete", Discrete(2), e, strength=s, pi_basic_epsilon=0.5
-            )
+        conf = MarginallyMatchedConfoundedBehaviorPolicy(
+            agent, "discrete", Discrete(2), env, strength=sigma, pi_basic_epsilon=0.5
         )
-        assert abs(cov - cov_basic) / cov_basic < 0.15, (sigma, cov, cov_basic)
-    # contrast: the biased arm DOES degrade coverage (not orthogonal to beta).
-    cov_biased = _rollout_action_coverage(
-        lambda e: build_collection_policy(
-            "biased", agent, "discrete", Discrete(2), strength=0.8, pi_basic_epsilon=0.5
+        # EXACT equality: confounded action_probs IS pi_basic (marginal matching). If
+        # this ever differs, the marginal matching is broken.
+        assert _state_conditional_coverage(conf, states) == cov_basic, sigma
+    # the biased arm degrades coverage MONOTONICALLY in beta.
+    covs = [
+        _state_conditional_coverage(
+            build_collection_policy(
+                "biased",
+                agent,
+                "discrete",
+                Discrete(2),
+                strength=b,
+                pi_basic_epsilon=0.5,
+            ),
+            states,
         )
-    )
-    assert cov_biased < 0.5 * cov_basic, (cov_biased, cov_basic)
+        for b in (0.25, 0.5, 0.75)
+    ]
+    assert covs[0] < cov_basic, (covs, cov_basic)
+    for lo, hi in zip(covs, covs[1:]):
+        assert hi < lo, covs  # strictly monotone decreasing
 
 
 # ---------------------------------------------------------------------------

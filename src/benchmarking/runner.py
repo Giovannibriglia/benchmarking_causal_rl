@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
 
+import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -308,6 +309,7 @@ class BenchmarkRunner:
         )
         self._arm_diagnostics_logger: CSVLogger | None = None
         self._coverage_batch = None  # lazily built once from the offline dataset
+        self._coverage_min_mean = None  # cached state-conditional coverage (offline)
 
         self.run_dir = run_cfg.resolve_run_dir()
         os.makedirs(self.run_dir, exist_ok=True)
@@ -875,7 +877,7 @@ class BenchmarkRunner:
         from src.envs.offline.minari_loader import load_minari_dataset
 
         ds = load_minari_dataset(dataset_id)
-        acts_rows, rew_rows = [], []
+        acts_rows, rew_rows, cmins = [], [], []
         for ep in ds.iterate_episodes():
             a = torch.as_tensor(ep.actions).reshape(-1).long()
             r = torch.as_tensor(ep.rewards).reshape(-1).float()
@@ -883,8 +885,13 @@ class BenchmarkRunner:
             if n > 0:
                 acts_rows.append(a[:n])
                 rew_rows.append(r[:n])
+            infos = getattr(ep, "infos", None) or {}
+            if "coverage_min" in infos:  # per-transition min_a p_b(a|s) (arm datasets)
+                cmins.append(np.asarray(infos["coverage_min"]).reshape(-1))
             if len(acts_rows) >= 400:
                 break
+        # State-conditional coverage = mean over transitions of min_a p_b(a|s).
+        self._coverage_min_mean = float(np.concatenate(cmins).mean()) if cmins else None
         if not acts_rows:
             return None
         T = max(int(a.shape[0]) for a in acts_rows)
@@ -919,29 +926,45 @@ class BenchmarkRunner:
             algorithm=self.train_cfg.algorithm,
             environment=self.env_cfg.env_id,
         )
-        # coverage: prefer an episode-grouped online batch, else the offline dataset.
-        cov_batch = batch
-        acts = cov_batch.get("actions") if isinstance(cov_batch, dict) else None
+        # separability / action_overlap: LOGGED DIAGNOSTICS ONLY. They stratify by the
+        # reward median, so the c_r*U reward shift CONTAMINATES them on confounded data
+        # (measured basic 0.12 vs conf-sigma1 0.06) -> they are NOT the orthogonality
+        # metric and must not be used as one. The (B,T) batch: an online grouped
+        # last_batch, else the offline dataset.
+        stat_batch = batch
+        acts = stat_batch.get("actions") if isinstance(stat_batch, dict) else None
         if not (torch.is_tensor(acts) and acts.dim() >= 2):
-            cov_batch = (
+            stat_batch = (
                 self._coverage_batch_from_dataset()
                 if self.algo_spec.data_regime == "offline"
                 else None
             )
-        if isinstance(cov_batch, dict) and torch.is_tensor(cov_batch.get("actions")):
+        if isinstance(stat_batch, dict) and torch.is_tensor(stat_batch.get("actions")):
             from src.rl.off_policy.identification import Proximal
 
-            diag = Proximal().statistical_diagnostic(cov_batch)
+            diag = Proximal().statistical_diagnostic(stat_batch)
             row["separability"] = diag["separability"]
             row["action_overlap"] = diag["action_overlap"]
-            # REWARD-INDEPENDENT action coverage (min over actions of overall support).
-            # The orthogonality metric: the swap preserves the action marginal so this
-            # stays ~ basic across sigma, while bias degrades it with beta. Unlike
-            # statistical_diagnostic's action_overlap (reward-median strata), it is NOT
-            # contaminated by the c_r*U reward shift.
-            acts = cov_batch["actions"].reshape(-1).long()
-            counts = torch.bincount(acts).float()
-            row["action_coverage"] = float((counts / counts.sum()).min().item())
+        # STATE-CONDITIONAL coverage = mean_s[ min_a p_b(a|s) ], p_b the U-marginalized
+        # realized per-state behavior distribution. Unlike the marginal min_a P_hat(a),
+        # a deterministic state-dependent policy scores 0 (zero per-state support), not
+        # 0.5. By the marginal-matching theorem confounded p_b == pi_basic, so
+        # coverage(confounded) == coverage(basic) BY CONSTRUCTION at every sigma -- the
+        # metric checks the implementation, not the claim; bias degrades it in beta.
+        if self.algo_spec.data_regime == "offline":
+            if self._coverage_min_mean is None:
+                self._coverage_batch_from_dataset()  # populates _coverage_min_mean
+            if self._coverage_min_mean is not None:
+                row["action_coverage"] = self._coverage_min_mean
+        elif isinstance(batch, dict) and torch.is_tensor(batch.get("obs")):
+            probs_fn = getattr(self.collection_policy, "action_probs", None)
+            if probs_fn is not None:
+                obs = batch["obs"]
+                if obs.dim() >= 3:  # (B, T, d) -> (B*T, d)
+                    obs = obs.reshape(-1, obs.shape[-1])
+                with torch.no_grad():
+                    cmin = probs_fn(obs).min(dim=-1).values
+                row["action_coverage"] = float(cmin.mean().item())
         # online intervened gate: mean(intervened) ~= 1 - sigma (confounded arm only).
         if isinstance(batch, dict) and "intervened" in batch:
             mean_iv = float(batch["intervened"].float().mean().item())

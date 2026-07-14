@@ -209,6 +209,12 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     # dataset stays byte-identical). Additive's policy has no such method -> None.
     _ps_fn = getattr(collection_policy, "_base_action_probs", None)
     _ps_a_bad = int(getattr(collection_policy, "a_bad", 1))
+    # State-conditional coverage: log per-transition min_a p_b(a|s), the U-MARGINALIZED
+    # realized per-state action distribution. Exposed by the three arms' policies via
+    # ``action_probs`` (pi_basic / skew-on-pi_basic / confounded=pi_basic); the clean
+    # 'agent' and additive ConfoundedBehaviorPolicy have no such method -> None ->
+    # those datasets stay byte-identical.
+    _probs_fn = getattr(collection_policy, "action_probs", None)
     buffers = []
     for ep in range(n_episodes):
         obs, _ = env.reset(seed=seed + 1000 + ep)
@@ -218,12 +224,17 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         ep_iv: list[bool] = (
             []
         )  # per-transition intervened flag (when the policy emits it)
+        ep_cmin: list[float] = []  # per-transition min_a p_b(a|s) (arms only)
         done = False
         steps = 0
         while not done and steps < max_steps:
             # current_u BEFORE the step is the latent this transition shares
             # (the confounder resamples U at done, AFTER perturbing the reward).
             u_t = float(env.current_u.reshape(-1)[0].item()) if confounded else None
+            # min_a p_b(a|s) BEFORE act (a read; no RNG -> act/dataset unchanged).
+            cmin_t = (
+                float(_probs_fn(obs)[0].min().item()) if _probs_fn is not None else None
+            )
             # pi_basic(a_bad|s) BEFORE act (a read; no RNG consumed -> act unchanged).
             ps_t = (
                 float(_ps_fn(obs)[0, _ps_a_bad].item())
@@ -265,6 +276,8 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                     sig_ps.append(ps_t)
             if iv_t is not None:
                 ep_iv.append(iv_t)
+            if cmin_t is not None:  # state-conditional coverage, all three arms
+                ep_cmin.append(cmin_t)
             done = terms[-1] or truncs[-1]
             steps += 1
         adt = np.int64 if action_type == "discrete" else np.float32
@@ -281,6 +294,10 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         # additive path (which emits no intervened flag -> ep_iv empty -> not added).
         if ep_iv:
             infos["intervened"] = np.asarray(ep_iv, dtype=bool)
+        # State-conditional coverage min_a p_b(a|s) for the arm policies (basic / biased
+        # / confounded); absent for the clean 'agent' + additive paths (byte-frozen).
+        if ep_cmin:
+            infos["coverage_min"] = np.asarray(ep_cmin, dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(

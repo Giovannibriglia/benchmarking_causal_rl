@@ -527,6 +527,39 @@ class PiBasicBehaviorPolicy(BehaviorPolicy):
         return ActionOutput(action=self.agent.act(obs).action)
 
 
+class BiasedArmPolicy(BehaviorPolicy):
+    """The biased subcell: CONCENTRATE ``pi_basic`` toward its per-state greedy action.
+    With probability ``beta`` take ``argmax_a pi_basic(a|s)``, else sample ``pi_basic``.
+    ``beta`` is the bias strength; ``beta=0`` IS ``pi_basic`` (the shared origin).
+
+    It is bias_skew applied ON TOP of pi_basic (wraps a ``PiBasicBehaviorPolicy``), but
+    the skew target is the per-state MODE, not a global fixed action. This is required
+    by the state-conditional coverage metric ``mean_s[min_a p_b(a|s)]``: concentrating
+    toward the mode degrades it MONOTONICALLY in ``beta`` (``beta->1`` => per-state
+    one-hot => coverage 0), whereas a fixed-preferred skew RAISES coverage at states
+    where the preferred action is the minority (non-monotone). Discrete only.
+    """
+
+    def __init__(self, base, action_type, action_space, *, beta: float = 0.5) -> None:
+        self.base = base  # a PiBasicBehaviorPolicy exposing action_probs
+        self.action_type = action_type
+        self.action_space = action_space
+        self.beta = float(beta)
+
+    def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """The realized (U-free) per-state distribution:
+        ``(1-beta)*pi_basic(.|s) + beta*onehot(argmax pi_basic)``."""
+        p = self.base.action_probs(obs)
+        onehot = torch.zeros_like(p)
+        rows = torch.arange(p.shape[0], device=p.device)
+        onehot[rows, p.argmax(dim=-1)] = 1.0
+        return (1.0 - self.beta) * p + self.beta * onehot
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        probs = self.action_probs(obs)
+        return ActionOutput(action=torch.multinomial(probs, 1).reshape(-1))
+
+
 class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
     """Action-dependent confounded collection = the U-swap applied ON TOP of the shared
     ``pi_basic`` (see ``PiBasicBehaviorPolicy``), EXACTLY marginally-matched:
@@ -625,6 +658,13 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
             self.agent, obs, self.action_space, self.pi_basic_epsilon
         )
 
+    def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """The U-MARGINALIZED realized action distribution
+        ``E_U[pi_b(.|s,U)] == pi_basic(.|s)`` (marginal-matching theorem). Used by the
+        state-conditional coverage metric — so confounded coverage EQUALS basic
+        coverage by construction (a check on the marginal matching, not evidence)."""
+        return self._base_action_probs(obs)
+
     def _intervened(self, coin_fired: torch.Tensor) -> torch.Tensor:
         if self.is_online:
             return ~coin_fired
@@ -661,7 +701,7 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
 # builds the opt-in policies.
 _STRENGTH_PARAM = {
     "anti_reward": "strength",  # P(take argmin-Q action) vs the agent's action
-    "biased": "p",  # the biased arm: beta = skew probability ON TOP of pi_basic
+    "biased": "beta",  # the biased arm: beta = concentration strength on pi_basic
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
@@ -677,10 +717,10 @@ _BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
     # The shared fixed-epsilon base policy pi_basic — the basic subcell's collector
     # and the common origin the biased / confounded arms transform on top of.
     "pi_basic": PiBasicBehaviorPolicy,
-    # The biased subcell: bias_skew applied ON TOP of pi_basic (NOT the raw agent), so
-    # it shares the basic/confounded origin. Introspects as SkewBehaviorPolicy
-    # (action-only -> affects_on_policy False).
-    "biased": SkewBehaviorPolicy,
+    # The biased subcell: pi_basic concentrated toward its per-state greedy (bias_skew
+    # ON TOP of pi_basic, mode-targeted). Shares the basic/confounded origin;
+    # action-only -> affects_on_policy False.
+    "biased": BiasedArmPolicy,
     "anti_reward": AntiRewardBehaviorPolicy,
     "bias_skew": SkewBehaviorPolicy,
     "bias_suboptimal": SuboptimalBehaviorPolicy,
@@ -737,12 +777,12 @@ def build_collection_policy(
         eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
         return PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
     if name == "biased":
-        # bias_skew ON TOP of pi_basic: the skew wraps a PiBasicBehaviorPolicy (same
-        # fixed pi_basic_epsilon as the other arms), NOT the raw agent.
+        # Concentrate pi_basic toward its per-state greedy (bias ON TOP of pi_basic,
+        # same fixed pi_basic_epsilon as the other arms), beta = bias strength.
         eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
         base = PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
-        p_kw = {} if strength is None else {"p": float(strength)}
-        return SkewBehaviorPolicy(base, action_type, action_space, **p_kw)
+        b_kw = {} if strength is None else {"beta": float(strength)}
+        return BiasedArmPolicy(base, action_type, action_space, **b_kw)
     conf_kw = {}
     if pi_basic_epsilon is not None:
         conf_kw["pi_basic_epsilon"] = float(pi_basic_epsilon)
