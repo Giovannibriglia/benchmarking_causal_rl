@@ -661,6 +661,7 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
 # builds the opt-in policies.
 _STRENGTH_PARAM = {
     "anti_reward": "strength",  # P(take argmin-Q action) vs the agent's action
+    "biased": "p",  # the biased arm: beta = skew probability ON TOP of pi_basic
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
@@ -676,6 +677,10 @@ _BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
     # The shared fixed-epsilon base policy pi_basic — the basic subcell's collector
     # and the common origin the biased / confounded arms transform on top of.
     "pi_basic": PiBasicBehaviorPolicy,
+    # The biased subcell: bias_skew applied ON TOP of pi_basic (NOT the raw agent), so
+    # it shares the basic/confounded origin. Introspects as SkewBehaviorPolicy
+    # (action-only -> affects_on_policy False).
+    "biased": SkewBehaviorPolicy,
     "anti_reward": AntiRewardBehaviorPolicy,
     "bias_skew": SkewBehaviorPolicy,
     "bias_suboptimal": SuboptimalBehaviorPolicy,
@@ -719,9 +724,25 @@ def build_collection_policy(
     arms so their ``(beta=0, sigma=0)`` origin is one identical policy."""
     if name == "agent":
         return AgentBehaviorPolicy(agent)
+    if name in ("pi_basic", "biased") and action_type == "continuous":
+        # The continuous pi_basic is a DETERMINISTIC expert (no exploration noise) ->
+        # near-zero coverage; the continuous basic/biased arms are DEFERRED with the
+        # continuous confounder (see PR 1 hard-gate + docs). Discrete only for now.
+        raise NotImplementedError(
+            f"continuous '{name}' arm is not runnable: the continuous pi_basic is "
+            "deterministic (no exploration noise). Deferred to the continuous "
+            "follow-up PR (see docs/rl_regimes_restructure.md)."
+        )
     if name == "pi_basic":
         eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
         return PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
+    if name == "biased":
+        # bias_skew ON TOP of pi_basic: the skew wraps a PiBasicBehaviorPolicy (same
+        # fixed pi_basic_epsilon as the other arms), NOT the raw agent.
+        eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
+        base = PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
+        p_kw = {} if strength is None else {"p": float(strength)}
+        return SkewBehaviorPolicy(base, action_type, action_space, **p_kw)
     conf_kw = {}
     if pi_basic_epsilon is not None:
         conf_kw["pi_basic_epsilon"] = float(pi_basic_epsilon)
@@ -745,7 +766,43 @@ def build_collection_policy(
             agent, action_type, action_space, env, is_online=is_online, **kw, **conf_kw
         )
     raise ValueError(
-        f"Unknown behavior policy '{name}'. Choose from: agent, pi_basic, anti_reward, "
-        "bias_skew, bias_suboptimal, curiosity, bias_confounded, "
+        f"Unknown behavior policy '{name}'. Choose from: agent, pi_basic, biased, "
+        "anti_reward, bias_skew, bias_suboptimal, curiosity, bias_confounded, "
         "bias_confounded_action."
     )
+
+
+# The three subcell arms, all built on the SHARED pi_basic (fixed pi_basic_epsilon).
+ARM_BEHAVIOR_POLICIES: frozenset[str] = frozenset(
+    {"pi_basic", "biased", "bias_confounded_action"}
+)
+
+
+def is_arm_policy(name: str) -> bool:
+    """True iff ``name`` is a subcell arm (basic / biased / confounded) built on the
+    shared pi_basic — as opposed to ``agent`` or a legacy exploration shaper."""
+    return name in ARM_BEHAVIOR_POLICIES
+
+
+def assert_shared_pi_basic_epsilon(arms) -> None:
+    """Assert every arm of a CELL reads the SAME pi_basic_epsilon — the shared
+    ``(beta=0, sigma=0)`` origin B1 depends on. ``arms`` is an iterable of
+    ``(behavior_policy, pi_basic_epsilon)``. Every arm policy must declare an
+    EXPLICIT (non-None) epsilon and they must all be equal; non-arm policies (agent /
+    legacy) are ignored. Raises ``ValueError`` loudly on a missing or mismatched value,
+    so the shared origin can never silently revert to per-arm defaults."""
+    eps_by_arm: dict[str, float] = {}
+    for behavior_policy, eps in arms:
+        if behavior_policy not in ARM_BEHAVIOR_POLICIES:
+            continue
+        if eps is None:
+            raise ValueError(
+                f"arm '{behavior_policy}' must declare pi_basic_epsilon explicitly "
+                "(the shared origin must not default silently); got None."
+            )
+        eps_by_arm[behavior_policy] = float(eps)
+    if len({round(e, 12) for e in eps_by_arm.values()}) > 1:
+        raise ValueError(
+            f"cell arms must share pi_basic_epsilon; got {eps_by_arm}. Differing arm "
+            "epsilons break the shared (beta=0, sigma=0) origin -> B1 silently reverts."
+        )

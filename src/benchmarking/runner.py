@@ -87,6 +87,25 @@ OFFLINE_VALUE_TRACE_U0_COLUMNS: List[str] = [
     "apparent_value_u0_iqr_std",
 ]
 
+# Per-checkpoint ARM diagnostics (PR 3), written only for the subcell arms
+# (pi_basic / biased / bias_confounded_action). Separate gated CSV; TRAIN_COLUMNS/
+# EVAL_COLUMNS stay frozen. `separability`/`action_overlap` are the BIASED arm's
+# coverage metric (from Proximal.statistical_diagnostic); `intervened_mean` is the
+# ONLINE confounded arm's in-training gate (~= 1 - sigma). Cells not applicable to a
+# given row are blank-filled.
+ARM_DIAGNOSTICS_COLUMNS: List[str] = [
+    "episode",
+    "algorithm",
+    "environment",
+    "separability",
+    "action_overlap",
+    "action_coverage",
+    "intervened_mean",
+]
+# Online intervened gate tolerance: |mean(intervened) - (1 - sigma)| must stay under
+# this at every checkpoint (a broken flag reads 0 or 1, far outside it).
+INTERVENED_GATE_TOL: float = 0.15
+
 
 @functools.lru_cache(maxsize=None)
 def _render_capable(env_id: str) -> bool:
@@ -280,6 +299,15 @@ class BenchmarkRunner:
             or getattr(run_cfg, "value_trace_u0_schema", False)
         )
         self._offline_value_trace_logger: CSVLogger | None = None
+        # Arm-diagnostics gate (PR 3): open iff this is a subcell arm run (basic /
+        # biased / confounded). Coverage + the online intervened gate write here.
+        from src.rl.policies.behavior_policy import is_arm_policy
+
+        self._arm_diagnostics_gate_open: bool = is_arm_policy(
+            getattr(env_cfg, "behavior_policy", "agent")
+        )
+        self._arm_diagnostics_logger: CSVLogger | None = None
+        self._coverage_batch = None  # lazily built once from the offline dataset
 
         self.run_dir = run_cfg.resolve_run_dir()
         os.makedirs(self.run_dir, exist_ok=True)
@@ -403,8 +431,26 @@ class BenchmarkRunner:
 
                 self.collection_policy = AgentBehaviorPolicy(self.agent)
             else:
-                from src.rl.policies.behavior_policy import build_collection_policy
+                from src.rl.policies.behavior_policy import (
+                    build_collection_policy,
+                    is_arm_policy,
+                )
 
+                # Online arm runs MUST declare pi_basic_epsilon explicitly so the
+                # basic / biased / confounded arms of a cell share ONE origin (B1);
+                # otherwise the basic arm silently reverts to the learner's decaying
+                # epsilon. Offline arm runs are exempt (epsilon was baked at generation).
+                _arm_eps = getattr(self.env_cfg, "pi_basic_epsilon", None)
+                if (
+                    is_arm_policy(behavior_policy)
+                    and self.algo_spec.data_regime != "offline"
+                    and _arm_eps is None
+                ):
+                    raise ValueError(
+                        f"online arm run (behavior_policy='{behavior_policy}') must "
+                        "set pi_basic_epsilon explicitly: the shared pi_basic origin "
+                        "must not default silently (B1)."
+                    )
                 self.collection_policy = build_collection_policy(
                     behavior_policy,
                     self.agent,
@@ -813,6 +859,104 @@ class BenchmarkRunner:
         full = {**metrics, **base}
         return {col: full.get(col, "") for col in schema}
 
+    def _coverage_batch_from_dataset(self):
+        """Build (and cache) a padded episode-grouped ``(B, T)`` batch of the offline
+        dataset's actions/rewards for the coverage diagnostic. reward_sum varies by
+        episode length (non-degenerate reward-median strata); actions are padded by
+        RESAMPLING each row's own real actions so padding never distorts coverage.
+        Discrete only (action_overlap uses bincount). Returns None if unavailable."""
+        if self._coverage_batch is not None:
+            return self._coverage_batch
+        if self.action_type != "discrete":
+            return None
+        dataset_id = self.env_cfg.offline_dataset
+        if not dataset_id:
+            return None
+        from src.envs.offline.minari_loader import load_minari_dataset
+
+        ds = load_minari_dataset(dataset_id)
+        acts_rows, rew_rows = [], []
+        for ep in ds.iterate_episodes():
+            a = torch.as_tensor(ep.actions).reshape(-1).long()
+            r = torch.as_tensor(ep.rewards).reshape(-1).float()
+            n = min(a.shape[0], r.shape[0])
+            if n > 0:
+                acts_rows.append(a[:n])
+                rew_rows.append(r[:n])
+            if len(acts_rows) >= 400:
+                break
+        if not acts_rows:
+            return None
+        T = max(int(a.shape[0]) for a in acts_rows)
+        g = torch.Generator().manual_seed(0)
+        A, R = [], []
+        for a, r in zip(acts_rows, rew_rows):
+            pad = T - int(a.shape[0])
+            if pad:
+                idx = torch.randint(0, int(a.shape[0]), (pad,), generator=g)
+                a = torch.cat([a, a[idx]])  # resample this row's own actions
+                r = torch.cat([r, torch.zeros(pad)])  # 0 keeps reward_sum
+            A.append(a)
+            R.append(r)
+        self._coverage_batch = {
+            "actions": torch.stack(A).to(self.device),
+            "rewards": torch.stack(R).to(self.device),
+        }
+        return self._coverage_batch
+
+    def _log_arm_diagnostics(self, episode: int, batch=None) -> None:
+        """One arm-diagnostics row per checkpoint: coverage (separability /
+        action_overlap, from Proximal.statistical_diagnostic on a ``(B, T)`` batch) and,
+        for the ONLINE confounded arm, the intervened gate. ``batch`` is the last
+        sampled training batch (episode-grouped online) or None (flat online / offline,
+        where coverage is taken from the dataset)."""
+        logger = self._arm_diagnostics_logger
+        if logger is None:
+            return
+        row = {c: "" for c in ARM_DIAGNOSTICS_COLUMNS}
+        row.update(
+            episode=episode,
+            algorithm=self.train_cfg.algorithm,
+            environment=self.env_cfg.env_id,
+        )
+        # coverage: prefer an episode-grouped online batch, else the offline dataset.
+        cov_batch = batch
+        acts = cov_batch.get("actions") if isinstance(cov_batch, dict) else None
+        if not (torch.is_tensor(acts) and acts.dim() >= 2):
+            cov_batch = (
+                self._coverage_batch_from_dataset()
+                if self.algo_spec.data_regime == "offline"
+                else None
+            )
+        if isinstance(cov_batch, dict) and torch.is_tensor(cov_batch.get("actions")):
+            from src.rl.off_policy.identification import Proximal
+
+            diag = Proximal().statistical_diagnostic(cov_batch)
+            row["separability"] = diag["separability"]
+            row["action_overlap"] = diag["action_overlap"]
+            # REWARD-INDEPENDENT action coverage (min over actions of overall support).
+            # The orthogonality metric: the swap preserves the action marginal so this
+            # stays ~ basic across sigma, while bias degrades it with beta. Unlike
+            # statistical_diagnostic's action_overlap (reward-median strata), it is NOT
+            # contaminated by the c_r*U reward shift.
+            acts = cov_batch["actions"].reshape(-1).long()
+            counts = torch.bincount(acts).float()
+            row["action_coverage"] = float((counts / counts.sum()).min().item())
+        # online intervened gate: mean(intervened) ~= 1 - sigma (confounded arm only).
+        if isinstance(batch, dict) and "intervened" in batch:
+            mean_iv = float(batch["intervened"].float().mean().item())
+            row["intervened_mean"] = mean_iv
+            sigma = float(getattr(self.env_cfg, "behavior_strength", 0.0) or 0.0)
+            target = 1.0 - sigma
+            if abs(mean_iv - target) > INTERVENED_GATE_TOL:
+                raise ValueError(
+                    f"online intervened gate FAILED at ep {episode}: "
+                    f"mean(intervened)={mean_iv:.3f} != 1-sigma={target:.3f} "
+                    f"(tol {INTERVENED_GATE_TOL}). The confounded online arm is not the "
+                    "sigma observational/interventional mixture it claims to be."
+                )
+        logger.log(row)
+
     def run(self) -> None:
         set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
         try:
@@ -866,6 +1010,15 @@ class BenchmarkRunner:
                 if self._value_trace_gate_open
                 else nullcontext(None)
             )
+            # Arm-diagnostics writer (PR 3): opened only for the subcell arms.
+            arm_diag_ctx = (
+                CSVLogger(
+                    os.path.join(self.run_dir, "arm_diagnostics.csv"),
+                    fieldnames=ARM_DIAGNOSTICS_COLUMNS,
+                )
+                if self._arm_diagnostics_gate_open
+                else nullcontext(None)
+            )
             with (
                 CSVLogger(
                     os.path.join(self.run_dir, "train_metrics.csv"),
@@ -879,11 +1032,13 @@ class BenchmarkRunner:
                 aux_ctx as aux_log,
                 per_context_ctx as per_context_log,
                 value_trace_ctx as value_trace_log,
+                arm_diag_ctx as arm_diag_log,
             ):
                 # evaluate() reads this to emit per-context rows when gated open.
                 self._eval_per_context_logger = per_context_log
                 # _train_offline reads this to emit apparent-value rows per epoch.
                 self._offline_value_trace_logger = value_trace_log
+                self._arm_diagnostics_logger = arm_diag_log
                 if self.algo_spec.data_regime == "offline":
                     self._train_offline(train_log, eval_log, aux_log, critic_log)
                 elif self.algo_spec.kind == "on_policy":
@@ -898,6 +1053,7 @@ class BenchmarkRunner:
         finally:
             self._eval_per_context_logger = None
             self._offline_value_trace_logger = None
+            self._arm_diagnostics_logger = None
             # Explicitly close vector envs to release EGL/GL contexts before interpreter shutdown.
             self.train_env.close()
             self.eval_env.close()
@@ -1028,6 +1184,9 @@ class BenchmarkRunner:
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
                 self._log_aux_rows(aux_logger, last_batch, ep)
+                # Arm diagnostics: coverage (recurrent last_batch is (B,T)) + the
+                # online intervened gate (flat/recurrent last_batch carries it).
+                self._log_arm_diagnostics(ep, last_batch)
 
     def _train_off_policy_grouped(
         self,
@@ -1066,8 +1225,9 @@ class BenchmarkRunner:
         total_steps = self.env_cfg.rollout_len
         metrics_cache = None
         handed_off = False
+        last_batch = None
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
-            obs, metrics_cache, handed_off = (
+            obs, metrics_cache, handed_off, last_batch = (
                 self.experience_source.collect_off_policy_grouped(
                     self.agent,
                     self.replay_buffer,
@@ -1102,6 +1262,8 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
+                # (B,T) grouped batch -> coverage + the online intervened gate.
+                self._log_arm_diagnostics(ep, last_batch)
 
     def _train_offline(
         self,
@@ -1231,6 +1393,9 @@ class BenchmarkRunner:
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
                 self._log_aux_rows(aux_logger, last_batch, ep)
+                # Offline arm coverage is taken from the dataset (flat batch has no
+                # episode structure); no intervened offline (all-0 by construction).
+                self._log_arm_diagnostics(ep, None)
 
     def _train_offline_grouped(
         self,
@@ -1376,6 +1541,8 @@ class BenchmarkRunner:
                 train_row = self._make_row(TRAIN_COLUMNS, train_metrics, ep)
                 train_logger.log(train_row)
                 eval_logger.log(eval_row)
+                # Offline arm coverage from the dataset (no intervened offline).
+                self._log_arm_diagnostics(ep, None)
                 if strategy_ablation and critic_logger is not None:
                     for row in self.critic_ablation.checkpoint_rows_strategy(
                         episode=ep,
