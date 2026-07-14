@@ -32,6 +32,13 @@ class EnvConfig:
     # keeps the policy default.
     behavior_policy: str = "agent"
     behavior_strength: Optional[float] = None
+    # Action-dependent confounder (bias_confounded_action) reward-shift magnitude
+    # c_r on the U->R edge, r += c_r * U * 1[a == a_bad]. DECOUPLED from
+    # behavior_strength (sigma): sigma scales the U->A edge only; c_r is fixed
+    # across the sigma sweep so the reward bonus on a_bad is invariant. None => the
+    # 1.0 default. Unused by the additive bias_confounded path (cells 7/8), which
+    # stays byte-frozen with c_r = c_a = sigma at its construction sites.
+    confounder_c_r: Optional[float] = None
     # Observation indices to drop from the flat obs vector (Z-hidden axis). For
     # online runs the runner wraps train+eval with MaskedObservationWrapper; for
     # offline runs the loader projects the same indices off the dataset's

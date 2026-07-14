@@ -128,9 +128,14 @@ def dataset_name(
 
 
 def build_rollout_env(
-    env_id, n_envs, device, seed, behavior_policy="agent", strength=None
+    env_id, n_envs, device, seed, behavior_policy="agent", strength=None, c_r=None
 ):
-    """Build the rollout env, wrapped in the confounder iff bias_confounded."""
+    """Build the rollout env, wrapped in the confounder iff bias_confounded[_action].
+
+    ``c_r`` (action-dependent path only) is the FIXED U->R reward-shift magnitude,
+    decoupled from ``strength`` (sigma): sigma scales the U->A edge via the behavior
+    policy, while c_r on U->R is invariant across the sigma sweep (default 1.0). The
+    additive path ignores c_r and keeps ``c_r = c_a = sigma`` (byte-frozen)."""
     from src.envs.registry import build_env
 
     env = build_env(env_id=env_id, n_envs=n_envs, device=device, seed=seed)
@@ -148,8 +153,11 @@ def build_rollout_env(
             if behavior_policy == "bias_confounded_action"
             else "additive"
         )
+        c_r_val = (
+            (1.0 if c_r is None else float(c_r)) if kind == "action_gated" else sig
+        )
         env = ConfoundedCollectionWrapper(
-            env, c_a=sig, c_r=sig, seed=seed, confounder_kind=kind
+            env, c_a=sig, c_r=c_r_val, seed=seed, confounder_kind=kind
         )
     return env
 
@@ -193,13 +201,24 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         obs_list = [_to_np(obs)]
         acts, rews, terms, truncs = [], [], [], []
         ep_u: list[float] = []  # per-transition U for this episode (confounded only)
+        ep_iv: list[bool] = (
+            []
+        )  # per-transition intervened flag (when the policy emits it)
         done = False
         steps = 0
         while not done and steps < max_steps:
             # current_u BEFORE the step is the latent this transition shares
             # (the confounder resamples U at done, AFTER perturbing the reward).
             u_t = float(env.current_u.reshape(-1)[0].item()) if confounded else None
-            action = collection_policy.act(obs).action
+            act_out = collection_policy.act(obs)
+            action = act_out.action
+            # intervened: emitted only by the marginally-matched confounded policy
+            # (None otherwise -> the additive / clean paths stay byte-identical).
+            iv_t = (
+                bool(act_out.intervened.reshape(-1)[0].item())
+                if act_out.intervened is not None
+                else None
+            )
             obs, reward, term, trunc, _ = env.step(action)
             obs_list.append(_to_np(obs))
             a = action.reshape(action.shape[0], -1)[0].detach().cpu().numpy()
@@ -220,6 +239,8 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 sig_r.append(r_t)
                 sig_u.append(u_t)
                 ep_u.append(u_t)
+            if iv_t is not None:
+                ep_iv.append(iv_t)
             done = terms[-1] or truncs[-1]
             steps += 1
         adt = np.int64 if action_type == "discrete" else np.float32
@@ -227,11 +248,16 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         # rewards) into the episode infos ONLY when confounded — the oracle-U
         # ceiling reads it back. The clean path omits infos so non-confounded
         # datasets stay byte-identical to the pre-oracle generator.
-        ep_kwargs = (
-            {"infos": {"confounder_u": np.asarray(ep_u, dtype=np.float32)}}
-            if confounded
-            else {}
-        )
+        infos: dict = {}
+        if confounded:
+            infos["confounder_u"] = np.asarray(ep_u, dtype=np.float32)
+        # Persist the per-transition intervened flag (marginally-matched confounded
+        # policy only) so it survives to the dataset. Offline it is all-False by
+        # construction; it is written alongside confounder_u without perturbing the
+        # additive path (which emits no intervened flag -> ep_iv empty -> not added).
+        if ep_iv:
+            infos["intervened"] = np.asarray(ep_iv, dtype=bool)
+        ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(
                 observations=np.asarray(obs_list, dtype=np.float32),
@@ -300,6 +326,7 @@ def generate_offline_dataset(
     *,
     behavior_policy: str = "agent",
     behavior_strength: float | None = None,
+    confounder_c_r: float | None = None,
     fraction: float = 1.0 / 3.0,
     train_episodes: int = 50,
     n_checkpoints: int = 10,
@@ -346,7 +373,7 @@ def generate_offline_dataset(
 
     # --- rollout env + agent ---
     rollout_env = build_rollout_env(
-        env_id, 1, dev, seed, behavior_policy, behavior_strength
+        env_id, 1, dev, seed, behavior_policy, behavior_strength, c_r=confounder_c_r
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
     _, agent = registry.get(generator_algo).builder(

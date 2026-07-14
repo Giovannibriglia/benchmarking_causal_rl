@@ -443,6 +443,148 @@ class ConfoundedBehaviorPolicy(BehaviorPolicy):
         return ActionOutput(action=agent_a + self.c_a * u.unsqueeze(-1))
 
 
+_CONF_EPS = 1e-8
+
+
+class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
+    """Action-dependent confounded collection with an EXACTLY marginally-matched
+    behavior policy: ``E_U[pi_b(a|s,U)] == pi_basic(a|s)`` for all ``s``, ``p``,
+    ``sigma`` (``U ~ Bernoulli(0.5)``). Pairs with ``ConfoundedCollectionWrapper``
+    in ``action_gated`` mode (``bias_confounded_action``). Replaces
+    ``ConfoundedBehaviorPolicy`` for the action-dependent arm only; the additive
+    cells 7/8 keep the byte-frozen ``ConfoundedBehaviorPolicy`` untouched.
+
+    Construction (discrete, per obs, with ``p = pi_basic(a_bad|s)``,
+    ``g = pi_basic(a_good|s)``, ``pbar = p/(p+g)``) — the MIXTURE form of the swap:
+
+      * draw a confounder coin ``c ~ Bernoulli(sigma)``;
+      * ``c == 0`` (prob ``1-sigma``): keep ``a0 ~ pi_basic`` — the learner's own
+        draw (a genuine ``do(a)`` online);
+      * ``c == 1`` (prob ``sigma``): if ``a0 in {a_good, a_bad}`` redraw WITHIN the
+        pair with ``P(a_bad | U=1) = pbar*(2-pbar)``, ``P(a_bad | U=0) = pbar^2``
+        (other actions pass through). Both lie in ``[0,1]`` by construction — NO
+        clipping. Averaged over ``U`` the pair split is ``pbar`` again, so the
+        marginal is ``pi_basic`` EXACTLY.
+
+    This is algebraically identical to the direct single-swap form
+    (``pi_b(a_bad|U=1) = p(1 + sigma(1-p))``, ``pi_b(a_bad|U=0) = p(1 - sigma(1-p))``
+    in the binary case) — see the PR description for the derivation — but its coin
+    decomposition makes ``mean(intervened) = 1 - sigma`` clean. The U->A gap is
+    ``2*sigma*p*g/(p+g)`` (``= 2*sigma*p*(1-p)`` binary): it VANISHES where
+    ``pi_basic`` is deterministic (``p in {0,1}``), which is correct — an action
+    always/never taken cannot be confounded without moving the marginal.
+
+    ``sigma`` (``strength``) scales the U->A edge ONLY. The U->R reward shift lives
+    in the wrapper's fixed ``c_r`` (decoupled at the construction sites).
+
+    Continuous: the analogous mean-preserving MIXTURE. ``a = a0`` with prob
+    ``1-sigma`` (kept); with prob ``sigma``, ``a = a0 + base_scale*(2U-1)``. Under
+    ``U ~ Bernoulli(0.5)`` the ``+base_scale`` / ``-base_scale`` shifts occur with
+    equal probability, so ``E_U[a | perturbed] = a0`` and the marginal MEAN is
+    preserved for every ``sigma``.
+
+    ``intervened`` (per element): ``is_online AND (c == 0)`` — True only where the
+    learner's own action executed under an online regime. Offline (a fixed
+    exogenous logger) it is False everywhere; hence ``mean(intervened) == 0``
+    offline and ``~= 1 - sigma`` online.
+    """
+
+    @classmethod
+    def affects_on_policy(cls) -> bool:
+        # Also wraps train_env with ConfoundedCollectionWrapper (reward shift),
+        # so on-policy algorithms genuinely respond — same rationale as
+        # ConfoundedBehaviorPolicy.
+        return True
+
+    def __init__(
+        self,
+        agent: Algorithm,
+        action_type: str,
+        action_space,
+        env,
+        *,
+        strength: float = 1.0,
+        a_bad: int = 1,
+        a_good: int = 0,
+        base_scale: float = 1.0,
+        is_online: bool = False,
+    ) -> None:
+        self.agent = agent
+        self.action_type = action_type
+        self.action_space = action_space
+        self.env = env  # the ConfoundedCollectionWrapper (exposes current_u)
+        self.strength = float(strength)
+        self.a_bad = int(a_bad)
+        self.a_good = int(a_good)
+        self.base_scale = float(base_scale)
+        self.is_online = bool(is_online)
+
+    def _base_action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """``pi_basic(.|s)`` as a normalized ``[B, A]`` categorical. Resolution
+        order: an explicit ``action_probs`` seam (tests + clean integration), an
+        on-policy ``distribution`` head, a DQN epsilon-greedy induced distribution,
+        else a deterministic one-hot fallback."""
+        agent = self.agent
+        fn = getattr(agent, "action_probs", None)
+        if callable(fn):
+            probs = fn(obs)
+        elif hasattr(agent, "distribution"):
+            probs = agent.distribution(obs).probs
+        elif hasattr(agent, "q_network"):
+            with torch.no_grad():
+                q = agent.q_network(obs)
+            if isinstance(q, tuple):
+                q = q[0]
+            n = q.shape[-1]
+            eps = float(getattr(agent, "epsilon", 0.0) or 0.0)
+            probs = torch.full_like(q, eps / n)
+            rows = torch.arange(q.shape[0], device=q.device)
+            probs[rows, q.argmax(dim=-1)] += 1.0 - eps
+        else:
+            a = agent.act(obs).action.long().view(-1)
+            n = int(self.action_space.n)
+            probs = torch.zeros(obs.shape[0], n, device=obs.device)
+            probs[torch.arange(obs.shape[0], device=obs.device), a] = 1.0
+        probs = probs.float().clamp_min(0.0)
+        return probs / probs.sum(dim=-1, keepdim=True).clamp_min(_CONF_EPS)
+
+    def _intervened(self, coin_fired: torch.Tensor) -> torch.Tensor:
+        if self.is_online:
+            return ~coin_fired
+        return torch.zeros_like(coin_fired)
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        b = obs.shape[0]
+        u = self.env.current_u.to(obs.device).reshape(-1)
+        sigma = min(max(self.strength, 0.0), 1.0)
+        coin = torch.rand(b, device=obs.device) < sigma  # confounder acts w.p. sigma
+
+        if self.action_type == "discrete":
+            probs = self._base_action_probs(obs)
+            a0 = torch.multinomial(probs, 1).reshape(-1)  # a0 ~ pi_basic
+            p = probs[:, self.a_bad]
+            g = probs[:, self.a_good]
+            pbar = p / (p + g).clamp_min(_CONF_EPS)  # within-pair P(a_bad)
+            # confounded within-pair P(a_bad): pbar(2-pbar) if U==1 else pbar^2.
+            w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
+            in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
+            redraw = coin & in_pair
+            pair_action = torch.where(
+                torch.rand(b, device=obs.device) < w,
+                torch.full_like(a0, self.a_bad),
+                torch.full_like(a0, self.a_good),
+            )
+            action = torch.where(redraw, pair_action, a0)
+            return ActionOutput(action=action, intervened=self._intervened(coin))
+
+        # continuous: mean-preserving mixture (perturbations cancel under U).
+        a0 = self.agent.act(obs).action
+        sign = torch.where(u > 0.5, 1.0, -1.0).unsqueeze(-1)
+        perturbed = a0 + self.base_scale * sign
+        action = torch.where(coin.unsqueeze(-1), perturbed, a0)
+        return ActionOutput(action=action, intervened=self._intervened(coin))
+
+
 # Collection-policy registry. The "agent" entry is handled by the runner with
 # the original AgentBehaviorPolicy(self.agent) construction (byte-identical to
 # the pre-A1 path), so the off-policy golden is untouched; this factory only
@@ -466,10 +608,10 @@ _BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
     "bias_suboptimal": SuboptimalBehaviorPolicy,
     "curiosity": CuriosityBehaviorPolicy,
     "bias_confounded": ConfoundedBehaviorPolicy,
-    # Action-dependent confounder (new cell): SAME behavior policy (biases the action
-    # toward pref=round(U)=a_bad, the U->A edge); only the reward wrapper differs
-    # (confounder_kind="action_gated"), wired at the wrapper construction sites.
-    "bias_confounded_action": ConfoundedBehaviorPolicy,
+    # Action-dependent confounder: the marginally-matched swap policy (sigma scales
+    # the U->A edge only, E_U[pi_b] == pi_basic exactly). Distinct class from the
+    # additive bias_confounded above, which stays byte-frozen (cells 7/8).
+    "bias_confounded_action": MarginallyMatchedConfoundedBehaviorPolicy,
 }
 
 
@@ -486,12 +628,18 @@ def build_collection_policy(
     action_space,
     strength: float | None = None,
     env=None,
+    is_online: bool = False,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
     primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
-    ``env`` is the (confounded) train-env handle, used only by
-    ``bias_confounded`` to read ``current_u`` (default ``None``, so the existing
-    policies build unchanged)."""
+    ``env`` is the (confounded) train-env handle, used only by the confounded
+    policies to read ``current_u`` (default ``None``, so the existing policies
+    build unchanged). ``is_online`` distinguishes the online collection loop
+    (learner-controlled = ``do(a)``) from the offline generation loop (fixed
+    exogenous logger); it is consumed ONLY by the marginally-matched confounded
+    policy's ``intervened`` flag. The runner (online) passes ``True``; the offline
+    generator passes ``False`` (default), so the two regimes — which share the
+    ``build_collection_policy`` seam — are cleanly distinguished at construction."""
     if name == "agent":
         return AgentBehaviorPolicy(agent)
     kw = {} if strength is None else {_STRENGTH_PARAM[name]: float(strength)}
@@ -503,10 +651,14 @@ def build_collection_policy(
         return SuboptimalBehaviorPolicy(agent, action_type, action_space, **kw)
     if name == "curiosity":
         return CuriosityBehaviorPolicy(agent, action_type, action_space, **kw)
-    if name in ("bias_confounded", "bias_confounded_action"):
-        # Same U-biased action policy for both; the action-gated REWARD shift lives in
-        # ConfoundedCollectionWrapper (confounder_kind), selected by the name upstream.
+    if name == "bias_confounded":
+        # Additive confounder (cells 7/8) — byte-frozen; U-indexed action mixture.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
+    if name == "bias_confounded_action":
+        # Action-dependent confounder — marginally-matched swap policy.
+        return MarginallyMatchedConfoundedBehaviorPolicy(
+            agent, action_type, action_space, env, is_online=is_online, **kw
+        )
     raise ValueError(
         f"Unknown behavior policy '{name}'. Choose from: agent, anti_reward, "
         "bias_skew, bias_suboptimal, curiosity, bias_confounded, "

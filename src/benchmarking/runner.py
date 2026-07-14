@@ -310,8 +310,15 @@ class BenchmarkRunner:
             # action_gated (action-dependent cell) gates r += c_r*U on a==a_bad;
             # additive (default) is the byte-frozen cells-7/8 path.
             _kind = "action_gated" if _bp == "bias_confounded_action" else "additive"
+            if _kind == "action_gated":
+                # DECOUPLED: sigma scales the U->A edge (in the behavior policy)
+                # only; c_r on U->R is a fixed config field, invariant across sigma.
+                _c_r = getattr(env_cfg, "confounder_c_r", None)
+                _c_r = 1.0 if _c_r is None else float(_c_r)
+            else:
+                _c_r = _sigma  # additive cells 7/8: c_r = c_a = sigma (byte-frozen)
             self.train_env = ConfoundedCollectionWrapper(
-                self.train_env, c_a=_sigma, c_r=_sigma, confounder_kind=_kind
+                self.train_env, c_a=_sigma, c_r=_c_r, confounder_kind=_kind
             )
         self.eval_env = build_env(
             env_id=env_cfg.env_id,
@@ -405,6 +412,7 @@ class BenchmarkRunner:
                     act_space,
                     getattr(self.env_cfg, "behavior_strength", None),
                     env=self.train_env,
+                    is_online=True,  # runner collection is the online (do(a)) loop
                 )
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(

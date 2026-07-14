@@ -361,20 +361,26 @@ class OnlineSource(ExperienceSource):
         """
         last_batch = None
         for _ in range(n_steps):
-            actions = collection_policy.act(obs).action
+            act_out = collection_policy.act(obs)
+            actions = act_out.action
+            # intervened: emitted only by the marginally-matched confounded policy
+            # (None otherwise -> the transition dict is unchanged and the additive /
+            # default collection paths stay byte-identical / golden).
+            intervened = act_out.intervened
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             # store each env transition separately
             for i in range(n_envs):
-                replay_buffer.add(
-                    {
-                        "obs": obs[i].detach(),
-                        "actions": actions[i].detach(),
-                        "rewards": reward[i].detach(),
-                        "next_obs": next_obs[i].detach(),
-                        "dones": done[i].detach(),
-                    }
-                )
+                transition = {
+                    "obs": obs[i].detach(),
+                    "actions": actions[i].detach(),
+                    "rewards": reward[i].detach(),
+                    "next_obs": next_obs[i].detach(),
+                    "dones": done[i].detach(),
+                }
+                if intervened is not None:
+                    transition["intervened"] = intervened[i].detach()
+                replay_buffer.add(transition)
             obs = next_obs
 
             if len(replay_buffer) > max(warmup, batch_size):
