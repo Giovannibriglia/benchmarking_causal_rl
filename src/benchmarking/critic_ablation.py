@@ -71,10 +71,12 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # NON-ADAPTIVE sensitivity critic is EXEMPT (always blank) — its unconditional
     # Γ-bound is pessimism BY DESIGN, reported as ``pessimism_cost`` instead.
     "null_calibrated",
-    # PESSIMISM COST (sensitivity critic ONLY, at the origin): oracle_q_mean -
-    # apparent_q_mean = the value given up to the Γ-bound when there was NOTHING to
-    # be robust against (σ=0). A REPORTED RESULT, not a failure mode; blank
-    # off-origin and blank for every non-sensitivity critic.
+    # PESSIMISM COST (sensitivity critic ONLY, at EVERY σ): apparent_q(observational)
+    # - apparent_q(sensitivity) = the value the Γ-bound shrinks off the unconditional
+    # observational floor. Referenced against OBSERVATIONAL (not the oracle) so it is
+    # the cost of the bound, not the floor's estimator residual: EXACTLY 0 at Γ=1 by
+    # byte-identity. σ=0 = pure cost; σ>0 = the same shrinkage buying deconfounding
+    # robustness. A REPORTED RESULT; blank only for the non-sensitivity critics.
     "pessimism_cost",
 ]
 
@@ -578,6 +580,15 @@ class CriticAblationManager:
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")
+            # The observational floor is the REQUIRED baseline for the sensitivity
+            # critic's pessimism_cost (apparent_q(observational) - apparent_q(
+            # sensitivity)); reject a sensitivity ablation that omits it up front.
+            if "sensitivity" in strat and "observational" not in strat:
+                raise ValueError(
+                    "the sensitivity critic requires the 'observational' baseline in "
+                    "the ablation set (pessimism_cost is measured against it); add "
+                    "'observational' to --ablation-critics."
+                )
             self.strategy_critics = strat
             self.critics: Dict[str, AuxiliaryCritic] = {}  # V-head path unused
             self._eval_obs: torch.Tensor | None = None
@@ -722,14 +733,30 @@ class CriticAblationManager:
             q_oracle = q_all.gather(1, act_e.unsqueeze(-1)).squeeze(-1)
             pi_oracle = q_all.argmax(1)
 
-        # Observational->oracle MSE = the denominator for the gap-closed fraction.
-        obs_mse = None
+        # Observational baseline. Its apparent_q is the REFERENCE for pessimism_cost
+        # (the sensitivity Γ-bound shrinks off the observational floor, not off the
+        # oracle), and its oracle-gap MSE is the gap-closed denominator. Computed
+        # once, reused per row.
+        obs_mse = obs_apparent_q_mean = None
         obs_c = self.strategy_critics.get("observational")
-        if oracle is not None and obs_c is not None:
+        if obs_c is not None:
             q_obs = (
                 obs_c.predict_q_adj(obs_e).gather(1, act_e.unsqueeze(-1)).squeeze(-1)
             )
-            obs_mse = float(torch.mean((q_obs - q_oracle) ** 2).item())
+            obs_apparent_q_mean = float(q_obs.mean().item())
+            if q_oracle is not None:  # gap-closed denominator needs the oracle
+                obs_mse = float(torch.mean((q_obs - q_oracle) ** 2).item())
+        # The observational floor is REQUIRED whenever a sensitivity critic is
+        # present — it is the baseline pessimism_cost is measured against, not an
+        # optional companion.
+        if obs_apparent_q_mean is None and any(
+            c.spec.builder == "sensitivity" for c in self.strategy_critics.values()
+        ):
+            raise ValueError(
+                "the sensitivity critic requires an 'observational' baseline in the "
+                "ablation set: pessimism_cost = apparent_q(observational) - "
+                "apparent_q(sensitivity) is measured against it."
+            )
 
         for name, critic in self.strategy_critics.items():
             row = {col: "" for col in STRATEGY_CRITIC_ABLATION_COLUMNS}
@@ -749,26 +776,26 @@ class CriticAblationManager:
             # apply no MSM bound). Orthogonal to (β, σ) — logged, never path-encoded.
             if critic.spec.builder == "sensitivity":
                 row["gamma"] = float(critic.gamma)
+                # PESSIMISM COST at EVERY σ: apparent_q(observational) -
+                # apparent_q(sensitivity) — the value the Γ-bound shrinks off the
+                # unconditional observational floor. EXACTLY 0 at Γ=1 (byte-identity
+                # with observational), rising with Γ. σ=0 is pure cost (nothing to be
+                # robust against); at σ>0 the same shrinkage buys deconfounding
+                # robustness, so logging it across σ shows where robustness starts
+                # paying for itself — origin-only cannot produce that.
+                row["pessimism_cost"] = obs_apparent_q_mean - float(q_c.mean().item())
             if q_oracle is not None:
                 mse = float(torch.mean((q_c - q_oracle) ** 2).item())
                 tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
-                at_origin = float(sigma) == 0.0
-                is_sensitivity = critic.spec.builder == "sensitivity"
-                # NULL-CALIBRATION — ADAPTIVE critics only. At the (β=0, σ=0) origin
-                # observational/proximal/oracle_u each self-null (no correction /
-                # posterior->prior / A⊥U), so they must land within estimator noise
+                # NULL-CALIBRATION — ADAPTIVE critics only, at the (β=0, σ=0) origin.
+                # observational/proximal/oracle_u each self-null there (no correction
+                # / posterior->prior / A⊥U), so they must land within estimator noise
                 # of the oracle; a disagreement (e.g. a bare-DQN floor scored against
                 # a CQL oracle) is a base-learner confound the gate flags. The
                 # NON-ADAPTIVE sensitivity critic applies its Γ-bound unconditionally
                 # with no σ=0 detector, so it is EXEMPT (blank) — see pessimism_cost.
-                if at_origin and not is_sensitivity:
+                if float(sigma) == 0.0 and critic.spec.builder != "sensitivity":
                     row["null_calibrated"] = bool(mse < _GAP_NOISE_FLOOR_MSE)
-                # PESSIMISM COST (sensitivity only, at the origin): the value given
-                # up to the Γ-bound when there was NOTHING to be robust against.
-                # Exactly 0 at Γ=1 (byte-identity with observational), > 0 and rising
-                # with Γ. A reported result; blank off-origin and for other critics.
-                if at_origin and is_sensitivity:
-                    row["pessimism_cost"] = float((q_oracle.mean() - q_c.mean()).item())
                 row.update(
                     oracle_q_mean=float(q_oracle.mean().item()),
                     q_inflation=float((q_c.mean() - q_oracle.mean()).item()),

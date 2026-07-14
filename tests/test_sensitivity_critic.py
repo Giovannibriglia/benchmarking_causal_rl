@@ -15,9 +15,12 @@ proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin, so they must a
 with the oracle within estimator noise — the anti-artifact check that still
 catches a bare-DQN base confound (J5). The sensitivity critic is NON-ADAPTIVE (an
 unconditional worst-case Γ-bound, no σ=0 detector) so it is EXEMPT from the gate
-(J4'); its origin deviation is a REPORTED result, ``pessimism_cost`` = the value
-given up to the Γ-bound when there was nothing to be robust against, exactly 0 at
-Γ=1 (byte-identity with observational) and rising with Γ (J6).
+(J4'); its deviation is a REPORTED result, ``pessimism_cost`` =
+apparent_q(observational) - apparent_q(sensitivity), the value the Γ-bound shrinks
+off the floor. Referenced against OBSERVATIONAL (not the oracle) it is EXACTLY 0 at
+Γ=1 by byte-identity and rises with Γ (J6); logged at EVERY σ — σ=0 is pure cost,
+σ>0 is the same shrinkage buying deconfounding robustness. Observational is the
+REQUIRED baseline whenever sensitivity is present.
 """
 
 from __future__ import annotations
@@ -139,7 +142,7 @@ def test_j1_sensitivity_registered_flat_and_recurrent():
     assert rec.is_recurrent is True
 
     # appears as a strategy critic and in checkpoint output with Γ logged
-    mgr = _manager(["oracle_u", "sensitivity"])
+    mgr = _manager(["observational", "oracle_u", "sensitivity"])
     assert "sensitivity" in mgr.strategy_critics
     buf = _unconfounded_buffer(0)
     mgr.set_sequence_buffer(buf)
@@ -148,6 +151,12 @@ def test_j1_sensitivity_registered_flat_and_recurrent():
     assert "sensitivity" in rows
     assert rows["sensitivity"]["gamma"] == 2.0  # method param, logged as a column
     assert rows["oracle_u"]["gamma"] == ""  # non-sensitivity: no MSM bound -> blank
+
+
+def test_j1_sensitivity_requires_observational_baseline():
+    # the observational floor is the REQUIRED pessimism_cost baseline, not optional
+    with pytest.raises(ValueError, match="requires the 'observational' baseline"):
+        _manager(["oracle_u", "sensitivity"])
 
 
 # --------------------------------------------------------------------------- #
@@ -204,8 +213,9 @@ def test_j3_sensitivity_shares_base_algo_class(base, cls):
 def test_j4_prime_null_gate_adaptive_critics_only():
     # Controlled Q: the three adaptive critics land within estimator noise of the
     # oracle at σ=0 -> null_calibrated True. The NON-ADAPTIVE sensitivity critic is
-    # pessimistic BY DESIGN (apparent_q below the oracle), so it is EXEMPT from the
-    # gate: its null_calibrated is BLANK and its origin deviation is pessimism_cost.
+    # pessimistic BY DESIGN, so it is EXEMPT from the gate: its null_calibrated is
+    # BLANK and its deviation is reported as pessimism_cost (vs the observational
+    # floor) at EVERY σ.
     g = torch.Generator().manual_seed(7)
     base_q = torch.randn(30, _ACT, generator=g)
 
@@ -214,30 +224,37 @@ def test_j4_prime_null_gate_adaptive_critics_only():
             30, _ACT, generator=torch.Generator().manual_seed(seed)
         )
 
+    # observational is the pessimism_cost reference — give it an exact value so the
+    # cost is deterministic: apparent_q(observational) - apparent_q(sensitivity).
     stubs = [
         _StubCritic("oracle_u", base_q, "oracle_u"),
-        _StubCritic("observational", near(11), "observational"),
+        _StubCritic("observational", base_q, "observational"),
         _StubCritic("proximal", near(12), "proximal"),
         _StubCritic("sensitivity", base_q - 0.4, "sensitivity", gamma=2.0),  # pessim.
     ]
     rows0 = _rows_with_stubs(stubs, sigma=0.0)
 
-    # the three adaptive critics: gate applies and PASSES
+    # the three adaptive critics: gate applies and PASSES; no pessimism column
     for name in ("oracle_u", "observational", "proximal"):
         assert rows0[name]["null_calibrated"] is True, name
         assert float(rows0[name]["value_mse_to_oracle"]) < _GAP_NOISE_FLOOR_MSE
         assert rows0[name]["pessimism_cost"] == ""  # adaptive: no pessimism column
 
-    # sensitivity: EXEMPT from the gate (blank), reports pessimism_cost > 0 instead
+    # sensitivity: EXEMPT from the gate (blank), reports pessimism_cost vs the
+    # observational floor = apparent_q(obs) - apparent_q(sens) = 0.4.
     assert rows0["sensitivity"]["null_calibrated"] == ""
     assert float(rows0["sensitivity"]["pessimism_cost"]) == pytest.approx(0.4, abs=1e-5)
     assert rows0["sensitivity"]["gamma"] == 2.0
 
-    # off-origin: BOTH origin-only columns are undefined -> blank for everyone
+    # off-origin: null_calibrated is undefined (blank), but pessimism_cost is logged
+    # at EVERY σ (the σ>0 half is where the shrinkage buys robustness).
     rows_off = _rows_with_stubs(stubs, sigma=0.5)
     for name in ("oracle_u", "observational", "proximal", "sensitivity"):
         assert rows_off[name]["null_calibrated"] == "", name
-        assert rows_off[name]["pessimism_cost"] == "", name
+    assert float(rows_off["sensitivity"]["pessimism_cost"]) == pytest.approx(
+        0.4, abs=1e-5
+    )
+    assert rows_off["observational"]["pessimism_cost"] == ""  # non-sensitivity: blank
 
 
 # --------------------------------------------------------------------------- #
@@ -272,36 +289,39 @@ def test_j6_pessimism_cost_zero_at_gamma1_and_rises_with_gamma():
     oracle = fit(CRITIC_LIBRARY["oracle_u"])
     observ = fit(CRITIC_LIBRARY["observational"])
     eval_set = torch.randn(30, _OBS, generator=torch.Generator().manual_seed(99))
+    eval_act = torch.randint(0, _ACT, (30,), generator=torch.Generator().manual_seed(5))
 
-    def pessimism_cost(gamma):
+    def pessimism_cost(gamma, sigma=0.0):
         sens = fit(sens_spec(gamma))
-        mgr = _manager(["oracle_u"])  # any real init; overwritten for the score
-        mgr.strategy_critics = {"oracle_u": oracle, "sensitivity": sens}
-        mgr._eval_obs, mgr._eval_act = (
-            eval_set,
-            torch.randint(0, _ACT, (30,), generator=torch.Generator().manual_seed(5)),
-        )
+        mgr = _manager(["observational", "oracle_u"])  # init; overwritten below
+        mgr.strategy_critics = {
+            "observational": observ,  # the REQUIRED pessimism_cost baseline
+            "oracle_u": oracle,
+            "sensitivity": sens,
+        }
+        mgr._eval_obs, mgr._eval_act = eval_set, eval_act
         row = {
-            r["critic"]: r for r in mgr.checkpoint_rows_strategy(1, "cql", "X", 0.0)
+            r["critic"]: r for r in mgr.checkpoint_rows_strategy(1, "cql", "X", sigma)
         }["sensitivity"]
-        assert row["null_calibrated"] == ""  # exempt at every Γ
+        assert row["null_calibrated"] == ""  # exempt at every Γ and σ
         return float(row["pessimism_cost"]), sens
 
     pc1, sens1 = pessimism_cost(1.0)
     pc2, _ = pessimism_cost(2.0)
     pc4, _ = pessimism_cost(4.0)
 
-    # Γ=1 = the byte-identity ANCHOR: sensitivity(Γ=1) IS the CQL observational
-    # floor (the reweighter early-returns), so the Γ-bound gives up EXACTLY nothing
-    # over the no-bound baseline. The marginal cost at Γ=1 is exactly 0 —
-    # deterministic, no convergence needed. This is the anchor, not the default.
+    # Γ=1 anchor: sensitivity(Γ=1) IS the CQL observational floor (the reweighter
+    # early-returns), so pessimism_cost = apparent_q(obs) - apparent_q(sens) is
+    # EXACTLY 0 by byte-identity — deterministic, no convergence assumption.
     assert torch.equal(sens1.predict_q_adj(eval_set), observ.predict_q_adj(eval_set))
+    assert pc1 == 0.0  # exact equality, not approx
 
-    # pessimism_cost (oracle-referenced) RISES with Γ: each higher bound gives up
-    # strictly more value at the origin, where there was nothing to be robust
-    # against. pc1 is the floor's own oracle-gap (= 0 once observational nulls onto
-    # the oracle in a converged run); pc2, pc4 add strictly positive pessimism.
+    # rising with Γ: each higher bound shrinks strictly more value off the floor.
     assert pc1 < pc2 < pc4
+
+    # LOGGED at σ>0 too (non-blank) — the half where the shrinkage buys robustness.
+    pc2_off, _ = pessimism_cost(2.0, sigma=0.5)
+    assert pc2_off == pytest.approx(pc2, abs=1e-6)  # data-derived, σ-independent here
 
 
 # --------------------------------------------------------------------------- #
