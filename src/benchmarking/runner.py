@@ -417,6 +417,9 @@ class BenchmarkRunner:
                     # epsilon): keeps the online basic policy stationary and the basic /
                     # confounded origin identical.
                     pi_basic_epsilon=getattr(self.env_cfg, "pi_basic_epsilon", None),
+                    continuous_noise_scale=getattr(
+                        self.env_cfg, "continuous_noise_scale", None
+                    ),
                 )
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(

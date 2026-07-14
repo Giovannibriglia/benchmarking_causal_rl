@@ -449,10 +449,11 @@ _CONF_EPS = 1e-8
 # 0.5 keeps a real preference (argmax gets 0.75, the other 0.25) while holding p away
 # from 0 so corr(1[a=a_bad], U) = sigma*sqrt(p(1-p)) stays visible.
 PI_BASIC_EPSILON_DEFAULT = 0.5
-# Default continuous confounding scale. NOT 1.0 (delta = min(a0-lo, hi-a0) would push
-# every mid-range action exactly onto a bound at sigma=1, destroying the policy): 0.2
-# is a small, reported perturbation.
-CONF_BASE_SCALE_DEFAULT = 0.2
+# Default FIXED exploration noise scale for the continuous pi_basic = N(mu, s^2)
+# (the analogue of pi_basic_epsilon): the partition swap resamples from pi_basic's OWN
+# support, so a deterministic base (s -> 0) gives a DEGENERATE partition (all mass at
+# mu, no confounding), exactly as eps -> 0 gives p in {0,1} discretely.
+CONTINUOUS_NOISE_SCALE_DEFAULT = 0.3
 
 
 def _pi_basic_probs(
@@ -560,16 +561,22 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
     VANISHES where ``pi_basic`` is deterministic — an action always/never taken cannot
     be confounded without moving the marginal.
 
-    Continuous: a BOUNDED mean-preserving reflection reading ``[lo, hi]`` from the
-    action space. ``delta(a0) = base_scale * min(a0-lo, hi-a0)``; ``a = a0`` with prob
-    ``1-sigma`` (kept), else ``a = a0 + (2U-1)*delta(a0)``. Both branches lie in
-    ``[lo, hi]`` BY CONSTRUCTION (``base_scale in [0,1]``), so the env's clip is a
-    no-op and the marginal MEAN is preserved. ``base_scale`` defaults to ``0.2`` (1.0
-    would push mid-range actions onto a bound at ``sigma=1``). NOTE: the reflection
-    preserves the MEAN, not the full distribution — under a nonlinear reward a
-    mean-preserving spread costs return, so the c_r=0 return-equivalence gate
-    (orthogonality) holds for the discrete swap but NOT for this continuous
-    construction; a distribution-preserving continuous confounder is future work.
+    This is the binary PARTITION SWAP with cells ``{a_good}``, ``{a_bad}`` and cell
+    indicator ``h``; the continuous branch is the SAME construction on the median
+    partition, so both are DISTRIBUTION-preserving (not merely mean-preserving).
+
+    Continuous: ``pi_basic = N(mu(s), s^2)`` with ``mu(s)`` the base policy's mean
+    action and ``s = continuous_noise_scale`` a FIXED exploration std (the analogue of
+    ``pi_basic_epsilon``; a deterministic base gives a degenerate partition). The cells
+    are ``{a < mu}`` / ``{a >= mu}`` (median split, ``pbar = 1/2``), ``h`` the sign of
+    ``sum(a - mu)``. With prob ``1-sigma`` keep ``a0 ~ pi_basic``; with prob ``sigma``
+    draw the target cell ``h' = 1`` w.p. ``pbar(2-pbar)`` (U=1) / ``pbar^2`` (U=0) and
+    RESAMPLE ``a' ~ pi_basic( . | h=h')`` (a fresh ``N(mu, s^2)`` draw reflected across
+    ``mu`` into the target half). ``E_U[P(h'=1)] = pbar`` and within a cell the draw is
+    ``pi_basic`` restricted to it, so the marginal is ``pi_basic`` EXACTLY. Resampling
+    from ``pi_basic``'s OWN support means NO clipping and NO saturation. The reward gate
+    for continuous is ``r += c_r * U * 1[h(a) == 1]`` (the policy exposes ``h`` to the
+    wrapper via ``env.current_h``). Squash after, if the algorithm squashes.
 
     ``intervened`` (per element): ``is_online AND (c == 0)`` — True only where the
     learner's own action executed under an online regime. Offline it is False
@@ -593,7 +600,7 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         strength: float = 1.0,
         a_bad: int = 1,
         a_good: int = 0,
-        base_scale: float = CONF_BASE_SCALE_DEFAULT,
+        continuous_noise_scale: float = CONTINUOUS_NOISE_SCALE_DEFAULT,
         pi_basic_epsilon: float = PI_BASIC_EPSILON_DEFAULT,
         is_online: bool = False,
     ) -> None:
@@ -604,8 +611,8 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         self.strength = float(strength)
         self.a_bad = int(a_bad)
         self.a_good = int(a_good)
-        # base_scale in [0,1] so the bounded reflection stays within [lo,hi].
-        self.base_scale = min(max(float(base_scale), 0.0), 1.0)
+        # FIXED continuous exploration std defining pi_basic = N(mu, s^2).
+        self.continuous_noise_scale = max(float(continuous_noise_scale), 0.0)
         # SHARED fixed exploration defining pi_basic (same object as the basic arm's).
         self.pi_basic_epsilon = min(max(float(pi_basic_epsilon), 0.0), 1.0)
         self.is_online = bool(is_online)
@@ -616,13 +623,6 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         return _pi_basic_probs(
             self.agent, obs, self.action_space, self.pi_basic_epsilon
         )
-
-    def _action_bounds(self, ref: torch.Tensor):
-        """``(lo, hi)`` from the continuous action space, broadcastable to ``ref``."""
-        space = self.action_space
-        lo = torch.as_tensor(space.low, dtype=ref.dtype, device=ref.device)
-        hi = torch.as_tensor(space.high, dtype=ref.dtype, device=ref.device)
-        return lo, hi
 
     def _intervened(self, coin_fired: torch.Tensor) -> torch.Tensor:
         if self.is_online:
@@ -653,15 +653,33 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
             action = torch.where(redraw, pair_action, a0)
             return ActionOutput(action=action, intervened=self._intervened(coin))
 
-        # continuous: BOUNDED mean-preserving reflection. delta shrinks to 0 at the
-        # bounds so a0 +/- delta stays in [lo, hi] -> the env clip is a no-op and the
-        # post-step marginal mean is a0 for every sigma (the +/- cancel under U).
-        a0 = self.agent.act(obs).action
-        lo, hi = self._action_bounds(a0)
-        delta = self.base_scale * torch.minimum(a0 - lo, hi - a0).clamp_min(0.0)
-        sign = (2.0 * u - 1.0).unsqueeze(-1)
-        perturbed = a0 + sign * delta
-        action = torch.where(coin.unsqueeze(-1), perturbed, a0)
+        # continuous: PARTITION SWAP on the MEDIAN split of pi_basic = N(mu, s^2).
+        # Distribution-preserving: the redraw resamples FROM pi_basic restricted to the
+        # target half (reflect a fresh N(mu, s^2) draw across mu), so no clipping / no
+        # saturation, and E_U over the cell weights returns pi_basic exactly.
+        mu = self.agent.act(obs, deterministic=True).action  # pi_basic mean
+        s = self.continuous_noise_scale
+        a0 = mu + s * torch.randn_like(mu)  # a0 ~ pi_basic
+        pbar = 0.5  # median split -> P(upper cell) = 1/2
+        # target cell h' (1 = upper): pbar(2-pbar) if U==1 else pbar^2.
+        w = torch.where(
+            u > 0.5,
+            torch.full_like(u, pbar * (2.0 - pbar)),
+            torch.full_like(u, pbar * pbar),
+        )
+        h_prime = torch.rand(b, device=obs.device) < w  # bool [B]
+        cand = mu + s * torch.randn_like(mu)  # fresh pi_basic draw
+        cand_upper = (cand - mu).sum(dim=-1) >= 0  # its cell
+        # reflect across mu into the target cell (sign-symmetric -> pi_basic|cell).
+        flip = cand_upper != h_prime
+        cand = torch.where(flip.unsqueeze(-1), 2.0 * mu - cand, cand)
+        action = torch.where(coin.unsqueeze(-1), cand, a0)
+        # expose the executed action's cell h(a) = 1[a >= mu] for the reward gate.
+        h_action = ((action - mu).sum(dim=-1) >= 0).to(action.dtype)
+        try:
+            self.env.current_h = h_action
+        except AttributeError:
+            pass
         return ActionOutput(action=action, intervened=self._intervened(coin))
 
 
@@ -713,6 +731,7 @@ def build_collection_policy(
     env=None,
     is_online: bool = False,
     pi_basic_epsilon: float | None = None,
+    continuous_noise_scale: float | None = None,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
     primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
@@ -732,6 +751,11 @@ def build_collection_policy(
     if name == "pi_basic":
         eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
         return PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
+    conf_kw = {}
+    if pi_basic_epsilon is not None:
+        conf_kw["pi_basic_epsilon"] = float(pi_basic_epsilon)
+    if continuous_noise_scale is not None:
+        conf_kw["continuous_noise_scale"] = float(continuous_noise_scale)
     kw = {} if strength is None else {_STRENGTH_PARAM[name]: float(strength)}
     if name == "anti_reward":
         return AntiRewardBehaviorPolicy(agent, action_type, action_space, **kw)
@@ -745,15 +769,11 @@ def build_collection_policy(
         # Additive confounder (cells 7/8) — byte-frozen; U-indexed action mixture.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
     if name == "bias_confounded_action":
-        # Action-dependent confounder — the U-swap on top of the SHARED pi_basic
-        # (same fixed pi_basic_epsilon as the basic arm, None -> the policy default).
-        eps_kw = (
-            {}
-            if pi_basic_epsilon is None
-            else {"pi_basic_epsilon": float(pi_basic_epsilon)}
-        )
+        # Action-dependent confounder — the U partition-swap on top of the SHARED
+        # pi_basic (same fixed pi_basic_epsilon / continuous_noise_scale as the basic
+        # arm; None -> the policy defaults).
         return MarginallyMatchedConfoundedBehaviorPolicy(
-            agent, action_type, action_space, env, is_online=is_online, **kw, **eps_kw
+            agent, action_type, action_space, env, is_online=is_online, **kw, **conf_kw
         )
     raise ValueError(
         f"Unknown behavior policy '{name}'. Choose from: agent, pi_basic, anti_reward, "

@@ -71,6 +71,9 @@ class ConfoundedCollectionWrapper:
             self._gen = torch.Generator(device=self.device)
             self._gen.manual_seed(int(seed))
         self.current_u = self._sample_u()
+        # Continuous action_gated cell indicator h(a), set per-step by the paired
+        # partition-swap policy; None keeps the discrete a_bad gate (byte-frozen).
+        self.current_h = None
 
     def __getattr__(self, name):
         # Delegate everything not overridden (obs_space, act_space, close,
@@ -99,8 +102,15 @@ class ConfoundedCollectionWrapper:
         # produced it), then expose U; obs is passed through untouched.
         if self.confounder_kind == "additive":
             reward = reward + self.c_r * self.current_u  # cells 7/8 — BYTE-FROZEN
-        else:  # action_gated: shift ONLY on the a_bad transitions (U changes argmax)
-            gate = (action == self.a_bad).to(reward.dtype)
+        else:  # action_gated: shift ONLY on the "upper cell" (h==1) transitions
+            # Continuous: the paired policy exposes the executed action's cell
+            # h(a)=1[a>=median] via current_h (the discrete a_bad indicator has no
+            # median). Discrete falls back to action==a_bad -> byte-frozen (cell 9).
+            h = getattr(self, "current_h", None)
+            if h is not None:
+                gate = h.to(reward.dtype)
+            else:
+                gate = (action == self.a_bad).to(reward.dtype)
             reward = reward + self.c_r * self.current_u * gate
         info = {**info, "confounder_u": self.current_u.clone()}
         # Resample U for sub-envs whose episode just ended (after perturbing the

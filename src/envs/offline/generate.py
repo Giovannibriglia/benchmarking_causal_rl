@@ -328,6 +328,7 @@ def generate_offline_dataset(
     behavior_strength: float | None = None,
     confounder_c_r: float | None = None,
     pi_basic_epsilon: float | None = None,
+    continuous_noise_scale: float | None = None,
     fraction: float = 1.0 / 3.0,
     train_episodes: int = 50,
     n_checkpoints: int = 10,
@@ -410,6 +411,7 @@ def generate_offline_dataset(
             behavior_strength,
             env=rollout_env,
             pi_basic_epsilon=pi_basic_epsilon,
+            continuous_noise_scale=continuous_noise_scale,
         )
 
     buffers, sig_samples = _rollout(

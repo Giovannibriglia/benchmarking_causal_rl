@@ -1,15 +1,21 @@
 """PR 1 — marginally-matched action-dependent confounder (behavior-policy core).
 
-Locks the three fixed definitions the old confounded policy violated:
-  T1  marginal matching: E_U[pi_b(.|s,U)] == pi_basic(.|s) EXACTLY (incl. p=0.9,
-      the case an additive-shift-with-clamp implementation fails);
-  T2  U->A edge is live and monotone in sigma (0 at sigma=0);
-  T3  c_r (U->R) is decoupled from sigma -> reward shift on a_bad|U=1 invariant;
-  T4  intervened == (online AND agent's own action) -> mean ~= 1-sigma online, 0 offline.
-Plus T5: the continuous mean-preserving construction.
+The confounder is a binary PARTITION SWAP applied on top of the SHARED pi_basic
+(fixed epsilon / noise scale), unified across discrete (cells {a_good},{a_bad}) and
+continuous (median split), distribution-preserving in both.
 
-All reference ``MarginallyMatchedConfoundedBehaviorPolicy`` / the decoupled
-``build_rollout_env(c_r=...)`` seam, both new in this PR, so the module fails on master.
+  T1  marginal matching: E_U[pi_b(.|s,U)] == pi_basic(.|s) EXACTLY (incl. p=0.9);
+  T2  U->A edge live and monotone in sigma (0 at sigma=0);
+  T3  c_r (U->R) decoupled from sigma -> reward shift on a_bad|U=1 invariant;
+  T4  intervened == (online AND agent's own action) -> mean ~= 1-sigma online, 0 offline;
+  T5  continuous partition swap is distribution-preserving and needs a fixed noise scale;
+  B1  shared origin: basic (pi_basic) == confounded at sigma=0;
+  B2  default pi_basic_epsilon retains preference (not uniform random);
+  B4' per-state action-dist equivalence (isolated from state-visitation via fixed
+      states + resample-U): discrete |dP| and continuous KS ~ MC floor; a reflection
+      FAILS the continuous KS (the point);
+  B4'' coverage comparability: confounding keeps coverage ~ basic across sigma while
+      bias degrades it with beta (the empirical orthogonality claim).
 """
 
 from __future__ import annotations
@@ -21,15 +27,26 @@ from gymnasium.spaces import Discrete
 from src.envs.offline.generate import build_rollout_env
 from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 from src.rl.base import ActionOutput
+from src.rl.off_policy.identification import Proximal
 from src.rl.policies.behavior_policy import (
     MarginallyMatchedConfoundedBehaviorPolicy,
     PiBasicBehaviorPolicy,
+    SkewBehaviorPolicy,
 )
 
 CPU = torch.device("cpu")
 A_GOOD, A_BAD = 0, 1
 SIGMAS = [0.0, 0.25, 0.5, 0.75, 1.0]
 N = 40000  # MC batch; error ~ sqrt(.25/N) ~ 0.0025 << the 0.02 tolerances
+
+
+def _ks(x, y):
+    """Two-sample KS statistic (max |CDF_x - CDF_y|)."""
+    a = np.concatenate([x, y])
+    a.sort()
+    cx = np.searchsorted(np.sort(x), a, side="right") / len(x)
+    cy = np.searchsorted(np.sort(y), a, side="right") / len(y)
+    return float(np.max(np.abs(cx - cy)))
 
 
 class _ProbAgent:
@@ -39,14 +56,13 @@ class _ProbAgent:
         self.p = float(p)
 
     def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
-        b = obs.shape[0]
-        return torch.tensor([[1.0 - self.p, self.p]]).repeat(b, 1)
+        return torch.tensor([[1.0 - self.p, self.p]]).repeat(obs.shape[0], 1)
 
 
 class _MeanAgent:
-    """Continuous agent emitting a fixed action (the pi_basic mean)."""
+    """Continuous agent emitting a fixed mean action (the pi_basic mean mu)."""
 
-    def __init__(self, mean: float, dim: int = 2) -> None:
+    def __init__(self, mean: float, dim: int = 1) -> None:
         self.mean = float(mean)
         self.dim = dim
 
@@ -55,23 +71,44 @@ class _MeanAgent:
 
 
 class _UEnv:
-    """Minimal confounder-env stand-in: exposes ``current_u`` (the test resamples
-    it to Bernoulli(0.5) each round so the marginalization is over U)."""
+    """Minimal confounder-env stand-in: exposes ``current_u`` (resampled to
+    Bernoulli(0.5) per round) and receives ``current_h`` from the continuous policy."""
 
     def __init__(self, n: int) -> None:
         self.n_envs = n
         self.device = CPU
         self.current_u = torch.zeros(n)
+        self.current_h = None
 
     def draw_u(self, seed: int) -> None:
         g = torch.Generator().manual_seed(seed)
         self.current_u = torch.bernoulli(torch.full((self.n_envs,), 0.5), generator=g)
 
 
-def _policy(p: float, sigma: float, env, *, is_online: bool):
-    # A mock exposing action_probs IS pi_basic directly (pi_basic_epsilon is ignored
-    # for the action_probs / distribution seams), so the marginal / corr assertions can
-    # target a known p.
+class _FixedDQN:
+    """DQN-like base: a_bad is greedy; ANNEALED epsilon is tiny (must NOT be read)."""
+
+    epsilon = 0.001
+
+    def q_network(self, obs):
+        return torch.tensor([[0.0, 1.0]]).repeat(obs.shape[0], 1)  # argmax = a_bad
+
+
+class _AngleQ:
+    """State-DEPENDENT CartPole base: prefer the action reducing the pole angle."""
+
+    def q_network(self, obs):
+        return torch.stack([-obs[:, 2], obs[:, 2]], dim=-1)
+
+
+class _PendCtrl:
+    """Deterministic Pendulum base controller (a non-trivial continuous mu(s))."""
+
+    def act(self, obs, *a, **k):
+        return ActionOutput(action=(2.0 * obs[:, 1] - 0.5 * obs[:, 2]).unsqueeze(-1))
+
+
+def _policy(p, sigma, env, *, is_online):
     return MarginallyMatchedConfoundedBehaviorPolicy(
         _ProbAgent(p),
         "discrete",
@@ -85,7 +122,7 @@ def _policy(p: float, sigma: float, env, *, is_online: bool):
 
 
 # ---------------------------------------------------------------------------
-# T1 — marginal matching (EXACT, no clipping), including p=0.9.
+# T1 — marginal matching (EXACT), including p=0.9.
 # ---------------------------------------------------------------------------
 def test_t1_marginal_matches_pi_basic_across_sigma_and_p():
     obs = torch.zeros(N, 2)
@@ -93,23 +130,20 @@ def test_t1_marginal_matches_pi_basic_across_sigma_and_p():
         for sigma in SIGMAS:
             torch.manual_seed(0)
             env = _UEnv(N)
-            env.draw_u(seed=1)  # U ~ Bernoulli(0.5), iid across the N envs
-            pol = _policy(p, sigma, env, is_online=False)
-            a = pol.act(obs).action
-            p_bad = (a == A_BAD).float().mean().item()
-            tv = abs(p_bad - p)  # binary TV == |P(a_bad) - p|
-            assert tv < 0.02, f"p={p} sigma={sigma}: TV={tv:.4f} (marginal drifted)"
+            env.draw_u(seed=1)
+            a = _policy(p, sigma, env, is_online=False).act(obs).action
+            tv = abs((a == A_BAD).float().mean().item() - p)
+            assert tv < 0.02, f"p={p} sigma={sigma}: TV={tv:.4f}"
 
 
 # ---------------------------------------------------------------------------
 # T2 — U->A edge: ~0 at sigma=0, monotone increasing in sigma.
 # ---------------------------------------------------------------------------
-def _corr_abad_u(p: float, sigma: float) -> float:
+def _corr_abad_u(p, sigma):
     torch.manual_seed(0)
     env = _UEnv(N)
     env.draw_u(seed=2)
-    pol = _policy(p, sigma, env, is_online=False)
-    a = pol.act(torch.zeros(N, 2)).action
+    a = _policy(p, sigma, env, is_online=False).act(torch.zeros(N, 2)).action
     ab = (a == A_BAD).float().numpy()
     u = env.current_u.numpy()
     if ab.std() < 1e-8 or u.std() < 1e-8:
@@ -119,19 +153,17 @@ def _corr_abad_u(p: float, sigma: float) -> float:
 
 def test_t2_u_to_a_edge_live_and_monotone():
     corrs = [_corr_abad_u(0.5, s) for s in SIGMAS]
-    assert abs(corrs[0]) < 0.02, f"sigma=0 should have no U->A edge, got {corrs[0]:.4f}"
+    assert abs(corrs[0]) < 0.02, corrs
     for lo, hi in zip(corrs, corrs[1:]):
-        assert hi > lo - 1e-3, f"non-monotone U->A edge across sigma: {corrs}"
-    assert corrs[-1] > 0.2, f"sigma=1 U->A edge too weak: {corrs[-1]:.4f}"
+        assert hi > lo - 1e-3, corrs
+    assert corrs[-1] > 0.2, corrs[-1]
 
 
 # ---------------------------------------------------------------------------
 # T3 — c_r (U->R) decoupled from sigma: reward shift on a_bad|U=1 invariant.
 # ---------------------------------------------------------------------------
 class _ZeroRewardEnv:
-    """Clean reward 0 -> the whole reward IS the confounder's shift."""
-
-    def __init__(self, n: int = 4) -> None:
+    def __init__(self, n=4):
         self.n_envs = n
         self.device = CPU
 
@@ -144,7 +176,6 @@ class _ZeroRewardEnv:
 
 
 def test_t3_c_r_invariant_across_sigma():
-    # Direct wrapper: fixed c_r -> shift on a_bad|U=1 is c_r for every sigma.
     shifts = []
     for sigma in SIGMAS:
         w = ConfoundedCollectionWrapper(
@@ -157,10 +188,8 @@ def test_t3_c_r_invariant_across_sigma():
         w.current_u = torch.ones(4)
         _, reward, *_ = w.step(torch.full((4,), A_BAD))
         shifts.append(float(reward[0].item()))
-    assert all(abs(s - 1.0) < 1e-9 for s in shifts), f"c_r drifted with sigma: {shifts}"
+    assert all(abs(s - 1.0) < 1e-9 for s in shifts), shifts
 
-    # Construction seam: build_rollout_env keeps c_r fixed while sigma sweeps
-    # (action_gated), and STILL couples c_r=sigma for the byte-frozen additive path.
     from src.envs.registry import register_default_env_wrappers
 
     register_default_env_wrappers()
@@ -170,7 +199,7 @@ def test_t3_c_r_invariant_across_sigma():
         )
         assert abs(float(env_ag.c_r) - 1.0) < 1e-9, (sigma, env_ag.c_r)
         env_add = build_rollout_env("CartPole-v1", 1, CPU, 0, "bias_confounded", sigma)
-        assert abs(float(env_add.c_r) - sigma) < 1e-9, "additive c_r must stay = sigma"
+        assert abs(float(env_add.c_r) - sigma) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -184,72 +213,64 @@ def test_t4_intervened_fraction():
         env.draw_u(seed=3)
         online = _policy(0.5, sigma, env, is_online=True).act(obs)
         assert online.intervened is not None and online.intervened.dtype == torch.bool
-        mean_iv = online.intervened.float().mean().item()
-        assert abs(mean_iv - (1.0 - sigma)) < 0.02, (sigma, mean_iv)
-
+        assert abs(online.intervened.float().mean().item() - (1.0 - sigma)) < 0.02
         offline = _policy(0.5, sigma, env, is_online=False).act(obs)
-        assert offline.intervened is not None
-        assert offline.intervened.float().mean().item() == 0.0, sigma
+        assert offline.intervened.float().mean().item() == 0.0
 
 
 # ---------------------------------------------------------------------------
-# T5 — continuous BOUNDED reflection: mean preserved AFTER env clipping, a0 near
-# the bound, on a REAL bounded env (Pendulum). This asserts the post-step
-# quantity (clip(action) = what the env applies), the thing that broke under the
-# old unbounded `a0 + base_scale*(2U-1)`.
+# T5 — continuous partition swap: distribution-preserving marginal, and DEGENERATE
+# without a fixed noise scale (the continuous analogue of eps -> 0 => p in {0,1}).
 # ---------------------------------------------------------------------------
-def _continuous_pol(agent, action_space, env, sigma, *, is_online=True):
-    return MarginallyMatchedConfoundedBehaviorPolicy(
-        agent,
-        "continuous",
-        action_space,
-        env,
-        strength=sigma,
-        base_scale=1.0,
-        is_online=is_online,
-    )
-
-
-def test_t5_continuous_bounded_reflection_preserves_post_clip_mean():
+def test_t5_continuous_partition_swap_marginal_and_needs_scale():
     import gymnasium as gym
 
-    penv = gym.make("Pendulum-v1")  # real bounded env, action_space = Box([-2],[2])
-    space = penv.action_space
-    lo = torch.as_tensor(space.low)
-    hi = torch.as_tensor(space.high)
-    a0_val = 1.9  # NEAR the +2.0 bound: the confident case an env clip would wreck
+    space = gym.make("Pendulum-v1").action_space
     obs = torch.zeros(N, 1)
-    for sigma in SIGMAS:
+    mu = 0.4
+    # Basic pi_basic samples: mu + s*z. Confounded marginal (over U) must match it.
+    torch.manual_seed(0)
+    basic_a = (mu + 0.5 * torch.randn(N, 1)).reshape(-1).numpy()
+    for sigma in (0.5, 1.0):
         torch.manual_seed(0)
         env = _UEnv(N)
         env.draw_u(seed=4)
-        out = _continuous_pol(_MeanAgent(a0_val, dim=1), space, env, sigma).act(obs)
-        act = out.action
-        # bounded BY CONSTRUCTION -> the env's clip is a no-op -> post-step == emitted.
-        assert (act >= lo - 1e-5).all() and (act <= hi + 1e-5).all(), sigma
-        realized = torch.clamp(act, lo, hi)  # exactly what Pendulum applies in step()
-        assert abs(realized.mean().item() - a0_val) < 0.02, (sigma, realized.mean())
-        assert abs(out.intervened.float().mean().item() - (1.0 - sigma)) < 0.02
+        pol = MarginallyMatchedConfoundedBehaviorPolicy(
+            _MeanAgent(mu),
+            "continuous",
+            space,
+            env,
+            strength=sigma,
+            continuous_noise_scale=0.5,
+        )
+        a = pol.act(obs).action.reshape(-1).numpy()
+        # distribution-preserving: KS(confounded marginal, pi_basic) near the MC floor.
+        assert _ks(a, basic_a) < 0.03, (sigma, _ks(a, basic_a))
+        assert (env.current_h is not None) and env.current_h.shape[0] == N
 
-    # A near-bound action is accepted and applied UNCLIPPED by a real env.step.
-    penv.reset(seed=0)
-    env1 = _UEnv(1)
-    env1.current_u = torch.ones(1)
-    a = (
-        _continuous_pol(_MeanAgent(a0_val, dim=1), space, env1, 1.0)
-        .act(torch.zeros(1, 1))
+    # noise_scale -> 0 gives a DEGENERATE partition: all actions collapse onto mu.
+    torch.manual_seed(0)
+    env = _UEnv(N)
+    env.draw_u(seed=4)
+    deg = (
+        MarginallyMatchedConfoundedBehaviorPolicy(
+            _MeanAgent(mu),
+            "continuous",
+            space,
+            env,
+            strength=1.0,
+            continuous_noise_scale=0.0,
+        )
+        .act(obs)
         .action
     )
-    assert (a >= lo).all() and (a <= hi).all()
-    penv.step(a.reshape(-1).numpy())
-    penv.close()
+    assert deg.sub(mu).abs().max().item() < 1e-6
 
 
 # ---------------------------------------------------------------------------
-# R2 — the confounding-signal magnitude and its entropy pinning.
+# The confounding-signal magnitude and pi_basic entropy.
 # ---------------------------------------------------------------------------
-def test_r2_corr_matches_sigma_sqrt_p_1_minus_p():
-    """corr(1[a==a_bad], U) == sigma*sqrt(p(1-p)) within MC error (the visible signal)."""
+def test_corr_matches_sigma_sqrt_p_1_minus_p():
     obs = torch.zeros(N, 2)
     for p in (0.1, 0.3, 0.5):
         for sigma in (0.25, 0.5, 1.0):
@@ -257,29 +278,17 @@ def test_r2_corr_matches_sigma_sqrt_p_1_minus_p():
             env = _UEnv(N)
             env.draw_u(seed=5)
             a = _policy(p, sigma, env, is_online=False).act(obs).action
-            ab = (a == A_BAD).float().numpy()
-            u = env.current_u.numpy()
-            corr = float(np.corrcoef(ab, u)[0, 1])
-            expected = sigma * np.sqrt(p * (1.0 - p))
-            assert abs(corr - expected) < 0.015, (p, sigma, corr, expected)
+            corr = float(
+                np.corrcoef((a == A_BAD).float().numpy(), env.current_u.numpy())[0, 1]
+            )
+            assert abs(corr - sigma * np.sqrt(p * (1.0 - p))) < 0.015, (p, sigma, corr)
 
 
-class _FixedDQN:
-    """DQN-like base: a_bad is the greedy action; ANNEALED epsilon is tiny. Only
-    q_network + the FIXED pi_basic_epsilon should be read, never `epsilon`."""
-
-    epsilon = 0.001  # if inherited, p ~= 0.0005 -> confounding invisible
-
-    def q_network(self, obs):
-        return torch.tensor([[0.0, 1.0]]).repeat(obs.shape[0], 1)  # argmax = a_bad
-
-
-def test_r2_dqn_uses_fixed_pi_basic_epsilon_not_decaying():
+def test_dqn_uses_fixed_pi_basic_epsilon_not_decaying():
     obs = torch.zeros(N, 2)
     torch.manual_seed(0)
     env = _UEnv(N)
     env.draw_u(seed=7)
-    # default pi_basic_epsilon = 0.5 => eps-greedy: p(a_bad) = 1-0.5 + 0.5/2 = 0.75.
     pol = MarginallyMatchedConfoundedBehaviorPolicy(
         _FixedDQN(),
         "discrete",
@@ -287,14 +296,12 @@ def test_r2_dqn_uses_fixed_pi_basic_epsilon_not_decaying():
         env,
         strength=1.0,
         a_bad=A_BAD,
-        a_good=A_GOOD,
+        a_good=A_GOOD,  # default pi_basic_epsilon = 0.5 -> p(a_bad) = 0.75
     )
-    p_eff = (pol.act(obs).action == A_BAD).float().mean().item()
-    # decaying epsilon (0.001) would give p ~= 0.9995; fixed 0.5 gives 0.75.
-    assert abs(p_eff - 0.75) < 0.02, p_eff
+    assert abs((pol.act(obs).action == A_BAD).float().mean().item() - 0.75) < 0.02
 
 
-def test_r2_one_hot_fallback_raises():
+def test_one_hot_fallback_raises():
     class _Opaque:
         def act(self, obs, *a, **k):
             return ActionOutput(action=torch.zeros(obs.shape[0], dtype=torch.long))
@@ -309,15 +316,11 @@ def test_r2_one_hot_fallback_raises():
 
 
 # ---------------------------------------------------------------------------
-# B1 — SHARED ORIGIN: the basic arm (pi_basic) and the confounded arm at sigma=0
-# read the SAME fixed-epsilon pi_basic, so their action distributions coincide.
-# (On the pre-fix code the basic arm used the learner's decaying epsilon while the
-# confounded arm pinned the pair to 0.5 -> different policies -> the origin was
-# contaminated; PiBasicBehaviorPolicy did not exist, so this errors on master.)
+# B1 — SHARED ORIGIN: basic (pi_basic) == confounded at sigma=0 (same fixed epsilon).
 # ---------------------------------------------------------------------------
 def test_b1_shared_origin_basic_equals_confounded_sigma0():
     obs = torch.zeros(N, 2)
-    agent = _FixedDQN()  # argmax = a_bad
+    agent = _FixedDQN()
     torch.manual_seed(0)
     a_basic = (
         PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5)
@@ -332,7 +335,7 @@ def test_b1_shared_origin_basic_equals_confounded_sigma0():
             "discrete",
             Discrete(2),
             env,
-            strength=0.0,  # sigma = 0
+            strength=0.0,
             pi_basic_epsilon=0.5,
             a_bad=A_BAD,
             a_good=A_GOOD,
@@ -342,13 +345,12 @@ def test_b1_shared_origin_basic_equals_confounded_sigma0():
     )
     p_basic = (a_basic == A_BAD).float().mean().item()
     p_conf = (a_conf == A_BAD).float().mean().item()
-    assert abs(p_basic - p_conf) < 0.02, (p_basic, p_conf)  # identical within MC error
-    assert abs(p_basic - 0.75) < 0.02, p_basic  # eps-greedy(0.5) on argmax=a_bad
+    assert abs(p_basic - p_conf) < 0.02, (p_basic, p_conf)
+    assert abs(p_basic - 0.75) < 0.02
 
 
 # ---------------------------------------------------------------------------
-# B2 — the default pi_basic_epsilon (0.5) retains real PREFERENCE (not the uniform
-# random tier eps=1.0, not the annealed ~0).
+# B2 — default pi_basic_epsilon (0.5) retains PREFERENCE (not uniform random).
 # ---------------------------------------------------------------------------
 def test_b2_default_epsilon_retains_preference():
     obs = torch.zeros(N, 2)
@@ -369,201 +371,188 @@ def test_b2_default_epsilon_retains_preference():
         )
         return (pol.act(obs).action == A_BAD).float().mean().item()
 
-    assert abs(p_at(0.5) - 0.75) < 0.02  # default: real preference (0.75)
+    assert abs(p_at(0.5) - 0.75) < 0.02  # default: real preference
     assert abs(p_at(1.0) - 0.5) < 0.02  # eps=1.0 IS the uniform random tier
 
 
 # ---------------------------------------------------------------------------
-# B3 — continuous default base_scale (0.2) does NOT saturate at the bounds at
-# sigma=1 (base_scale=1.0 does — every mid-range action lands on a bound).
+# B4' — PER-STATE action-dist equivalence, isolated from state-visitation: evaluate
+# both policies at FIXED states with fresh per-draw U (so E_U[pi_b(a|s,U)] =
+# pi_basic(a|s) holds; U-selection on visitation is not conflated). A reflection
+# FAILS the continuous KS — that is the point.
 # ---------------------------------------------------------------------------
-def test_b3_continuous_default_scale_not_degenerate_at_bounds():
+def _sample_states(env_name, pol_fn, n):
     import gymnasium as gym
 
-    space = gym.make("Pendulum-v1").action_space  # Box([-2], [2])
-    hi = float(space.high[0])
-    obs = torch.zeros(N, 1)
-    env = _UEnv(N)
-    env.draw_u(seed=11)
+    penv = gym.make(env_name)
+    env_u = _UEnv(1)
+    pol = pol_fn(env_u)
+    g = torch.Generator().manual_seed(1)
+    torch.manual_seed(0)
+    S, ep = [], 0
+    while len(S) < n:
+        obs, _ = penv.reset(seed=ep)
+        ep += 1
+        env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
+        for _ in range(200):
+            S.append(np.array(obs, dtype=np.float32))
+            o = torch.as_tensor(obs).reshape(1, -1)
+            a = pol.act(o).action
+            step_a = (
+                a.reshape(-1).numpy() if env_name == "Pendulum-v1" else int(a.item())
+            )
+            obs, _, t, tr, _ = penv.step(step_a)
+            if t or tr:
+                break
+    penv.close()
+    return np.array(S[:n])
 
-    # default base_scale=0.2, a0=0 mid-range, sigma=1 -> a in {+/-0.4}, far from +/-2.
-    a = (
-        MarginallyMatchedConfoundedBehaviorPolicy(
-            _MeanAgent(0.0, dim=1), "continuous", space, env, strength=1.0
-        )
-        .act(obs)
-        .action.reshape(-1)
-    )
-    assert a.abs().max().item() < 0.5, a.abs().max().item()
-    assert ((a.abs() >= hi - 1e-3).float().mean().item()) < 0.01  # ~none at the bound
 
-    # base_scale=1.0 SATURATES: delta = min(0-lo, hi-0) = 2 -> every action on +/-2.
-    a2 = (
-        MarginallyMatchedConfoundedBehaviorPolicy(
-            _MeanAgent(0.0, dim=1),
-            "continuous",
-            space,
-            env,
-            strength=1.0,
-            base_scale=1.0,
-        )
-        .act(obs)
-        .action.reshape(-1)
+def _eval_at_states(pol_fn, states, K):
+    """Actions [M, K]: each of M states replicated K times, fresh U per draw."""
+    M = len(states)
+    env_u = _UEnv(M * K)
+    pol = pol_fn(env_u)
+    torch.manual_seed(0)
+    obs = torch.as_tensor(np.repeat(states, K, axis=0))
+    env_u.current_u = torch.bernoulli(torch.full((M * K,), 0.5))
+    return pol.act(obs).action.reshape(M, K, -1)
+
+
+def test_b4prime_discrete_per_state_action_dist():
+    basic = lambda e: PiBasicBehaviorPolicy(
+        _AngleQ(), "discrete", Discrete(2), epsilon=0.5
     )
-    assert ((a2.abs() - hi).abs() < 1e-4).float().mean().item() > 0.99
+    S = _sample_states("CartPole-v1", basic, 300)
+    ab = _eval_at_states(basic, S, 800)[:, :, 0].float().mean(1).numpy()
+    for sigma in (0.5, 1.0):
+        conf = lambda e, s=sigma: MarginallyMatchedConfoundedBehaviorPolicy(
+            _AngleQ(), "discrete", Discrete(2), e, strength=s, pi_basic_epsilon=0.5
+        )
+        ac = _eval_at_states(conf, S, 800)[:, :, 0].float().mean(1).numpy()
+        d = np.abs(ab - ac)
+        assert d.mean() < 0.03, (sigma, d.mean(), d.max())  # ~ MC floor
+
+
+def _basic_cont(env):
+    ctrl = _PendCtrl()
+
+    class _B:
+        def act(self, obs):
+            return ActionOutput(
+                action=ctrl.act(obs).action + 0.5 * torch.randn(obs.shape[0], 1)
+            )
+
+    return _B()
+
+
+def _reflection(env, sigma, scale=0.5):
+    ctrl = _PendCtrl()
+
+    class _R:
+        def act(self, obs):
+            mu = ctrl.act(obs).action
+            u = env.current_u.reshape(-1)
+            coin = torch.rand(obs.shape[0]) < sigma
+            a = torch.where(
+                coin.unsqueeze(-1), mu + scale * (2 * u - 1).unsqueeze(-1), mu
+            )
+            return ActionOutput(action=a)
+
+    return _R()
+
+
+def test_b4prime_continuous_per_state_ks_partition_passes_reflection_fails():
+    import gymnasium as gym
+
+    space = gym.make("Pendulum-v1").action_space
+    S = _sample_states("Pendulum-v1", _basic_cont, 100)
+    ab = _eval_at_states(_basic_cont, S, 500)[:, :, 0].numpy()
+    for sigma in (0.5, 1.0):
+        part = lambda e, s=sigma: MarginallyMatchedConfoundedBehaviorPolicy(
+            _PendCtrl(), "continuous", space, e, strength=s, continuous_noise_scale=0.5
+        )
+        ap = _eval_at_states(part, S, 500)[:, :, 0].numpy()
+        ar = _eval_at_states(lambda e, s=sigma: _reflection(e, s), S, 500)[
+            :, :, 0
+        ].numpy()
+        ks_part = np.mean([_ks(ab[m], ap[m]) for m in range(len(S))])
+        ks_refl = np.mean([_ks(ab[m], ar[m]) for m in range(len(S))])
+        # partition preserves the per-state action distribution (KS ~ MC floor);
+        # the mean-preserving reflection does NOT (much larger KS).
+        assert ks_part < 0.12, (sigma, ks_part)
+        assert ks_refl > 0.20 and ks_refl > 2.0 * ks_part, (sigma, ks_part, ks_refl)
 
 
 # ---------------------------------------------------------------------------
-# B4 — c_r=0 RETURN EQUIVALENCE (the empirical orthogonality gate). With c_r=0, U
-# is causally inert on reward, so a confounded ACTION policy that preserves the
-# marginal action distribution at every state cannot change return.
+# B4'' — COVERAGE comparability (empirical orthogonality): confounding keeps
+# action-coverage ~ basic across sigma; bias degrades it with beta. Wires the
+# previously-dead Proximal.statistical_diagnostic (action_overlap).
 # ---------------------------------------------------------------------------
-class _AngleQ:
-    """State-DEPENDENT CartPole base policy: prefer the action that reduces the pole
-    angle (obs[2]). A realistic non-degenerate pi_basic for the return gate."""
-
-    def q_network(self, obs):
-        ang = obs[:, 2]
-        return torch.stack([-ang, ang], dim=-1)  # action 1 preferred when angle > 0
-
-
-def _cartpole_returns(kind, sigma, per, n_eps=500, seed=0):
+def _seq_batch(make_pol, B=150):
+    """B natural episodes -> episode-grouped (B, T). reward_sum varies by length
+    (non-degenerate reward-median strata); pad rewards with 0 and pad actions by
+    resampling each row's real actions so padding never distorts coverage."""
     import gymnasium as gym
 
     penv = gym.make("CartPole-v1")
-    agent = _AngleQ()
     env_u = _UEnv(1)
-    if kind == "basic":
-        pol = PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5)
-    else:
-        pol = MarginallyMatchedConfoundedBehaviorPolicy(
-            agent,
-            "discrete",
-            Discrete(2),
-            env_u,
-            strength=sigma,
-            pi_basic_epsilon=0.5,
-            a_bad=A_BAD,
-            a_good=A_GOOD,
-        )
-    torch.manual_seed(seed)
-    g = torch.Generator().manual_seed(seed + 1)
-    rets = []
-    for ep in range(n_eps):
-        obs, _ = penv.reset(seed=seed + ep)
-        if kind != "basic" and per == "episode":
-            env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
-        ret = 0.0
+    pol = make_pol(env_u)
+    g = torch.Generator().manual_seed(1)
+    torch.manual_seed(0)
+    R, A = [], []
+    for ep in range(B):
+        obs, _ = penv.reset(seed=ep)
+        env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
+        rs, as_ = [], []
         for _ in range(500):
-            if kind != "basic" and per == "step":
-                env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
             o = torch.as_tensor(obs, dtype=torch.float32).reshape(1, -1)
             a = int(pol.act(o).action.item())
-            obs, r, term, trunc, _ = penv.step(a)
-            ret += r
-            if term or trunc:
+            obs, r, t, tr, _ = penv.step(a)
+            rs.append(r)
+            as_.append(a)
+            if t or tr:
                 break
-        rets.append(ret)
+        R.append(rs)
+        A.append(as_)
     penv.close()
-    return np.array(rets)
+    T = max(len(r) for r in R)
+    Rp, Ap = [], []
+    for rs, as_ in zip(R, A):
+        pad = T - len(rs)
+        idx = torch.randint(0, len(as_), (pad,)).tolist()
+        Rp.append(rs + [0.0] * pad)
+        Ap.append(as_ + [as_[i] for i in idx])
+    return {"rewards": torch.tensor(Rp), "actions": torch.tensor(Ap)}
 
 
-def _diff_sem(basic, conf):
-    return abs(conf.mean() - basic.mean()), np.sqrt(basic.var() + conf.var()) / np.sqrt(
-        len(basic)
+def test_b4primeprime_coverage_confounding_comparable_bias_degrades():
+    prox = Proximal()
+    basic = lambda e: PiBasicBehaviorPolicy(
+        _AngleQ(), "discrete", Discrete(2), epsilon=0.5
     )
+    cov_basic = prox.statistical_diagnostic(_seq_batch(basic))["action_overlap"]
+    assert cov_basic > 0.2, cov_basic
 
-
-def test_b4_discrete_perstep_marginalization_holds():
-    """Under PER-STEP marginalization the swap preserves the per-step action dist ->
-    the trajectory (hence return) distribution is EXACTLY pi_basic's. This validates
-    the swap MECHANISM (diff ~ MC noise for every sigma)."""
-    basic = _cartpole_returns("basic", 0.0, "step")
+    # confounding: coverage stays comparable to basic across sigma.
     for sigma in (0.25, 0.5, 1.0):
-        conf = _cartpole_returns("conf", sigma, "step")
-        diff, sem = _diff_sem(basic, conf)
-        assert diff < 3.0 * sem, (sigma, basic.mean(), conf.mean(), diff, sem)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="STOP / DESIGN DECISION: the REAL confounder uses PER-EPISODE U (a stable "
-    "per-episode common cause; the additive cells 7/8 are byte-frozen on it). Under "
-    "per-episode U the confounded policy is a per-episode MIXTURE of two biased "
-    "policies, and return is nonlinear in the policy (Jensen), so E_U[J(pi_U)] != "
-    "J(pi_basic): the c_r=0 action confounder BIASES return even in the DISCRETE case "
-    "(CartPole: diff ~ -9 sem at sigma=0.5, ~ -25 sem at sigma=1.0). The brief's "
-    "'discrete passes by construction' assumes per-STEP marginalization. Resolving "
-    "this (per-step U for the action-gated arm, or redefining orthogonality at the "
-    "marginal-action-dist level) is a design change pending approval.",
-)
-def test_b4_discrete_per_episode_confounder_biases_return():
-    basic = _cartpole_returns("basic", 0.0, "episode")
-    conf = _cartpole_returns("conf", 1.0, "episode")
-    diff, sem = _diff_sem(basic, conf)
-    assert diff < 3.0 * sem, (basic.mean(), conf.mean(), diff, sem)
-
-
-class _PendCtrl:
-    """Deterministic state-dependent Pendulum controller (a non-trivial pi_basic)."""
-
-    def act(self, obs, *a, **k):
-        sin, td = obs[:, 1], obs[:, 2]
-        return ActionOutput(
-            action=(2.0 * sin - 0.5 * td).clamp(-2.0, 2.0).unsqueeze(-1)
+        conf = lambda e, s=sigma: MarginallyMatchedConfoundedBehaviorPolicy(
+            _AngleQ(), "discrete", Discrete(2), e, strength=s, pi_basic_epsilon=0.5
         )
+        cov = prox.statistical_diagnostic(_seq_batch(conf))["action_overlap"]
+        assert 0.85 < cov / cov_basic < 1.15, (sigma, cov, cov_basic)
 
-
-def _pendulum_returns(kind, sigma, base_scale, n_eps=200, seed=0):
-    import gymnasium as gym
-
-    penv = gym.make("Pendulum-v1")
-    ctrl = _PendCtrl()
-    env_u = _UEnv(1)
-    pol = (
-        None
-        if kind == "basic"
-        else MarginallyMatchedConfoundedBehaviorPolicy(
-            ctrl,
-            "continuous",
-            penv.action_space,
-            env_u,
-            strength=sigma,
-            base_scale=base_scale,
+    # bias (bias_skew ON TOP of pi_basic): coverage degrades monotonically with beta.
+    covs = []
+    for beta in (0.0, 0.3, 0.6, 0.9):
+        biased = lambda e, bb=beta: SkewBehaviorPolicy(
+            PiBasicBehaviorPolicy(_AngleQ(), "discrete", Discrete(2), epsilon=0.5),
+            "discrete",
+            Discrete(2),
+            p=bb,
+            preferred=A_BAD,
         )
-    )
-    g = torch.Generator().manual_seed(seed + 1)
-    rets = []
-    for ep in range(n_eps):
-        obs, _ = penv.reset(seed=seed + ep)
-        if pol is not None:
-            env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
-        ret = 0.0
-        for _ in range(200):
-            o = torch.as_tensor(obs, dtype=torch.float32).reshape(1, -1)
-            a = (ctrl if pol is None else pol).act(o).action
-            obs, r, term, trunc, _ = penv.step(a.reshape(-1).numpy())
-            ret += r
-            if term or trunc:
-                break
-        rets.append(ret)
-    penv.close()
-    return np.array(rets)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="KNOWN LIMITATION (STOP): the continuous reflection preserves the MEAN, "
-    "not the DISTRIBUTION. Under Pendulum's nonlinear reward a mean-preserving spread "
-    "systematically shifts return, so c_r=0 orthogonality FAILS at any meaningful "
-    "base_scale (base_scale=1.0: diff ~+85 vs 2sem~15). Shrinking base_scale only "
-    "hides it by shrinking the confounder to nothing. Needs a distribution-preserving "
-    "construction (median-split / half-distribution reflection in pre-squash space) — "
-    "design approval pending. Remove this xfail when that lands.",
-)
-def test_b4_continuous_return_equivalence_cr0():
-    basic = _pendulum_returns("basic", 0.0, 0.0)
-    conf = _pendulum_returns("conf", 1.0, base_scale=1.0)
-    diff = abs(conf.mean() - basic.mean())
-    sem = np.sqrt(basic.var() + conf.var()) / np.sqrt(len(basic))
-    assert diff < 2.0 * sem, (basic.mean(), conf.mean(), diff, sem)
+        covs.append(prox.statistical_diagnostic(_seq_batch(biased))["action_overlap"])
+    for lo, hi in zip(covs, covs[1:]):
+        assert hi < lo + 0.02, covs  # monotone non-increasing in beta
+    assert covs[-1] < 0.15 and covs[-1] < 0.4 * cov_basic, covs  # strong degradation

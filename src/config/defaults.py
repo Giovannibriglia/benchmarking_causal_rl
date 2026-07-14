@@ -47,6 +47,11 @@ class EnvConfig:
     # non-stationary). None => the policy default (0.5: real preference, p away from 0,
     # NOT the uniform random tier). An explicit, reported parameter of the arms.
     pi_basic_epsilon: Optional[float] = None
+    # Continuous analogue of pi_basic_epsilon: the FIXED exploration std s of the
+    # continuous base policy pi_basic = N(mu(s), s^2). The partition swap resamples from
+    # pi_basic's own support, so a deterministic base (s->0) gives a degenerate
+    # partition (no confounding). None => the policy default (0.3).
+    continuous_noise_scale: Optional[float] = None
     # Observation indices to drop from the flat obs vector (Z-hidden axis). For
     # online runs the runner wraps train+eval with MaskedObservationWrapper; for
     # offline runs the loader projects the same indices off the dataset's
