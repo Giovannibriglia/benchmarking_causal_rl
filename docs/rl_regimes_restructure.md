@@ -250,6 +250,22 @@ reward bonus (2) may still be present — matching the brief's "at σ=0, U still
 reward but A ⊥ U, so no backdoor path exists." So the σ=0 exemption should assert
 "no U→A edge," not "no reward shift."
 
+> **As implemented (PR 2) — the point check must center by `p(s)`.** The naive
+> per-state closed form `corr(1[a=a_bad], U) = σ·√(p(1−p))` (with the *marginal* `p̂`)
+> is **wrong for a state-dependent `pi_basic`**: over a rollout with varying `p(s)` the
+> aggregate corr is Jensen-deflated below the marginal-p prediction (empirically
+> obs 0.386 vs pred 0.461 on CartPole), so a marginal-p point check **rejects a
+> legitimately confounded dataset** — the opposite of PR 2's goal. The generator logs
+> the per-transition `p_s = pi_basic(a_bad|s)` (a *read* of `pi_basic`, no behavior
+> change), and the gate uses the exact, aggregation-invariant identity
+> `mean((1[a=a_bad] − p_s)(2U−1)) = σ·mean(p_s(1−p_s))` (**A2**). The non-degeneracy
+> check is `mean(p_s(1−p_s)) > entropy_min` (**A3**) — this catches a **greedy**
+> (`eps→0`) `pi_basic` whose per-state `p_s∈{0,1}` makes the confounder inert while its
+> *marginal* `p̂` can look fine (≈0.49); the marginal-p range check misses exactly that
+> case. **A4** (gated/ungated `Corr(R,U)`) and **A5** (`mean(intervened) ≈ 1−σ` online,
+> `0` offline) are unchanged. σ=0 is authoritative (A2 target = 0 ⇒ asserts no U→A
+> edge), not skipped.
+
 ### 3.4 Proposal: gate as a declarative YAML field, not a hard-coded assert
 
 Replace the branch-on-`behavior_policy` string comparison and the hard-coded

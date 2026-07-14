@@ -1154,39 +1154,13 @@ class BenchmarkRunner:
         assert_dataset_matches_algo(
             dataset, self.action_type, dataset_id, self.train_cfg.algorithm
         )
-        # Confounding gate (Cells 7-8): a confounded run must train on a dataset
-        # whose confounding signature held at generation (docs/experimental_design
-        # §7). Reject a missing signature (older dataset) or a failed gate before
-        # training starts, with distinct messages.
+        # Confounding gate: a confounded run must train on a dataset whose confounding
+        # signature held at generation. Single deduped enforcement (declarative dispatch
+        # on the stamped gate_type; see enforce_confounding_gate).
         if self._value_trace_gate_open:
-            meta = dataset.storage.metadata
-            if "gate_test_passed" not in meta:
-                raise ValueError(
-                    f"Confounded offline run on dataset '{dataset_id}' requires "
-                    "the confounding-signature metadata, but none is present "
-                    "(likely generated before this metadata existed). Regenerate "
-                    "the dataset with tools/generate_offline.py."
-                )
-            # σ=0.0 anchor: the dataset is unconfounded BY CONSTRUCTION (marginal
-            # Corr(A,R) ≈ 0), so the gate test (which requires a non-zero marginal)
-            # is meaningless here — it is the unconfounded baseline of the σ-sweep.
-            # Skip the gate for σ=0.0 only. A missing σ field is treated as
-            # σ != 0.0 (gate must pass; no silent fallback), and every σ > 0 keeps
-            # the PR3 check unchanged. Exact == 0.0 is correct: σ is the operator's
-            # CLI float, written verbatim by PR3 — no arithmetic drift to round off.
-            if meta.get("behavior_strength_sigma") == 0.0:
-                print(
-                    "[runner] σ=0.0 anchor: skipping confounding gate test "
-                    "(dataset is the unconfounded baseline by construction).",
-                    file=sys.stderr,
-                )
-            elif not bool(meta["gate_test_passed"]):
-                raise ValueError(
-                    f"Dataset '{dataset_id}' failed the confounding gate test "
-                    "(gate_test_passed=False): the confounding signature "
-                    "(non-zero marginal Corr(A,R), near-zero partial Corr(A,R|U)) "
-                    "did not hold at generation. Regenerate or inspect the dataset."
-                )
+            from src.envs.offline.generate import enforce_confounding_gate
+
+            enforce_confounding_gate(dataset.storage.metadata, dataset_id)
         # For offline masked runs (Cell 4 / Cell 8) the same indices are dropped
         # from the dataset's obs/next_obs at load time — the eval env is masked
         # above, so the agent (built for the reduced dim) matches both. The
@@ -1296,28 +1270,12 @@ class BenchmarkRunner:
         assert_dataset_matches_algo(
             dataset, self.action_type, dataset_id, self.train_cfg.algorithm
         )
-        # Confounding gate (Cells 7-8) — duplicated verbatim from _train_offline.
+        # Confounding gate — SAME deduped enforcement as _train_offline (no longer a
+        # verbatim copy; the two WILL diverge otherwise).
         if self._value_trace_gate_open:
-            meta = dataset.storage.metadata
-            if "gate_test_passed" not in meta:
-                raise ValueError(
-                    f"Confounded offline run on dataset '{dataset_id}' requires "
-                    "the confounding-signature metadata, but none is present "
-                    "(likely generated before this metadata existed). Regenerate "
-                    "the dataset with tools/generate_offline.py."
-                )
-            if meta.get("behavior_strength_sigma") == 0.0:
-                print(
-                    "[runner] sigma=0.0 anchor: skipping confounding gate test "
-                    "(dataset is the unconfounded baseline by construction).",
-                    file=sys.stderr,
-                )
-            elif not bool(meta["gate_test_passed"]):
-                raise ValueError(
-                    f"Dataset '{dataset_id}' failed the confounding gate test "
-                    "(gate_test_passed=False): the confounding signature did not "
-                    "hold at generation. Regenerate or inspect the dataset."
-                )
+            from src.envs.offline.generate import enforce_confounding_gate
+
+            enforce_confounding_gate(dataset.storage.metadata, dataset_id)
 
         # The runner owns the episode-grouped buffer (offline builders ignore the
         # passed buffer). Mirror the flat fill's mask_indices / load_u args.
