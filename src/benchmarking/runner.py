@@ -413,11 +413,10 @@ class BenchmarkRunner:
                     getattr(self.env_cfg, "behavior_strength", None),
                     env=self.train_env,
                     is_online=True,  # runner collection is the online (do(a)) loop
-                    # FIXED gated-pair exploration (never the learner's decaying
-                    # epsilon) so online confounding stays visible as it anneals.
-                    collection_epsilon=getattr(
-                        self.env_cfg, "confounder_collection_epsilon", None
-                    ),
+                    # SHARED fixed pi_basic exploration (never the learner's decaying
+                    # epsilon): keeps the online basic policy stationary and the basic /
+                    # confounded origin identical.
+                    pi_basic_epsilon=getattr(self.env_cfg, "pi_basic_epsilon", None),
                 )
         self.experience_source = OnlineSource(self.train_env, self.device)
         validate_pairing(

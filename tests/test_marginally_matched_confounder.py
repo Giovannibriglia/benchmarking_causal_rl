@@ -15,12 +15,16 @@ All reference ``MarginallyMatchedConfoundedBehaviorPolicy`` / the decoupled
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from gymnasium.spaces import Discrete
 from src.envs.offline.generate import build_rollout_env
 from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 from src.rl.base import ActionOutput
-from src.rl.policies.behavior_policy import MarginallyMatchedConfoundedBehaviorPolicy
+from src.rl.policies.behavior_policy import (
+    MarginallyMatchedConfoundedBehaviorPolicy,
+    PiBasicBehaviorPolicy,
+)
 
 CPU = torch.device("cpu")
 A_GOOD, A_BAD = 0, 1
@@ -64,9 +68,10 @@ class _UEnv:
         self.current_u = torch.bernoulli(torch.full((self.n_envs,), 0.5), generator=g)
 
 
-def _policy(p: float, sigma: float, env, *, is_online: bool, collection_epsilon=0.0):
-    # collection_epsilon=0.0 in tests => pi_basic is EXACTLY the mock's p (so the
-    # marginal / corr assertions can target a known p); production defaults to 1.0.
+def _policy(p: float, sigma: float, env, *, is_online: bool):
+    # A mock exposing action_probs IS pi_basic directly (pi_basic_epsilon is ignored
+    # for the action_probs / distribution seams), so the marginal / corr assertions can
+    # target a known p.
     return MarginallyMatchedConfoundedBehaviorPolicy(
         _ProbAgent(p),
         "discrete",
@@ -75,7 +80,6 @@ def _policy(p: float, sigma: float, env, *, is_online: bool, collection_epsilon=
         strength=sigma,
         a_bad=A_BAD,
         a_good=A_GOOD,
-        collection_epsilon=collection_epsilon,
         is_online=is_online,
     )
 
@@ -260,58 +264,34 @@ def test_r2_corr_matches_sigma_sqrt_p_1_minus_p():
             assert abs(corr - expected) < 0.015, (p, sigma, corr, expected)
 
 
-def test_r2_default_collection_epsilon_pins_pair_near_half():
-    """Default collection_epsilon (1.0) pins a CONFIDENT base (p=0.9) toward p~=0.5,
-    keeping the signal visible; a decaying-epsilon inheritance would leave it invisible.
-    """
-    obs = torch.zeros(N, 2)
-    torch.manual_seed(0)
-    env = _UEnv(N)
-    env.draw_u(seed=6)
-    pol = MarginallyMatchedConfoundedBehaviorPolicy(
-        _ProbAgent(0.9),
-        "discrete",
-        Discrete(2),
-        env,
-        strength=0.5,
-        a_bad=A_BAD,
-        a_good=A_GOOD,  # collection_epsilon default = 1.0
-    )
-    a = pol.act(obs).action
-    p_eff = (a == A_BAD).float().mean().item()
-    assert abs(p_eff - 0.5) < 0.02, p_eff  # pinned to ~0.5 despite the 0.9 base
-    corr = float(np.corrcoef((a == A_BAD).float().numpy(), env.current_u.numpy())[0, 1])
-    assert corr > 0.2, corr  # sigma*sqrt(.25)=0.25 -> clearly visible
-
-
-class _DecayingDQN:
-    """DQN-like agent whose ANNEALED epsilon is tiny; only q_network should be read."""
+class _FixedDQN:
+    """DQN-like base: a_bad is the greedy action; ANNEALED epsilon is tiny. Only
+    q_network + the FIXED pi_basic_epsilon should be read, never `epsilon`."""
 
     epsilon = 0.001  # if inherited, p ~= 0.0005 -> confounding invisible
 
     def q_network(self, obs):
-        # a_bad (index 1) is the greedy action here.
-        return torch.tensor([[0.0, 1.0]]).repeat(obs.shape[0], 1)
+        return torch.tensor([[0.0, 1.0]]).repeat(obs.shape[0], 1)  # argmax = a_bad
 
 
-def test_r2_dqn_uses_fixed_not_decaying_epsilon():
+def test_r2_dqn_uses_fixed_pi_basic_epsilon_not_decaying():
     obs = torch.zeros(N, 2)
     torch.manual_seed(0)
     env = _UEnv(N)
     env.draw_u(seed=7)
+    # default pi_basic_epsilon = 0.5 => eps-greedy: p(a_bad) = 1-0.5 + 0.5/2 = 0.75.
     pol = MarginallyMatchedConfoundedBehaviorPolicy(
-        _DecayingDQN(),
+        _FixedDQN(),
         "discrete",
         Discrete(2),
         env,
         strength=1.0,
         a_bad=A_BAD,
-        a_good=A_GOOD,  # default collection_epsilon = 1.0 (fixed)
+        a_good=A_GOOD,
     )
-    a = pol.act(obs).action
-    p_eff = (a == A_BAD).float().mean().item()
-    # If the decaying epsilon (0.001) leaked in, p_eff ~= 0.0005; the fixed pin -> ~0.5.
-    assert abs(p_eff - 0.5) < 0.02, p_eff
+    p_eff = (pol.act(obs).action == A_BAD).float().mean().item()
+    # decaying epsilon (0.001) would give p ~= 0.9995; fixed 0.5 gives 0.75.
+    assert abs(p_eff - 0.75) < 0.02, p_eff
 
 
 def test_r2_one_hot_fallback_raises():
@@ -324,7 +304,266 @@ def test_r2_one_hot_fallback_raises():
     pol = MarginallyMatchedConfoundedBehaviorPolicy(
         _Opaque(), "discrete", Discrete(2), env, strength=1.0
     )
-    import pytest
-
     with pytest.raises(ValueError):
         pol.act(torch.zeros(4, 2))
+
+
+# ---------------------------------------------------------------------------
+# B1 — SHARED ORIGIN: the basic arm (pi_basic) and the confounded arm at sigma=0
+# read the SAME fixed-epsilon pi_basic, so their action distributions coincide.
+# (On the pre-fix code the basic arm used the learner's decaying epsilon while the
+# confounded arm pinned the pair to 0.5 -> different policies -> the origin was
+# contaminated; PiBasicBehaviorPolicy did not exist, so this errors on master.)
+# ---------------------------------------------------------------------------
+def test_b1_shared_origin_basic_equals_confounded_sigma0():
+    obs = torch.zeros(N, 2)
+    agent = _FixedDQN()  # argmax = a_bad
+    torch.manual_seed(0)
+    a_basic = (
+        PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5)
+        .act(obs)
+        .action
+    )
+    env = _UEnv(N)
+    env.draw_u(seed=8)
+    a_conf = (
+        MarginallyMatchedConfoundedBehaviorPolicy(
+            agent,
+            "discrete",
+            Discrete(2),
+            env,
+            strength=0.0,  # sigma = 0
+            pi_basic_epsilon=0.5,
+            a_bad=A_BAD,
+            a_good=A_GOOD,
+        )
+        .act(obs)
+        .action
+    )
+    p_basic = (a_basic == A_BAD).float().mean().item()
+    p_conf = (a_conf == A_BAD).float().mean().item()
+    assert abs(p_basic - p_conf) < 0.02, (p_basic, p_conf)  # identical within MC error
+    assert abs(p_basic - 0.75) < 0.02, p_basic  # eps-greedy(0.5) on argmax=a_bad
+
+
+# ---------------------------------------------------------------------------
+# B2 — the default pi_basic_epsilon (0.5) retains real PREFERENCE (not the uniform
+# random tier eps=1.0, not the annealed ~0).
+# ---------------------------------------------------------------------------
+def test_b2_default_epsilon_retains_preference():
+    obs = torch.zeros(N, 2)
+    env = _UEnv(N)
+
+    def p_at(eps):
+        torch.manual_seed(0)
+        env.draw_u(seed=10)
+        pol = MarginallyMatchedConfoundedBehaviorPolicy(
+            _FixedDQN(),
+            "discrete",
+            Discrete(2),
+            env,
+            strength=1.0,
+            pi_basic_epsilon=eps,
+            a_bad=A_BAD,
+            a_good=A_GOOD,
+        )
+        return (pol.act(obs).action == A_BAD).float().mean().item()
+
+    assert abs(p_at(0.5) - 0.75) < 0.02  # default: real preference (0.75)
+    assert abs(p_at(1.0) - 0.5) < 0.02  # eps=1.0 IS the uniform random tier
+
+
+# ---------------------------------------------------------------------------
+# B3 — continuous default base_scale (0.2) does NOT saturate at the bounds at
+# sigma=1 (base_scale=1.0 does — every mid-range action lands on a bound).
+# ---------------------------------------------------------------------------
+def test_b3_continuous_default_scale_not_degenerate_at_bounds():
+    import gymnasium as gym
+
+    space = gym.make("Pendulum-v1").action_space  # Box([-2], [2])
+    hi = float(space.high[0])
+    obs = torch.zeros(N, 1)
+    env = _UEnv(N)
+    env.draw_u(seed=11)
+
+    # default base_scale=0.2, a0=0 mid-range, sigma=1 -> a in {+/-0.4}, far from +/-2.
+    a = (
+        MarginallyMatchedConfoundedBehaviorPolicy(
+            _MeanAgent(0.0, dim=1), "continuous", space, env, strength=1.0
+        )
+        .act(obs)
+        .action.reshape(-1)
+    )
+    assert a.abs().max().item() < 0.5, a.abs().max().item()
+    assert ((a.abs() >= hi - 1e-3).float().mean().item()) < 0.01  # ~none at the bound
+
+    # base_scale=1.0 SATURATES: delta = min(0-lo, hi-0) = 2 -> every action on +/-2.
+    a2 = (
+        MarginallyMatchedConfoundedBehaviorPolicy(
+            _MeanAgent(0.0, dim=1),
+            "continuous",
+            space,
+            env,
+            strength=1.0,
+            base_scale=1.0,
+        )
+        .act(obs)
+        .action.reshape(-1)
+    )
+    assert ((a2.abs() - hi).abs() < 1e-4).float().mean().item() > 0.99
+
+
+# ---------------------------------------------------------------------------
+# B4 — c_r=0 RETURN EQUIVALENCE (the empirical orthogonality gate). With c_r=0, U
+# is causally inert on reward, so a confounded ACTION policy that preserves the
+# marginal action distribution at every state cannot change return.
+# ---------------------------------------------------------------------------
+class _AngleQ:
+    """State-DEPENDENT CartPole base policy: prefer the action that reduces the pole
+    angle (obs[2]). A realistic non-degenerate pi_basic for the return gate."""
+
+    def q_network(self, obs):
+        ang = obs[:, 2]
+        return torch.stack([-ang, ang], dim=-1)  # action 1 preferred when angle > 0
+
+
+def _cartpole_returns(kind, sigma, per, n_eps=500, seed=0):
+    import gymnasium as gym
+
+    penv = gym.make("CartPole-v1")
+    agent = _AngleQ()
+    env_u = _UEnv(1)
+    if kind == "basic":
+        pol = PiBasicBehaviorPolicy(agent, "discrete", Discrete(2), epsilon=0.5)
+    else:
+        pol = MarginallyMatchedConfoundedBehaviorPolicy(
+            agent,
+            "discrete",
+            Discrete(2),
+            env_u,
+            strength=sigma,
+            pi_basic_epsilon=0.5,
+            a_bad=A_BAD,
+            a_good=A_GOOD,
+        )
+    torch.manual_seed(seed)
+    g = torch.Generator().manual_seed(seed + 1)
+    rets = []
+    for ep in range(n_eps):
+        obs, _ = penv.reset(seed=seed + ep)
+        if kind != "basic" and per == "episode":
+            env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
+        ret = 0.0
+        for _ in range(500):
+            if kind != "basic" and per == "step":
+                env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
+            o = torch.as_tensor(obs, dtype=torch.float32).reshape(1, -1)
+            a = int(pol.act(o).action.item())
+            obs, r, term, trunc, _ = penv.step(a)
+            ret += r
+            if term or trunc:
+                break
+        rets.append(ret)
+    penv.close()
+    return np.array(rets)
+
+
+def _diff_sem(basic, conf):
+    return abs(conf.mean() - basic.mean()), np.sqrt(basic.var() + conf.var()) / np.sqrt(
+        len(basic)
+    )
+
+
+def test_b4_discrete_perstep_marginalization_holds():
+    """Under PER-STEP marginalization the swap preserves the per-step action dist ->
+    the trajectory (hence return) distribution is EXACTLY pi_basic's. This validates
+    the swap MECHANISM (diff ~ MC noise for every sigma)."""
+    basic = _cartpole_returns("basic", 0.0, "step")
+    for sigma in (0.25, 0.5, 1.0):
+        conf = _cartpole_returns("conf", sigma, "step")
+        diff, sem = _diff_sem(basic, conf)
+        assert diff < 3.0 * sem, (sigma, basic.mean(), conf.mean(), diff, sem)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="STOP / DESIGN DECISION: the REAL confounder uses PER-EPISODE U (a stable "
+    "per-episode common cause; the additive cells 7/8 are byte-frozen on it). Under "
+    "per-episode U the confounded policy is a per-episode MIXTURE of two biased "
+    "policies, and return is nonlinear in the policy (Jensen), so E_U[J(pi_U)] != "
+    "J(pi_basic): the c_r=0 action confounder BIASES return even in the DISCRETE case "
+    "(CartPole: diff ~ -9 sem at sigma=0.5, ~ -25 sem at sigma=1.0). The brief's "
+    "'discrete passes by construction' assumes per-STEP marginalization. Resolving "
+    "this (per-step U for the action-gated arm, or redefining orthogonality at the "
+    "marginal-action-dist level) is a design change pending approval.",
+)
+def test_b4_discrete_per_episode_confounder_biases_return():
+    basic = _cartpole_returns("basic", 0.0, "episode")
+    conf = _cartpole_returns("conf", 1.0, "episode")
+    diff, sem = _diff_sem(basic, conf)
+    assert diff < 3.0 * sem, (basic.mean(), conf.mean(), diff, sem)
+
+
+class _PendCtrl:
+    """Deterministic state-dependent Pendulum controller (a non-trivial pi_basic)."""
+
+    def act(self, obs, *a, **k):
+        sin, td = obs[:, 1], obs[:, 2]
+        return ActionOutput(
+            action=(2.0 * sin - 0.5 * td).clamp(-2.0, 2.0).unsqueeze(-1)
+        )
+
+
+def _pendulum_returns(kind, sigma, base_scale, n_eps=200, seed=0):
+    import gymnasium as gym
+
+    penv = gym.make("Pendulum-v1")
+    ctrl = _PendCtrl()
+    env_u = _UEnv(1)
+    pol = (
+        None
+        if kind == "basic"
+        else MarginallyMatchedConfoundedBehaviorPolicy(
+            ctrl,
+            "continuous",
+            penv.action_space,
+            env_u,
+            strength=sigma,
+            base_scale=base_scale,
+        )
+    )
+    g = torch.Generator().manual_seed(seed + 1)
+    rets = []
+    for ep in range(n_eps):
+        obs, _ = penv.reset(seed=seed + ep)
+        if pol is not None:
+            env_u.current_u = torch.bernoulli(torch.tensor([0.5]), generator=g)
+        ret = 0.0
+        for _ in range(200):
+            o = torch.as_tensor(obs, dtype=torch.float32).reshape(1, -1)
+            a = (ctrl if pol is None else pol).act(o).action
+            obs, r, term, trunc, _ = penv.step(a.reshape(-1).numpy())
+            ret += r
+            if term or trunc:
+                break
+        rets.append(ret)
+    penv.close()
+    return np.array(rets)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="KNOWN LIMITATION (STOP): the continuous reflection preserves the MEAN, "
+    "not the DISTRIBUTION. Under Pendulum's nonlinear reward a mean-preserving spread "
+    "systematically shifts return, so c_r=0 orthogonality FAILS at any meaningful "
+    "base_scale (base_scale=1.0: diff ~+85 vs 2sem~15). Shrinking base_scale only "
+    "hides it by shrinking the confounder to nothing. Needs a distribution-preserving "
+    "construction (median-split / half-distribution reflection in pre-squash space) — "
+    "design approval pending. Remove this xfail when that lands.",
+)
+def test_b4_continuous_return_equivalence_cr0():
+    basic = _pendulum_returns("basic", 0.0, 0.0)
+    conf = _pendulum_returns("conf", 1.0, base_scale=1.0)
+    diff = abs(conf.mean() - basic.mean())
+    sem = np.sqrt(basic.var() + conf.var()) / np.sqrt(len(basic))
+    assert diff < 2.0 * sem, (basic.mean(), conf.mean(), diff, sem)

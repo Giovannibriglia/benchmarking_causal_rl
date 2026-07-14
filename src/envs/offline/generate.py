@@ -327,7 +327,7 @@ def generate_offline_dataset(
     behavior_policy: str = "agent",
     behavior_strength: float | None = None,
     confounder_c_r: float | None = None,
-    confounder_collection_epsilon: float | None = None,
+    pi_basic_epsilon: float | None = None,
     fraction: float = 1.0 / 3.0,
     train_episodes: int = 50,
     n_checkpoints: int = 10,
@@ -409,7 +409,7 @@ def generate_offline_dataset(
             action_space,
             behavior_strength,
             env=rollout_env,
-            collection_epsilon=confounder_collection_epsilon,
+            pi_basic_epsilon=pi_basic_epsilon,
         )
 
     buffers, sig_samples = _rollout(
