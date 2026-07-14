@@ -32,6 +32,37 @@ subcells = {basic, biased, confounded}               # 3 slices of two 1-D sweep
 >    (Tasks 3–4). At `sigma=0` the current code sets `c_r=0`, so `U` does *not*
 >    perturb reward — the opposite of the required semantics.
 
+> **PR-1 status — CONTINUOUS CONFOUNDED CELLS ARE NOT RUNNABLE.** PR 1 lands the
+> marginally-matched action-dependent confounder as a **discrete-only** binary
+> partition swap (cells `{a_good}`/`{a_bad}`). The continuous arm is **hard-gated**:
+> `MarginallyMatchedConfoundedBehaviorPolicy.__init__` raises `NotImplementedError` for
+> `action_type == "continuous"`, and `ConfoundedCollectionWrapper` raises when
+> `action_gated` is requested on a continuous (`Box`) action space. So any
+> `{offline,online}×{mdp,pomdp}` **confounded** cell on a continuous env (Pendulum,
+> MuJoCo) cannot be generated or run today. Building the continuous confounder is a
+> dedicated follow-up PR whose scope is the three defects in the earlier
+> half-space-reflection prototype:
+> 1. **Post-squash noise.** The prototype added Gaussian noise *after* the policy's
+>    squash, so `pi_basic` was an unbounded Gaussian the env then **clips**: marginal
+>    matching survives as a pushforward, but the *realized* `pi_basic` is a clipped
+>    Gaussian with **atoms at the bounds**, and the reported noise scale does not
+>    describe the policy that ran. The construction must move **pre-squash** — `tanh`
+>    is monotone, so the half-space, the reflection, and the cell indicator all commute
+>    with it and the action is bounded with **no clipping**.
+> 2. **Untested `deterministic=True` API assumption.** The prototype called
+>    `agent.act(obs, deterministic=True)`; the test mocks swallow it via `**kwargs`, so
+>    tests passed while a real SAC/TD3 would `TypeError`. The continuous path must be
+>    validated against a **real registered algorithm**, not a mock.
+> 3. **Silent `current_h` reward-gate side-channel.** The continuous reward gate
+>    `r += c_r·U·1[h(a)==1]` was routed through `env.current_h` with a `try/except
+>    pass` and an `action == a_bad` fallback that is **false everywhere on a float
+>    action** — so the gate would never fire, `c_r` would have no effect, and the
+>    dataset would be **silently unconfounded**. The follow-up needs a checked,
+>    non-silent gate wired to the pre-squash cell indicator.
+
+The **discrete** action-dependent confounder (cell 9-style, CartPole/Acrobot) is
+unaffected and fully runnable.
+
 ---
 
 ## 1. Audit of the current tree

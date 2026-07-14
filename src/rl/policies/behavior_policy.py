@@ -449,11 +449,6 @@ _CONF_EPS = 1e-8
 # 0.5 keeps a real preference (argmax gets 0.75, the other 0.25) while holding p away
 # from 0 so corr(1[a=a_bad], U) = sigma*sqrt(p(1-p)) stays visible.
 PI_BASIC_EPSILON_DEFAULT = 0.5
-# Default FIXED exploration noise scale for the continuous pi_basic = N(mu, s^2)
-# (the analogue of pi_basic_epsilon): the partition swap resamples from pi_basic's OWN
-# support, so a deterministic base (s -> 0) gives a DEGENERATE partition (all mass at
-# mu, no confounding), exactly as eps -> 0 gives p in {0,1} discretely.
-CONTINUOUS_NOISE_SCALE_DEFAULT = 0.3
 
 
 def _pi_basic_probs(
@@ -562,21 +557,10 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
     be confounded without moving the marginal.
 
     This is the binary PARTITION SWAP with cells ``{a_good}``, ``{a_bad}`` and cell
-    indicator ``h``; the continuous branch is the SAME construction on the median
-    partition, so both are DISTRIBUTION-preserving (not merely mean-preserving).
-
-    Continuous: ``pi_basic = N(mu(s), s^2)`` with ``mu(s)`` the base policy's mean
-    action and ``s = continuous_noise_scale`` a FIXED exploration std (the analogue of
-    ``pi_basic_epsilon``; a deterministic base gives a degenerate partition). The cells
-    are ``{a < mu}`` / ``{a >= mu}`` (median split, ``pbar = 1/2``), ``h`` the sign of
-    ``sum(a - mu)``. With prob ``1-sigma`` keep ``a0 ~ pi_basic``; with prob ``sigma``
-    draw the target cell ``h' = 1`` w.p. ``pbar(2-pbar)`` (U=1) / ``pbar^2`` (U=0) and
-    RESAMPLE ``a' ~ pi_basic( . | h=h')`` (a fresh ``N(mu, s^2)`` draw reflected across
-    ``mu`` into the target half). ``E_U[P(h'=1)] = pbar`` and within a cell the draw is
-    ``pi_basic`` restricted to it, so the marginal is ``pi_basic`` EXACTLY. Resampling
-    from ``pi_basic``'s OWN support means NO clipping and NO saturation. The reward gate
-    for continuous is ``r += c_r * U * 1[h(a) == 1]`` (the policy exposes ``h`` to the
-    wrapper via ``env.current_h``). Squash after, if the algorithm squashes.
+    indicator ``h``. DISCRETE-ONLY: the continuous arm is HARD-GATED (the ``__init__``
+    raises ``NotImplementedError``) pending a dedicated follow-up — see that message and
+    docs/rl_regimes_restructure.md for the three open defects (post-squash noise, the
+    untested ``deterministic=True`` API assumption, and the silent ``current_h`` gate).
 
     ``intervened`` (per element): ``is_online AND (c == 0)`` — True only where the
     learner's own action executed under an online regime. Offline it is False
@@ -600,10 +584,29 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         strength: float = 1.0,
         a_bad: int = 1,
         a_good: int = 0,
-        continuous_noise_scale: float = CONTINUOUS_NOISE_SCALE_DEFAULT,
         pi_basic_epsilon: float = PI_BASIC_EPSILON_DEFAULT,
         is_online: bool = False,
     ) -> None:
+        if action_type == "continuous":
+            raise NotImplementedError(
+                "MarginallyMatchedConfoundedBehaviorPolicy is DISCRETE-ONLY. The "
+                "continuous partition swap is hard-gated pending a dedicated follow-up "
+                "PR with three open defects:\n"
+                "  (a) POST-SQUASH noise -> pi_basic is an unbounded Gaussian the env "
+                "then CLIPS: the realized policy is a clipped Gaussian with atoms at "
+                "the bounds and the reported noise scale does not describe it. The "
+                "construction must move PRE-squash (tanh is monotone, so the halfspace, "
+                "the reflection, and the cell indicator all commute with it and the "
+                "action is bounded with NO clipping).\n"
+                "  (b) agent.act(obs, deterministic=True) is an UNTESTED API "
+                "assumption (mocks swallow it via **kwargs; a real SAC/TD3 would "
+                "TypeError) -> continuous must be validated against a REAL registered "
+                "algo.\n"
+                "  (c) the current_h reward-gate side-channel fails SILENTLY (a "
+                "float action never equals a_bad -> the gate never fires -> c_r has no "
+                "effect -> a silently UNCONFOUNDED dataset).\n"
+                "See docs/rl_regimes_restructure.md (continuous confounded cells)."
+            )
         self.agent = agent
         self.action_type = action_type
         self.action_space = action_space
@@ -611,8 +614,6 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         self.strength = float(strength)
         self.a_bad = int(a_bad)
         self.a_good = int(a_good)
-        # FIXED continuous exploration std defining pi_basic = N(mu, s^2).
-        self.continuous_noise_scale = max(float(continuous_noise_scale), 0.0)
         # SHARED fixed exploration defining pi_basic (same object as the basic arm's).
         self.pi_basic_epsilon = min(max(float(pi_basic_epsilon), 0.0), 1.0)
         self.is_online = bool(is_online)
@@ -630,56 +631,27 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         return torch.zeros_like(coin_fired)
 
     def act(self, obs: torch.Tensor) -> ActionOutput:
+        # DISCRETE-ONLY (continuous is hard-gated in __init__). Binary partition swap
+        # on cells {a_good}, {a_bad}.
         b = obs.shape[0]
         u = self.env.current_u.to(obs.device).reshape(-1)
         sigma = min(max(self.strength, 0.0), 1.0)
         coin = torch.rand(b, device=obs.device) < sigma  # confounder acts w.p. sigma
-
-        if self.action_type == "discrete":
-            probs = self._base_action_probs(obs)  # == pi_basic (shared origin)
-            a0 = torch.multinomial(probs, 1).reshape(-1)  # a0 ~ pi_basic
-            p = probs[:, self.a_bad]
-            g = probs[:, self.a_good]
-            pbar = p / (p + g).clamp_min(_CONF_EPS)  # within-pair P(a_bad)
-            # confounded within-pair P(a_bad): pbar(2-pbar) if U==1 else pbar^2.
-            w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
-            in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
-            redraw = coin & in_pair
-            pair_action = torch.where(
-                torch.rand(b, device=obs.device) < w,
-                torch.full_like(a0, self.a_bad),
-                torch.full_like(a0, self.a_good),
-            )
-            action = torch.where(redraw, pair_action, a0)
-            return ActionOutput(action=action, intervened=self._intervened(coin))
-
-        # continuous: PARTITION SWAP on the MEDIAN split of pi_basic = N(mu, s^2).
-        # Distribution-preserving: the redraw resamples FROM pi_basic restricted to the
-        # target half (reflect a fresh N(mu, s^2) draw across mu), so no clipping / no
-        # saturation, and E_U over the cell weights returns pi_basic exactly.
-        mu = self.agent.act(obs, deterministic=True).action  # pi_basic mean
-        s = self.continuous_noise_scale
-        a0 = mu + s * torch.randn_like(mu)  # a0 ~ pi_basic
-        pbar = 0.5  # median split -> P(upper cell) = 1/2
-        # target cell h' (1 = upper): pbar(2-pbar) if U==1 else pbar^2.
-        w = torch.where(
-            u > 0.5,
-            torch.full_like(u, pbar * (2.0 - pbar)),
-            torch.full_like(u, pbar * pbar),
+        probs = self._base_action_probs(obs)  # == pi_basic (shared origin)
+        a0 = torch.multinomial(probs, 1).reshape(-1)  # a0 ~ pi_basic
+        p = probs[:, self.a_bad]
+        g = probs[:, self.a_good]
+        pbar = p / (p + g).clamp_min(_CONF_EPS)  # within-pair P(a_bad)
+        # confounded within-pair P(a_bad): pbar(2-pbar) if U==1 else pbar^2.
+        w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
+        in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
+        redraw = coin & in_pair
+        pair_action = torch.where(
+            torch.rand(b, device=obs.device) < w,
+            torch.full_like(a0, self.a_bad),
+            torch.full_like(a0, self.a_good),
         )
-        h_prime = torch.rand(b, device=obs.device) < w  # bool [B]
-        cand = mu + s * torch.randn_like(mu)  # fresh pi_basic draw
-        cand_upper = (cand - mu).sum(dim=-1) >= 0  # its cell
-        # reflect across mu into the target cell (sign-symmetric -> pi_basic|cell).
-        flip = cand_upper != h_prime
-        cand = torch.where(flip.unsqueeze(-1), 2.0 * mu - cand, cand)
-        action = torch.where(coin.unsqueeze(-1), cand, a0)
-        # expose the executed action's cell h(a) = 1[a >= mu] for the reward gate.
-        h_action = ((action - mu).sum(dim=-1) >= 0).to(action.dtype)
-        try:
-            self.env.current_h = h_action
-        except AttributeError:
-            pass
+        action = torch.where(redraw, pair_action, a0)
         return ActionOutput(action=action, intervened=self._intervened(coin))
 
 
@@ -731,7 +703,6 @@ def build_collection_policy(
     env=None,
     is_online: bool = False,
     pi_basic_epsilon: float | None = None,
-    continuous_noise_scale: float | None = None,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
     primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
@@ -754,8 +725,6 @@ def build_collection_policy(
     conf_kw = {}
     if pi_basic_epsilon is not None:
         conf_kw["pi_basic_epsilon"] = float(pi_basic_epsilon)
-    if continuous_noise_scale is not None:
-        conf_kw["continuous_noise_scale"] = float(continuous_noise_scale)
     kw = {} if strength is None else {_STRENGTH_PARAM[name]: float(strength)}
     if name == "anti_reward":
         return AntiRewardBehaviorPolicy(agent, action_type, action_space, **kw)
@@ -769,9 +738,9 @@ def build_collection_policy(
         # Additive confounder (cells 7/8) — byte-frozen; U-indexed action mixture.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
     if name == "bias_confounded_action":
-        # Action-dependent confounder — the U partition-swap on top of the SHARED
-        # pi_basic (same fixed pi_basic_epsilon / continuous_noise_scale as the basic
-        # arm; None -> the policy defaults).
+        # Action-dependent confounder (DISCRETE-ONLY) — the U partition-swap on top of
+        # the SHARED pi_basic (same fixed pi_basic_epsilon as the basic arm; None ->
+        # the policy default).
         return MarginallyMatchedConfoundedBehaviorPolicy(
             agent, action_type, action_space, env, is_online=is_online, **kw, **conf_kw
         )

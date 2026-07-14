@@ -1,19 +1,17 @@
 """PR 1 — marginally-matched action-dependent confounder (behavior-policy core).
 
-The confounder is a binary PARTITION SWAP applied on top of the SHARED pi_basic
-(fixed epsilon / noise scale), unified across discrete (cells {a_good},{a_bad}) and
-continuous (median split), distribution-preserving in both.
+The confounder is a binary PARTITION SWAP on cells {a_good},{a_bad}, applied on top of
+the SHARED pi_basic (fixed epsilon). DISCRETE-ONLY: the continuous arm is hard-gated.
 
   T1  marginal matching: E_U[pi_b(.|s,U)] == pi_basic(.|s) EXACTLY (incl. p=0.9);
   T2  U->A edge live and monotone in sigma (0 at sigma=0);
   T3  c_r (U->R) decoupled from sigma -> reward shift on a_bad|U=1 invariant;
   T4  intervened == (online AND agent's own action) -> mean ~= 1-sigma online, 0 offline;
-  T5  continuous partition swap is distribution-preserving and needs a fixed noise scale;
+  T5  the continuous arm is HARD-GATED (policy __init__ and wrapper both raise);
   B1  shared origin: basic (pi_basic) == confounded at sigma=0;
   B2  default pi_basic_epsilon retains preference (not uniform random);
-  B4' per-state action-dist equivalence (isolated from state-visitation via fixed
-      states + resample-U): discrete |dP| and continuous KS ~ MC floor; a reflection
-      FAILS the continuous KS (the point);
+  B4' per-state action-dist equivalence (discrete), isolated from state-visitation via
+      fixed states + resample-U: |dP| ~ MC floor;
   B4'' coverage comparability: confounding keeps coverage ~ basic across sigma while
       bias degrades it with beta (the empirical orthogonality claim).
 """
@@ -40,15 +38,6 @@ SIGMAS = [0.0, 0.25, 0.5, 0.75, 1.0]
 N = 40000  # MC batch; error ~ sqrt(.25/N) ~ 0.0025 << the 0.02 tolerances
 
 
-def _ks(x, y):
-    """Two-sample KS statistic (max |CDF_x - CDF_y|)."""
-    a = np.concatenate([x, y])
-    a.sort()
-    cx = np.searchsorted(np.sort(x), a, side="right") / len(x)
-    cy = np.searchsorted(np.sort(y), a, side="right") / len(y)
-    return float(np.max(np.abs(cx - cy)))
-
-
 class _ProbAgent:
     """Discrete agent exposing a fixed pi_basic(a_bad|s) = p over two actions."""
 
@@ -59,26 +48,14 @@ class _ProbAgent:
         return torch.tensor([[1.0 - self.p, self.p]]).repeat(obs.shape[0], 1)
 
 
-class _MeanAgent:
-    """Continuous agent emitting a fixed mean action (the pi_basic mean mu)."""
-
-    def __init__(self, mean: float, dim: int = 1) -> None:
-        self.mean = float(mean)
-        self.dim = dim
-
-    def act(self, obs: torch.Tensor, *a, **k) -> ActionOutput:
-        return ActionOutput(action=torch.full((obs.shape[0], self.dim), self.mean))
-
-
 class _UEnv:
     """Minimal confounder-env stand-in: exposes ``current_u`` (resampled to
-    Bernoulli(0.5) per round) and receives ``current_h`` from the continuous policy."""
+    Bernoulli(0.5) per round)."""
 
     def __init__(self, n: int) -> None:
         self.n_envs = n
         self.device = CPU
         self.current_u = torch.zeros(n)
-        self.current_h = None
 
     def draw_u(self, seed: int) -> None:
         g = torch.Generator().manual_seed(seed)
@@ -99,13 +76,6 @@ class _AngleQ:
 
     def q_network(self, obs):
         return torch.stack([-obs[:, 2], obs[:, 2]], dim=-1)
-
-
-class _PendCtrl:
-    """Deterministic Pendulum base controller (a non-trivial continuous mu(s))."""
-
-    def act(self, obs, *a, **k):
-        return ActionOutput(action=(2.0 * obs[:, 1] - 0.5 * obs[:, 2]).unsqueeze(-1))
 
 
 def _policy(p, sigma, env, *, is_online):
@@ -219,52 +189,36 @@ def test_t4_intervened_fraction():
 
 
 # ---------------------------------------------------------------------------
-# T5 — continuous partition swap: distribution-preserving marginal, and DEGENERATE
-# without a fixed noise scale (the continuous analogue of eps -> 0 => p in {0,1}).
+# T5 — the continuous arm is HARD-GATED (discrete-only) at BOTH seams: the policy
+# __init__ and the wrapper's action_gated on a continuous action space. The continuous
+# construction is deferred (post-squash noise / untested deterministic API / silent
+# current_h gate — see the NotImplementedError message and docs).
 # ---------------------------------------------------------------------------
-def test_t5_continuous_partition_swap_marginal_and_needs_scale():
+def test_t5_continuous_arm_is_hard_gated():
     import gymnasium as gym
 
     space = gym.make("Pendulum-v1").action_space
-    obs = torch.zeros(N, 1)
-    mu = 0.4
-    # Basic pi_basic samples: mu + s*z. Confounded marginal (over U) must match it.
-    torch.manual_seed(0)
-    basic_a = (mu + 0.5 * torch.randn(N, 1)).reshape(-1).numpy()
-    for sigma in (0.5, 1.0):
-        torch.manual_seed(0)
-        env = _UEnv(N)
-        env.draw_u(seed=4)
-        pol = MarginallyMatchedConfoundedBehaviorPolicy(
-            _MeanAgent(mu),
-            "continuous",
-            space,
-            env,
-            strength=sigma,
-            continuous_noise_scale=0.5,
-        )
-        a = pol.act(obs).action.reshape(-1).numpy()
-        # distribution-preserving: KS(confounded marginal, pi_basic) near the MC floor.
-        assert _ks(a, basic_a) < 0.03, (sigma, _ks(a, basic_a))
-        assert (env.current_h is not None) and env.current_h.shape[0] == N
-
-    # noise_scale -> 0 gives a DEGENERATE partition: all actions collapse onto mu.
-    torch.manual_seed(0)
-    env = _UEnv(N)
-    env.draw_u(seed=4)
-    deg = (
+    env = _UEnv(4)
+    with pytest.raises(NotImplementedError):
         MarginallyMatchedConfoundedBehaviorPolicy(
-            _MeanAgent(mu),
-            "continuous",
-            space,
-            env,
-            strength=1.0,
-            continuous_noise_scale=0.0,
+            _FixedDQN(), "continuous", space, env, strength=1.0
         )
-        .act(obs)
-        .action
-    )
-    assert deg.sub(mu).abs().max().item() < 1e-6
+
+    # the wrapper independently refuses action_gated on a continuous action space.
+    class _ContVecEnv:
+        n_envs = 4
+        device = CPU
+        act_space = space  # Box -> no `.n`
+
+        def reset(self, seed=None):
+            return torch.zeros(self.n_envs, 3), {}
+
+        def step(self, action):
+            z = torch.zeros(self.n_envs, dtype=torch.bool)
+            return torch.zeros(self.n_envs, 3), torch.zeros(self.n_envs), z, z, {}
+
+    with pytest.raises(NotImplementedError):
+        ConfoundedCollectionWrapper(_ContVecEnv(), confounder_kind="action_gated")
 
 
 # ---------------------------------------------------------------------------
@@ -434,54 +388,9 @@ def test_b4prime_discrete_per_state_action_dist():
         assert d.mean() < 0.03, (sigma, d.mean(), d.max())  # ~ MC floor
 
 
-def _basic_cont(env):
-    ctrl = _PendCtrl()
-
-    class _B:
-        def act(self, obs):
-            return ActionOutput(
-                action=ctrl.act(obs).action + 0.5 * torch.randn(obs.shape[0], 1)
-            )
-
-    return _B()
-
-
-def _reflection(env, sigma, scale=0.5):
-    ctrl = _PendCtrl()
-
-    class _R:
-        def act(self, obs):
-            mu = ctrl.act(obs).action
-            u = env.current_u.reshape(-1)
-            coin = torch.rand(obs.shape[0]) < sigma
-            a = torch.where(
-                coin.unsqueeze(-1), mu + scale * (2 * u - 1).unsqueeze(-1), mu
-            )
-            return ActionOutput(action=a)
-
-    return _R()
-
-
-def test_b4prime_continuous_per_state_ks_partition_passes_reflection_fails():
-    import gymnasium as gym
-
-    space = gym.make("Pendulum-v1").action_space
-    S = _sample_states("Pendulum-v1", _basic_cont, 100)
-    ab = _eval_at_states(_basic_cont, S, 500)[:, :, 0].numpy()
-    for sigma in (0.5, 1.0):
-        part = lambda e, s=sigma: MarginallyMatchedConfoundedBehaviorPolicy(
-            _PendCtrl(), "continuous", space, e, strength=s, continuous_noise_scale=0.5
-        )
-        ap = _eval_at_states(part, S, 500)[:, :, 0].numpy()
-        ar = _eval_at_states(lambda e, s=sigma: _reflection(e, s), S, 500)[
-            :, :, 0
-        ].numpy()
-        ks_part = np.mean([_ks(ab[m], ap[m]) for m in range(len(S))])
-        ks_refl = np.mean([_ks(ab[m], ar[m]) for m in range(len(S))])
-        # partition preserves the per-state action distribution (KS ~ MC floor);
-        # the mean-preserving reflection does NOT (much larger KS).
-        assert ks_part < 0.12, (sigma, ks_part)
-        assert ks_refl > 0.20 and ks_refl > 2.0 * ks_part, (sigma, ks_part, ks_refl)
+# (B4' continuous deleted with the continuous arm; the halfspace reflection is
+# distribution-preserving in any dimension, but the continuous CONSTRUCTION is
+# hard-gated — see test_t5_continuous_arm_is_hard_gated and docs.)
 
 
 # ---------------------------------------------------------------------------
