@@ -1,5 +1,6 @@
-src/benchmarking/runner.py:236:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
-src/benchmarking/runner.py:805:        set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
+src/benchmarking/runner.py:256:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
+src/benchmarking/runner.py:898:        g = torch.Generator().manual_seed(0)
+src/benchmarking/runner.py:984:        set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
 src/config/seeding.py:10:def set_seed(seed: int, deterministic: bool = False) -> None:
 src/config/seeding.py:15:    random.seed(seed)
 src/config/seeding.py:16:    np.random.seed(seed)

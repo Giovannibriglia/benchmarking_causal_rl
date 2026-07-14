@@ -1,41 +1,41 @@
 main.py:10:from src.benchmarking.critic_ablation import CriticAblationConfig, default_aux_critics
-main.py:178:        choices=["benchmark", "critic_ablation"],
-main.py:185:        help="Shortcut for --mode critic_ablation.",
-main.py:293:            "Auxiliary critics to train in critic_ablation mode. "
-main.py:301:        help="Learning rate for auxiliary critics in critic_ablation mode.",
-main.py:486:        mode = "critic_ablation"
-main.py:487:    if mode not in {"benchmark", "critic_ablation"}:
-main.py:489:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
-main.py:601:                "critics": ablation_critics if mode == "critic_ablation" else [],
-main.py:661:            critic_ablation_cfg = None
-main.py:662:            if mode == "critic_ablation":
-main.py:663:                critic_ablation_cfg = CriticAblationConfig(
-main.py:680:                critic_ablation_cfg=critic_ablation_cfg,
+main.py:186:        choices=["benchmark", "critic_ablation"],
+main.py:193:        help="Shortcut for --mode critic_ablation.",
+main.py:321:            "Auxiliary critics to train in critic_ablation mode. "
+main.py:329:        help="Learning rate for auxiliary critics in critic_ablation mode.",
+main.py:522:        mode = "critic_ablation"
+main.py:523:    if mode not in {"benchmark", "critic_ablation"}:
+main.py:525:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
+main.py:637:                "critics": ablation_critics if mode == "critic_ablation" else [],
+main.py:699:            critic_ablation_cfg = None
+main.py:700:            if mode == "critic_ablation":
+main.py:701:                critic_ablation_cfg = CriticAblationConfig(
+main.py:718:                critic_ablation_cfg=critic_ablation_cfg,
 src/benchmarking/plotting.py:1996:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:77:    critic_path = run_dir / "critic_ablation_metrics.csv"
 src/benchmarking/plotting.py:83:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
-src/benchmarking/runner.py:1320:            self.critic_ablation is not None and self.critic_ablation.is_strategy
-src/benchmarking/runner.py:1323:            strategy_ablation and self.critic_ablation.needs_u()
-src/benchmarking/runner.py:1342:            self.critic_ablation.set_sequence_buffer(self.replay_buffer)
-src/benchmarking/runner.py:1388:                    critic_losses = self.critic_ablation.update_strategy(batch)
-src/benchmarking/runner.py:1410:                    for row in self.critic_ablation.checkpoint_rows_strategy(
-src/benchmarking/runner.py:18:from src.benchmarking.critic_ablation import (
-src/benchmarking/runner.py:225:        critic_ablation_cfg: CriticAblationConfig | None = None,
-src/benchmarking/runner.py:415:        self.critic_ablation = None
-src/benchmarking/runner.py:416:        if critic_ablation_cfg is not None:
-src/benchmarking/runner.py:418:            if _is_strategy_ablation(critic_ablation_cfg):
-src/benchmarking/runner.py:436:                self.critic_ablation = CriticAblationManager(
-src/benchmarking/runner.py:439:                    config=critic_ablation_cfg,
-src/benchmarking/runner.py:452:                self.critic_ablation = CriticAblationManager(
-src/benchmarking/runner.py:455:                    config=critic_ablation_cfg,
-src/benchmarking/runner.py:506:            if self.critic_ablation is not None:
-src/benchmarking/runner.py:507:                critic_losses = self.critic_ablation.update(batch)
-src/benchmarking/runner.py:534:                if self.critic_ablation is not None and critic_logger is not None:
-src/benchmarking/runner.py:535:                    for row in self.critic_ablation.checkpoint_rows(
-src/benchmarking/runner.py:582:        if self.critic_ablation is None:
-src/benchmarking/runner.py:595:            {"episode": episode, "aux_critics": self.critic_ablation.state_dict()},
-src/benchmarking/runner.py:809:                    os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
-src/benchmarking/runner.py:814:                        if self.critic_ablation.is_strategy
-src/benchmarking/runner.py:818:                if self.critic_ablation is not None
-src/benchmarking/runner.py:925:        if self.critic_ablation is not None and self.critic_ablation.is_strategy:
+src/benchmarking/runner.py:1116:        if self.critic_ablation is not None and self.critic_ablation.is_strategy:
+src/benchmarking/runner.py:1478:            self.critic_ablation is not None and self.critic_ablation.is_strategy
+src/benchmarking/runner.py:1481:            strategy_ablation and self.critic_ablation.needs_u()
+src/benchmarking/runner.py:1500:            self.critic_ablation.set_sequence_buffer(self.replay_buffer)
+src/benchmarking/runner.py:1546:                    critic_losses = self.critic_ablation.update_strategy(batch)
+src/benchmarking/runner.py:1570:                    for row in self.critic_ablation.checkpoint_rows_strategy(
+src/benchmarking/runner.py:19:from src.benchmarking.critic_ablation import (
+src/benchmarking/runner.py:245:        critic_ablation_cfg: CriticAblationConfig | None = None,
+src/benchmarking/runner.py:475:        self.critic_ablation = None
+src/benchmarking/runner.py:476:        if critic_ablation_cfg is not None:
+src/benchmarking/runner.py:478:            if _is_strategy_ablation(critic_ablation_cfg):
+src/benchmarking/runner.py:496:                self.critic_ablation = CriticAblationManager(
+src/benchmarking/runner.py:499:                    config=critic_ablation_cfg,
+src/benchmarking/runner.py:512:                self.critic_ablation = CriticAblationManager(
+src/benchmarking/runner.py:515:                    config=critic_ablation_cfg,
+src/benchmarking/runner.py:566:            if self.critic_ablation is not None:
+src/benchmarking/runner.py:567:                critic_losses = self.critic_ablation.update(batch)
+src/benchmarking/runner.py:594:                if self.critic_ablation is not None and critic_logger is not None:
+src/benchmarking/runner.py:595:                    for row in self.critic_ablation.checkpoint_rows(
+src/benchmarking/runner.py:642:        if self.critic_ablation is None:
+src/benchmarking/runner.py:655:            {"episode": episode, "aux_critics": self.critic_ablation.state_dict()},
+src/benchmarking/runner.py:988:                    os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
+src/benchmarking/runner.py:993:                        if self.critic_ablation.is_strategy
+src/benchmarking/runner.py:997:                if self.critic_ablation is not None
 src/rl/on_policy/base_actor_critic.py:25:    # them, and critic_ablation / aux_models — which consume the flat (T*N, D)

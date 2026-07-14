@@ -59,6 +59,14 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     "pearson_to_oracle",
     "spearman_to_oracle",
     "gap_closed_fraction",
+    # Γ (MSM sensitivity bound) — a METHOD parameter of the sensitivity critic,
+    # ORTHOGONAL to the (β, σ) regime axes. Logged (blank for non-sensitivity
+    # critics) but NEVER folded into the dataset/(β,σ) path encoding.
+    "gamma",
+    # NULL-CALIBRATION control: at the (β=0, σ=0) origin every critic must agree
+    # with the oracle within estimator noise. True iff value_mse_to_oracle clears
+    # the noise floor AT the origin (σ=0); blank off-origin (undefined there).
+    "null_calibrated",
 ]
 
 _EPS = 1e-8
@@ -95,8 +103,14 @@ class CriticSpec:
     # path). "strategy" = a Q(s,a,u) IDENTIFICATION strategy hosted on the
     # episode-grouped stream (the Cell-7 deconfounding ablation).
     kind: str = "v_head"
-    builder: str | None = None  # strategy only: observational | proximal | oracle_u
+    # strategy only: observational | proximal | oracle_u | sensitivity
+    builder: str | None = None
     requires_u: bool = False  # strategy only: oracle_u reads the realized U (its fill)
+    # Γ >= 1, the sensitivity critic's MSM confounding bound (a METHOD parameter,
+    # not a regime axis). Read ONLY by builder="sensitivity"; inert (unread) for
+    # the other strategy critics. Γ=1 is the "no assumed confounding" null (=
+    # byte-identical Observational), so 1.0 is the safe default for every spec.
+    gamma: float = 1.0
 
 
 CRITIC_LIBRARY: Dict[str, CriticSpec] = {
@@ -124,6 +138,30 @@ CRITIC_LIBRARY: Dict[str, CriticSpec] = {
         kind="strategy",
         builder="oracle_u",
         requires_u=True,
+    ),
+    # Sensitivity-bounds critic (Kallus-Zhou MSM). REUSES build_sensitivity_<base>
+    # verbatim (NO reweighter reimplementation): it shares the BASE algo's class
+    # (build_sensitivity_cql -> a CQL learner with SensitivityBounds + the reward
+    # reweighter), so --algos cql compares CQL-sensitivity against CQL-oracle with
+    # no base-learner confound — the same base-parity fix the observational floor
+    # got. Γ is the method's bound, read from THIS spec, logged as the ``gamma``
+    # column, and NEVER folded into the (β, σ) path encoding.
+    #
+    # DEFAULT Γ=1.0 — the MSM NULL (no assumed unmeasured confounding). At Γ=1 the
+    # reweighter early-returns the untouched batch, so the critic is BYTE-IDENTICAL
+    # to CQL-Observational: it manufactures ZERO gap over the floor at the origin,
+    # which is exactly what the NULL-CALIBRATION gate demands (a Γ>1 critic is
+    # pessimistic BY DESIGN and would legitimately disagree at the origin — that is
+    # the method working, not a miscalibration). Γ>1 is the analyst's opt-in dial
+    # (set per-algo via the networks map); its safe-but-doesn't-close-the-gap
+    # pessimism is the σ>0 confounded-regime story, outside the null gate's scope.
+    # Discrete-only; the recurrent (Cell-8) arm is DQN-base only.
+    "sensitivity": CriticSpec(
+        target="q_adj",
+        loss="mse",
+        kind="strategy",
+        builder="sensitivity",
+        gamma=1.0,
     ),
 }
 
@@ -235,11 +273,13 @@ def _build_strategy_critic(
     action_dim: int,
     device: torch.device,
     encoder: str = "mlp",
+    gamma: float = 1.0,
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
     (no estimator reimplementation). ``builder`` selects the identification arm
-    (observational floor / proximal / oracle_u); ``encoder`` selects the
-    ORTHOGONAL architecture axis:
+    (observational floor / proximal / oracle_u / sensitivity); ``gamma`` is the
+    sensitivity critic's MSM bound Γ (ignored by the others); ``encoder`` selects
+    the ORTHOGONAL architecture axis:
 
       * ``encoder="mlp"`` (default, BYTE-FROZEN — the Cell-7 MLP row):
         observational = MLP + DQN(Observational()); proximal/oracle_u =
@@ -360,6 +400,34 @@ def _build_strategy_critic(
             "iql": build_oracle_u_iql,
         }[suffix]
         return fn(**kwargs)
+    if builder == "sensitivity":
+        # SHARES THE BASE ALGO'S CLASS: build_sensitivity_<base> = the base builder
+        # (build_cql / build_iql / build_bcq / build_offline_dqn) with a
+        # SensitivityBounds strategy + reward reweighter installed — NOT a bare DQN.
+        # So the ablation isolates the identification method, not the base learner
+        # (the same base-parity requirement as the observational floor). Γ is the
+        # method parameter, threaded via ``gamma_sensitivity`` (the builders' own
+        # seam); Γ=1 -> byte-identical Observational.
+        if recurrent:
+            from src.rl.offline.sensitivity import build_sensitivity_dqn_recurrent
+
+            return build_sensitivity_dqn_recurrent(
+                critic_network=encoder, gamma_sensitivity=gamma, **kwargs
+            )
+        from src.rl.offline.sensitivity import (
+            build_sensitivity_bcq,
+            build_sensitivity_cql,
+            build_sensitivity_dqn,
+            build_sensitivity_iql,
+        )
+
+        fn = {
+            "dqn": build_sensitivity_dqn,
+            "bcq": build_sensitivity_bcq,
+            "cql": build_sensitivity_cql,
+            "iql": build_sensitivity_iql,
+        }[suffix]
+        return fn(gamma_sensitivity=gamma, **kwargs)
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 
@@ -396,8 +464,11 @@ class StrategyCritic:
         self.spec = spec
         self.device = device
         self.requires_u = spec.requires_u
+        # Γ (MSM bound) read from THIS critic's spec — a method parameter threaded
+        # into the sensitivity builder, inert for the other strategy critics.
+        self.gamma = float(spec.gamma)
         _net, agent = _build_strategy_critic(
-            spec.builder, base_algo, obs_dim, action_dim, device, encoder
+            spec.builder, base_algo, obs_dim, action_dim, device, encoder, self.gamma
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
@@ -664,9 +735,21 @@ class CriticAblationManager:
                 train_loss=losses.get(name, ""),
                 apparent_q_mean=float(q_c.mean().item()),
             )
+            # Γ is a sensitivity-only method parameter; blank for the others (they
+            # apply no MSM bound). Orthogonal to (β, σ) — logged, never path-encoded.
+            if critic.spec.builder == "sensitivity":
+                row["gamma"] = float(critic.gamma)
             if q_oracle is not None:
                 mse = float(torch.mean((q_c - q_oracle) ** 2).item())
                 tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
+                # NULL-CALIBRATION: at the (β=0, σ=0) origin the confounder is inert,
+                # so EVERY critic must land within estimator noise of the oracle. A
+                # critic that disagrees here (e.g. a bare-DQN floor scored against a
+                # CQL oracle) carries a base-learner confound, not deconfounding —
+                # this gate flags it. Defined only at σ=0 (off-origin a real gap is
+                # expected, so the flag is left blank there).
+                if float(sigma) == 0.0:
+                    row["null_calibrated"] = bool(mse < _GAP_NOISE_FLOOR_MSE)
                 row.update(
                     oracle_q_mean=float(q_oracle.mean().item()),
                     q_inflation=float((q_c.mean() - q_oracle.mean()).item()),
