@@ -477,11 +477,25 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
     ``sigma`` (``strength``) scales the U->A edge ONLY. The U->R reward shift lives
     in the wrapper's fixed ``c_r`` (decoupled at the construction sites).
 
-    Continuous: the analogous mean-preserving MIXTURE. ``a = a0`` with prob
-    ``1-sigma`` (kept); with prob ``sigma``, ``a = a0 + base_scale*(2U-1)``. Under
-    ``U ~ Bernoulli(0.5)`` the ``+base_scale`` / ``-base_scale`` shifts occur with
-    equal probability, so ``E_U[a | perturbed] = a0`` and the marginal MEAN is
-    preserved for every ``sigma``.
+    ``collection_epsilon`` PINS the within-pair split ``pbar`` toward 0.5 with a
+    FIXED (never the learner's decaying) exploration rate:
+    ``pbar <- (1-eps_c)*pbar_raw + eps_c*0.5``. It exists because the visible
+    confounding signal is ``corr(1[a=a_bad], U) = sigma*sqrt(p(1-p))``, which
+    collapses as ``p -> 0``: a greedy/annealed base would make the confounding
+    near-invisible. ``eps_c = 1.0`` (default) => a uniform gated pair (``p ~= 0.5``,
+    max signal); ``eps_c = 0.0`` => the raw base policy's split (used by the
+    marginal-matching tests). The marginal identity holds w.r.t. this PINNED base.
+
+    Continuous: the analogous BOUNDED mean-preserving reflection, reading ``[lo, hi]``
+    from the action space. ``delta(a0) = base_scale * min(a0-lo, hi-a0)``;
+    ``a = a0`` with prob ``1-sigma`` (kept), else ``a = a0 + (2U-1)*delta(a0)``. Both
+    ``a0 +/- delta`` lie in ``[lo, hi]`` BY CONSTRUCTION (``base_scale in [0,1]``), so
+    the env's action clip is a no-op and the marginal MEAN is preserved AFTER
+    ``env.step``. Under ``U ~ Bernoulli(0.5)`` the ``+/-`` shifts cancel, and
+    ``delta -> 0`` at the bounds — mirroring the discrete gap vanishing at
+    ``p in {0,1}``. (An unbounded ``a0 + base_scale*(2U-1)`` would be clipped by the
+    env exactly where ``a0`` is confident, re-introducing the clamp bug the swap
+    exists to avoid.)
 
     ``intervened`` (per element): ``is_online AND (c == 0)`` — True only where the
     learner's own action executed under an online regime. Offline (a fixed
@@ -507,6 +521,7 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         a_bad: int = 1,
         a_good: int = 0,
         base_scale: float = 1.0,
+        collection_epsilon: float = 1.0,
         is_online: bool = False,
     ) -> None:
         self.agent = agent
@@ -516,14 +531,20 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         self.strength = float(strength)
         self.a_bad = int(a_bad)
         self.a_good = int(a_good)
-        self.base_scale = float(base_scale)
+        # base_scale in [0,1] so the bounded reflection stays within [lo,hi].
+        self.base_scale = min(max(float(base_scale), 0.0), 1.0)
+        # FIXED collection exploration on the gated pair (NOT the learner's decaying
+        # epsilon) so p stays near 0.5 and the confounding signal stays visible.
+        self.collection_epsilon = min(max(float(collection_epsilon), 0.0), 1.0)
         self.is_online = bool(is_online)
 
     def _base_action_probs(self, obs: torch.Tensor) -> torch.Tensor:
         """``pi_basic(.|s)`` as a normalized ``[B, A]`` categorical. Resolution
         order: an explicit ``action_probs`` seam (tests + clean integration), an
-        on-policy ``distribution`` head, a DQN epsilon-greedy induced distribution,
-        else a deterministic one-hot fallback."""
+        on-policy ``distribution`` head, or a DQN GREEDY (argmax) base — NEVER the
+        learner's decaying epsilon (the gated-pair entropy comes from the fixed
+        ``collection_epsilon`` instead). No one-hot fallback: an unknown agent would
+        pin ``p in {0,1}`` and silently kill the confounding, so it RAISES."""
         agent = self.agent
         fn = getattr(agent, "action_probs", None)
         if callable(fn):
@@ -535,18 +556,28 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
                 q = agent.q_network(obs)
             if isinstance(q, tuple):
                 q = q[0]
-            n = q.shape[-1]
-            eps = float(getattr(agent, "epsilon", 0.0) or 0.0)
-            probs = torch.full_like(q, eps / n)
+            # GREEDY base (argmax), NOT epsilon-greedy: the collection exploration is
+            # the fixed collection_epsilon, so the learner's annealed epsilon never
+            # leaks into (and shrinks) the confounding signal.
+            probs = torch.zeros_like(q)
             rows = torch.arange(q.shape[0], device=q.device)
-            probs[rows, q.argmax(dim=-1)] += 1.0 - eps
+            probs[rows, q.argmax(dim=-1)] = 1.0
         else:
-            a = agent.act(obs).action.long().view(-1)
-            n = int(self.action_space.n)
-            probs = torch.zeros(obs.shape[0], n, device=obs.device)
-            probs[torch.arange(obs.shape[0], device=obs.device), a] = 1.0
+            raise ValueError(
+                "MarginallyMatchedConfoundedBehaviorPolicy needs the base policy's "
+                "action distribution (an `action_probs` method, an on-policy "
+                "`distribution` head, or a DQN `q_network`); a one-hot fallback would "
+                "pin p in {0,1} and silently kill the confounding signal."
+            )
         probs = probs.float().clamp_min(0.0)
         return probs / probs.sum(dim=-1, keepdim=True).clamp_min(_CONF_EPS)
+
+    def _action_bounds(self, ref: torch.Tensor):
+        """``(lo, hi)`` from the continuous action space, broadcastable to ``ref``."""
+        space = self.action_space
+        lo = torch.as_tensor(space.low, dtype=ref.dtype, device=ref.device)
+        hi = torch.as_tensor(space.high, dtype=ref.dtype, device=ref.device)
+        return lo, hi
 
     def _intervened(self, coin_fired: torch.Tensor) -> torch.Tensor:
         if self.is_online:
@@ -561,10 +592,19 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
 
         if self.action_type == "discrete":
             probs = self._base_action_probs(obs)
-            a0 = torch.multinomial(probs, 1).reshape(-1)  # a0 ~ pi_basic
             p = probs[:, self.a_bad]
             g = probs[:, self.a_good]
-            pbar = p / (p + g).clamp_min(_CONF_EPS)  # within-pair P(a_bad)
+            m = p + g  # pair mass (== 1.0 for a 2-action space)
+            pbar_raw = p / m.clamp_min(_CONF_EPS)  # raw within-pair P(a_bad)
+            eps_c = self.collection_epsilon
+            pbar = (1.0 - eps_c) * pbar_raw + eps_c * 0.5  # FIXED-epsilon pinned split
+            # Pinned pi_basic: keep the non-pair mass, resplit the pair by pbar. a0 and
+            # the confounded redraw BOTH use pbar, so the marginal is this pinned base
+            # EXACTLY (E_U of the within-pair split is pbar again).
+            base = probs.clone()
+            base[:, self.a_bad] = m * pbar
+            base[:, self.a_good] = m * (1.0 - pbar)
+            a0 = torch.multinomial(base, 1).reshape(-1)  # a0 ~ pinned pi_basic
             # confounded within-pair P(a_bad): pbar(2-pbar) if U==1 else pbar^2.
             w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
             in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
@@ -577,10 +617,14 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
             action = torch.where(redraw, pair_action, a0)
             return ActionOutput(action=action, intervened=self._intervened(coin))
 
-        # continuous: mean-preserving mixture (perturbations cancel under U).
+        # continuous: BOUNDED mean-preserving reflection. delta shrinks to 0 at the
+        # bounds so a0 +/- delta stays in [lo, hi] -> the env clip is a no-op and the
+        # post-step marginal mean is a0 for every sigma (the +/- cancel under U).
         a0 = self.agent.act(obs).action
-        sign = torch.where(u > 0.5, 1.0, -1.0).unsqueeze(-1)
-        perturbed = a0 + self.base_scale * sign
+        lo, hi = self._action_bounds(a0)
+        delta = self.base_scale * torch.minimum(a0 - lo, hi - a0).clamp_min(0.0)
+        sign = (2.0 * u - 1.0).unsqueeze(-1)
+        perturbed = a0 + sign * delta
         action = torch.where(coin.unsqueeze(-1), perturbed, a0)
         return ActionOutput(action=action, intervened=self._intervened(coin))
 
@@ -629,6 +673,7 @@ def build_collection_policy(
     strength: float | None = None,
     env=None,
     is_online: bool = False,
+    collection_epsilon: float | None = None,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
     primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
@@ -655,9 +700,15 @@ def build_collection_policy(
         # Additive confounder (cells 7/8) — byte-frozen; U-indexed action mixture.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
     if name == "bias_confounded_action":
-        # Action-dependent confounder — marginally-matched swap policy.
+        # Action-dependent confounder — marginally-matched swap policy. The FIXED
+        # collection_epsilon pins the gated pair near 0.5 (None -> the policy default).
+        eps_kw = (
+            {}
+            if collection_epsilon is None
+            else {"collection_epsilon": float(collection_epsilon)}
+        )
         return MarginallyMatchedConfoundedBehaviorPolicy(
-            agent, action_type, action_space, env, is_online=is_online, **kw
+            agent, action_type, action_space, env, is_online=is_online, **kw, **eps_kw
         )
     raise ValueError(
         f"Unknown behavior policy '{name}'. Choose from: agent, anti_reward, "

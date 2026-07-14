@@ -39,6 +39,12 @@ class EnvConfig:
     # 1.0 default. Unused by the additive bias_confounded path (cells 7/8), which
     # stays byte-frozen with c_r = c_a = sigma at its construction sites.
     confounder_c_r: Optional[float] = None
+    # Action-dependent confounder FIXED collection exploration on the gated pair
+    # {a_good, a_bad}: pins the within-pair split toward 0.5 so the confounding signal
+    # corr(1[a=a_bad], U) = sigma*sqrt(p(1-p)) stays visible. It must NOT inherit the
+    # learner's decaying epsilon. None => the policy default (1.0 = uniform pair,
+    # p ~= 0.5). Unused by every other behavior policy.
+    confounder_collection_epsilon: Optional[float] = None
     # Observation indices to drop from the flat obs vector (Z-hidden axis). For
     # online runs the runner wraps train+eval with MaskedObservationWrapper; for
     # offline runs the loader projects the same indices off the dataset's

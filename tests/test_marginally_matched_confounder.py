@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 import torch
-from gymnasium.spaces import Box, Discrete
+from gymnasium.spaces import Discrete
 from src.envs.offline.generate import build_rollout_env
 from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 from src.rl.base import ActionOutput
@@ -64,7 +64,9 @@ class _UEnv:
         self.current_u = torch.bernoulli(torch.full((self.n_envs,), 0.5), generator=g)
 
 
-def _policy(p: float, sigma: float, env, *, is_online: bool):
+def _policy(p: float, sigma: float, env, *, is_online: bool, collection_epsilon=0.0):
+    # collection_epsilon=0.0 in tests => pi_basic is EXACTLY the mock's p (so the
+    # marginal / corr assertions can target a known p); production defaults to 1.0.
     return MarginallyMatchedConfoundedBehaviorPolicy(
         _ProbAgent(p),
         "discrete",
@@ -73,6 +75,7 @@ def _policy(p: float, sigma: float, env, *, is_online: bool):
         strength=sigma,
         a_bad=A_BAD,
         a_good=A_GOOD,
+        collection_epsilon=collection_epsilon,
         is_online=is_online,
     )
 
@@ -186,25 +189,142 @@ def test_t4_intervened_fraction():
 
 
 # ---------------------------------------------------------------------------
-# T5 — continuous mean-preserving construction (perturbations cancel under U).
+# T5 — continuous BOUNDED reflection: mean preserved AFTER env clipping, a0 near
+# the bound, on a REAL bounded env (Pendulum). This asserts the post-step
+# quantity (clip(action) = what the env applies), the thing that broke under the
+# old unbounded `a0 + base_scale*(2U-1)`.
 # ---------------------------------------------------------------------------
-def test_t5_continuous_mean_preserving():
-    obs = torch.zeros(N, 2)
-    mean0 = 0.3
+def _continuous_pol(agent, action_space, env, sigma, *, is_online=True):
+    return MarginallyMatchedConfoundedBehaviorPolicy(
+        agent,
+        "continuous",
+        action_space,
+        env,
+        strength=sigma,
+        base_scale=1.0,
+        is_online=is_online,
+    )
+
+
+def test_t5_continuous_bounded_reflection_preserves_post_clip_mean():
+    import gymnasium as gym
+
+    penv = gym.make("Pendulum-v1")  # real bounded env, action_space = Box([-2],[2])
+    space = penv.action_space
+    lo = torch.as_tensor(space.low)
+    hi = torch.as_tensor(space.high)
+    a0_val = 1.9  # NEAR the +2.0 bound: the confident case an env clip would wreck
+    obs = torch.zeros(N, 1)
     for sigma in SIGMAS:
         torch.manual_seed(0)
         env = _UEnv(N)
         env.draw_u(seed=4)
-        pol = MarginallyMatchedConfoundedBehaviorPolicy(
-            _MeanAgent(mean0),
-            "continuous",
-            Box(low=-5.0, high=5.0, shape=(2,)),
-            env,
-            strength=sigma,
-            base_scale=1.0,
-            is_online=True,
-        )
-        out = pol.act(obs)
-        # marginal mean preserved: E_U[a] == a0 for every sigma (perturbations cancel).
-        assert abs(out.action.mean().item() - mean0) < 0.02, (sigma, out.action.mean())
+        out = _continuous_pol(_MeanAgent(a0_val, dim=1), space, env, sigma).act(obs)
+        act = out.action
+        # bounded BY CONSTRUCTION -> the env's clip is a no-op -> post-step == emitted.
+        assert (act >= lo - 1e-5).all() and (act <= hi + 1e-5).all(), sigma
+        realized = torch.clamp(act, lo, hi)  # exactly what Pendulum applies in step()
+        assert abs(realized.mean().item() - a0_val) < 0.02, (sigma, realized.mean())
         assert abs(out.intervened.float().mean().item() - (1.0 - sigma)) < 0.02
+
+    # A near-bound action is accepted and applied UNCLIPPED by a real env.step.
+    penv.reset(seed=0)
+    env1 = _UEnv(1)
+    env1.current_u = torch.ones(1)
+    a = (
+        _continuous_pol(_MeanAgent(a0_val, dim=1), space, env1, 1.0)
+        .act(torch.zeros(1, 1))
+        .action
+    )
+    assert (a >= lo).all() and (a <= hi).all()
+    penv.step(a.reshape(-1).numpy())
+    penv.close()
+
+
+# ---------------------------------------------------------------------------
+# R2 — the confounding-signal magnitude and its entropy pinning.
+# ---------------------------------------------------------------------------
+def test_r2_corr_matches_sigma_sqrt_p_1_minus_p():
+    """corr(1[a==a_bad], U) == sigma*sqrt(p(1-p)) within MC error (the visible signal)."""
+    obs = torch.zeros(N, 2)
+    for p in (0.1, 0.3, 0.5):
+        for sigma in (0.25, 0.5, 1.0):
+            torch.manual_seed(0)
+            env = _UEnv(N)
+            env.draw_u(seed=5)
+            a = _policy(p, sigma, env, is_online=False).act(obs).action
+            ab = (a == A_BAD).float().numpy()
+            u = env.current_u.numpy()
+            corr = float(np.corrcoef(ab, u)[0, 1])
+            expected = sigma * np.sqrt(p * (1.0 - p))
+            assert abs(corr - expected) < 0.015, (p, sigma, corr, expected)
+
+
+def test_r2_default_collection_epsilon_pins_pair_near_half():
+    """Default collection_epsilon (1.0) pins a CONFIDENT base (p=0.9) toward p~=0.5,
+    keeping the signal visible; a decaying-epsilon inheritance would leave it invisible.
+    """
+    obs = torch.zeros(N, 2)
+    torch.manual_seed(0)
+    env = _UEnv(N)
+    env.draw_u(seed=6)
+    pol = MarginallyMatchedConfoundedBehaviorPolicy(
+        _ProbAgent(0.9),
+        "discrete",
+        Discrete(2),
+        env,
+        strength=0.5,
+        a_bad=A_BAD,
+        a_good=A_GOOD,  # collection_epsilon default = 1.0
+    )
+    a = pol.act(obs).action
+    p_eff = (a == A_BAD).float().mean().item()
+    assert abs(p_eff - 0.5) < 0.02, p_eff  # pinned to ~0.5 despite the 0.9 base
+    corr = float(np.corrcoef((a == A_BAD).float().numpy(), env.current_u.numpy())[0, 1])
+    assert corr > 0.2, corr  # sigma*sqrt(.25)=0.25 -> clearly visible
+
+
+class _DecayingDQN:
+    """DQN-like agent whose ANNEALED epsilon is tiny; only q_network should be read."""
+
+    epsilon = 0.001  # if inherited, p ~= 0.0005 -> confounding invisible
+
+    def q_network(self, obs):
+        # a_bad (index 1) is the greedy action here.
+        return torch.tensor([[0.0, 1.0]]).repeat(obs.shape[0], 1)
+
+
+def test_r2_dqn_uses_fixed_not_decaying_epsilon():
+    obs = torch.zeros(N, 2)
+    torch.manual_seed(0)
+    env = _UEnv(N)
+    env.draw_u(seed=7)
+    pol = MarginallyMatchedConfoundedBehaviorPolicy(
+        _DecayingDQN(),
+        "discrete",
+        Discrete(2),
+        env,
+        strength=1.0,
+        a_bad=A_BAD,
+        a_good=A_GOOD,  # default collection_epsilon = 1.0 (fixed)
+    )
+    a = pol.act(obs).action
+    p_eff = (a == A_BAD).float().mean().item()
+    # If the decaying epsilon (0.001) leaked in, p_eff ~= 0.0005; the fixed pin -> ~0.5.
+    assert abs(p_eff - 0.5) < 0.02, p_eff
+
+
+def test_r2_one_hot_fallback_raises():
+    class _Opaque:
+        def act(self, obs, *a, **k):
+            return ActionOutput(action=torch.zeros(obs.shape[0], dtype=torch.long))
+
+    env = _UEnv(4)
+    env.current_u = torch.ones(4)
+    pol = MarginallyMatchedConfoundedBehaviorPolicy(
+        _Opaque(), "discrete", Discrete(2), env, strength=1.0
+    )
+    import pytest
+
+    with pytest.raises(ValueError):
+        pol.act(torch.zeros(4, 2))
