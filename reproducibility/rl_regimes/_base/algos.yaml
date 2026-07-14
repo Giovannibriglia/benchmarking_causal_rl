@@ -1,0 +1,8 @@
+# Shared offline learner list. Discrete offline algos; the strategy-critic ablation
+# shares each algo's base class (observational/proximal/oracle_u/sensitivity are
+# built on the SAME base learner, no bare-DQN floor confound — see PR 4).
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql

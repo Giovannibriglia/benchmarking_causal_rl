@@ -1,0 +1,20 @@
+# online_mdp — the L-shaped sweep (ONLINE learning, full observability).
+#
+# Same L (7 points; shared origin; two 1-D arms; action-dependent confounder), but
+# ONLINE: there is no offline dataset and no offline generator to share — the
+# behavior policy IS the learner being trained. So the shared-generator-checkpoint
+# guarantee (CHANGE 1) does not apply here, and the offline `run_cell` driver
+# refuses this regime (data_regime: online) by design. The online arms run through
+# the on-policy benchmark path (PR 3's online intervened gate). DISCRETE ONLY.
+regime: online_mdp
+observability: mdp
+data_regime: online
+discrete_only: true
+
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }

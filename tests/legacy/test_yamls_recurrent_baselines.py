@@ -32,7 +32,9 @@ CELLS_ONLINE_SIGMA = {
 
 def _load(cell, name):
     return yaml.safe_load(
-        (REPO_ROOT / "reproducibility" / "rl_regimes" / cell / name).read_text()
+        (
+            REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / cell / name
+        ).read_text()
     )
 
 

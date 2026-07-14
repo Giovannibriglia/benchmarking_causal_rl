@@ -1,0 +1,7 @@
+# Shared env list for the (regime × L-sweep) layout. DISCRETE, unit-reward-scale
+# envs where the σ·U confounding mechanism actually bites: LunarLander's dense
+# reward and the continuous envs defeat it (Corr(A,R)≈0 at σ≤1) — see the PR #34
+# finding and docs/rl_regimes_restructure.md. A cell's sweep.yaml may override.
+envs:
+  - CartPole-v1
+  - Acrobot-v1

@@ -24,7 +24,7 @@ from tests.conftest import REPO_ROOT
 
 warnings.filterwarnings("ignore")
 
-CELL_8 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_8"
+CELL_8 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_8"
 DISCRETE_ENVS = ["CartPole-v1", "LunarLander-v3", "Acrobot-v1"]
 CONTINUOUS_ENVS = ["Pendulum-v1", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
 MASKS = {
@@ -129,7 +129,7 @@ def test_cell_8_discrete_smoke(tmp_path):
         ds.storage.metadata["gate_test_passed"] is True
     ), "seed=0 σ=0.5 must gate-pass"
     try:
-        repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "cell_8"
+        repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "_legacy" / "cell_8"
         repro_dir.mkdir(parents=True)
         (repro_dir / "confounded_sigma_050_masked_discrete.yaml").write_text(
             yaml.safe_dump(
@@ -159,7 +159,7 @@ def test_cell_8_discrete_smoke(tmp_path):
                 sys.executable,
                 str(REPO_ROOT / "main.py"),
                 "--reproduce",
-                "rl_regimes/cell_8/confounded_sigma_050_masked_discrete",
+                "rl_regimes/_legacy/cell_8/confounded_sigma_050_masked_discrete",
             ],
             cwd=tmp_path,
             env=env,

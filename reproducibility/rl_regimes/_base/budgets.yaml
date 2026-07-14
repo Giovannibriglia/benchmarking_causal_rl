@@ -1,0 +1,8 @@
+# Shared training / generation budgets (matches the frozen cell_3/cell_7 settings).
+budgets:
+  n_episodes: 250
+  n_checkpoints: 25
+  n_train_envs: 16
+  n_eval_envs: 16
+  rollout_len: 1024
+  rollout_episodes: 30

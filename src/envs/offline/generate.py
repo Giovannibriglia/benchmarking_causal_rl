@@ -516,6 +516,122 @@ def _read_eval_returns(run_dir: str) -> dict[int, float]:
 
 
 # --------------------------------------------------------------------------
+# Shared-generator plumbing (PR 5, CHANGE 1)
+# --------------------------------------------------------------------------
+def generator_checkpoint_hash(agent) -> str:
+    """A stable content hash of the generator's parameters.
+
+    Every arm of a cell must be collected under ONE ``pi_basic``; ``pi_basic`` (and
+    the biased / confounded arms) all derive from ``agent``'s policy nets, so the
+    agent's ``state_dict`` fully determines it. The sweep driver stamps this into
+    each dataset's metadata and refuses a cell whose arms carry different hashes.
+    Deterministic: keys sorted, raw tensor bytes; identical agent -> identical hash."""
+    import hashlib
+
+    h = hashlib.sha256()
+    sd = None
+    fn = getattr(agent, "state_dict", None)
+    if callable(fn):
+        try:
+            sd = fn()
+        except Exception:
+            sd = None
+    if not sd:  # fall back to scanning nn.Module attributes (the policy nets)
+        import torch.nn as nn
+
+        sd = {}
+        for attr, val in vars(agent).items():
+            if isinstance(val, nn.Module):
+                for pk, pv in val.state_dict().items():
+                    sd[f"{attr}.{pk}"] = pv
+    for k in sorted(sd.keys()):
+        v = sd[k]
+        h.update(str(k).encode())
+        if torch.is_tensor(v):
+            h.update(v.detach().cpu().contiguous().float().numpy().tobytes())
+        else:
+            h.update(repr(v).encode())
+    return h.hexdigest()[:16]
+
+
+def build_generator_agent(
+    env_id: str,
+    generator_algo: str,
+    tier: str,
+    *,
+    seed: int = 0,
+    train_episodes: int = 50,
+    n_checkpoints: int = 10,
+    fraction: float = 1.0 / 3.0,
+    run_dir: str | None = None,
+    device: str | None = None,
+):
+    """Build ONE generator agent for a cell and return ``(agent, hash)``.
+
+    The sweep driver calls this once per (env, seed) and hands the SAME ``agent`` to
+    every ``generate_offline_dataset`` call of the cell (see CHANGE 1) so the basic /
+    biased / confounded arms share a single ``pi_basic``. For the ``random`` tier the
+    agent is a fresh (untrained) build; otherwise it is trained and snapshotted at
+    the tier's return percentile — the identical train/build/load the fresh-agent
+    path performs internally, just surfaced so the object can be reused."""
+    import gymnasium as gym
+
+    from src.benchmarking.registry import register_default_algorithms, registry
+    from src.config.device import detect_device
+    from src.config.seeding import set_seed
+    from src.envs.registry import register_default_env_wrappers
+
+    register_default_algorithms()
+    register_default_env_wrappers()
+    # Seed BEFORE building the generator net so the shared checkpoint is REPRODUCIBLE
+    # per (env, seed): the whole cell is collected under one deterministic pi_basic,
+    # so its confounding realization (and the gate outcome) is stable across runs.
+    set_seed(seed, deterministic=True)
+    assert_online_generator(generator_algo)
+    probe = gym.make(env_id)
+    env_action_type = "discrete" if hasattr(probe.action_space, "n") else "continuous"
+    probe.close()
+    assert_action_space_match(generator_algo, env_action_type)
+
+    dev = torch.device(device) if device else detect_device()
+    sel_ep = None
+    if tier != "random":
+        if run_dir is None:
+            raise ValueError("non-random tiers require run_dir for the generator")
+        _train_generator(
+            env_id, generator_algo, train_episodes, n_checkpoints, seed, run_dir, dev
+        )
+        sel_ep = select_tier_episode(_read_eval_returns(run_dir), tier, fraction)
+
+    # A plain (behavior_policy="agent") rollout env just to read the canonical dims.
+    probe_env = build_rollout_env(env_id, 1, dev, seed, "agent", None)
+    obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(probe_env)
+    probe_env.close()
+    _, agent = registry.get(generator_algo).builder(
+        obs_dim=obs_dim,
+        action_dim=action_dim,
+        action_type=action_type,
+        device=dev,
+        action_space=action_space,
+        obs_shape=obs_shape,
+    )
+    if sel_ep is not None:
+        from src.benchmarking.checkpoints import load_checkpoint
+
+        tag = env_id.replace("/", "-")
+        ckpt = load_checkpoint(
+            os.path.join(
+                run_dir,
+                "checkpoints",
+                f"{tag}_{generator_algo}_seed{seed}",
+                f"ckpt_ep{sel_ep:04d}.pt",
+            )
+        )
+        agent.load_state_dict(ckpt["agent_state"])
+    return agent, generator_checkpoint_hash(agent)
+
+
+# --------------------------------------------------------------------------
 # The pipeline
 # --------------------------------------------------------------------------
 def generate_offline_dataset(
@@ -537,10 +653,22 @@ def generate_offline_dataset(
     dataset_id: str | None = None,
     run_dir: str | None = None,
     device: str | None = None,
+    agent=None,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
-    local cache. Returns the created MinariDataset."""
+    local cache. Returns the created MinariDataset.
+
+    ``agent`` (PR 5, CHANGE 1): a PRE-BUILT generator agent. When supplied, the
+    per-call train/build/checkpoint-load is SKIPPED and this exact agent defines
+    ``pi_basic`` for the rollout. The sweep driver builds ONE agent per (env, seed)
+    and passes it to every sweep point of a cell, so the basic / biased / confounded
+    arms all share a SINGLE ``pi_basic`` — otherwise each arm gets a fresh generator
+    and every cross-arm comparison is confounded by generator variance. The
+    generator's parameter hash is stamped into the dataset metadata
+    (``generator_checkpoint_hash``) so the driver can REFUSE a cell whose arms carry
+    different hashes. With ``agent=None`` the legacy fresh-agent-per-call path is
+    byte-unchanged."""
     import gymnasium as gym
 
     from src.benchmarking.registry import register_default_algorithms, registry
@@ -563,9 +691,9 @@ def generate_offline_dataset(
 
     dev = torch.device(device) if device else detect_device()
 
-    # --- train (skipped for the random tier, which uses a fresh agent) ---
+    # --- train (skipped for the random tier, and when a pre-built agent is given) ---
     sel_ep = None
-    if tier != "random":
+    if agent is None and tier != "random":
         if run_dir is None:
             raise ValueError("non-random tiers require run_dir for the generator")
         _train_generator(
@@ -585,14 +713,19 @@ def generate_offline_dataset(
         a_bad=a_bad,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
-    _, agent = registry.get(generator_algo).builder(
-        obs_dim=obs_dim,
-        action_dim=action_dim,
-        action_type=action_type,
-        device=dev,
-        action_space=action_space,
-        obs_shape=obs_shape,
-    )
+    # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +
+    # checkpoint load — the SAME pi_basic across all sweep points of the cell.
+    if agent is None:
+        _, agent = registry.get(generator_algo).builder(
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            action_type=action_type,
+            device=dev,
+            action_space=action_space,
+            obs_shape=obs_shape,
+        )
+    # sel_ep is set ONLY on the internal-build path (train ran); a pre-built agent
+    # leaves it None, so this tier-checkpoint load is correctly skipped for it.
     if sel_ep is not None:
         from src.benchmarking.checkpoints import load_checkpoint
 
@@ -655,6 +788,10 @@ def generate_offline_dataset(
             "gate_test_passed": None,
             "behavior_strength_sigma": None,
         }
+    # CHANGE 1: stamp the generator's parameter hash so a sweep driver can PROVE all
+    # arms of a cell were collected under one pi_basic (refuse a cell whose arms
+    # differ). Stamped on every dataset — internal-build or pre-built agent alike.
+    signature["generator_checkpoint_hash"] = generator_checkpoint_hash(agent)
     ds.storage.update_metadata(signature)
     return ds
 

@@ -14,6 +14,13 @@ main.py:from src.benchmarking.critic_ablation import CriticAblationConfig, defau
 src/benchmarking/plotting.py:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/plotting.py:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:    critic_path = run_dir / "critic_ablation_metrics.csv"
+src/benchmarking/regime_sweep.py:            "mode": "critic_ablation",
+src/benchmarking/regime_sweep.py:            leaf / "critic_ablation_metrics.csv",
+src/benchmarking/regime_sweep.py:            staging / "critic_ablation_metrics.csv",
+src/benchmarking/regime_sweep.py:        critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
+src/benchmarking/regime_sweep.py:    """Copy ``critic_ablation_metrics.csv`` keeping the header + only ``critic``'s
+src/benchmarking/regime_sweep.py:    from src.benchmarking.critic_ablation import CriticAblationConfig
+src/benchmarking/regime_sweep.py:critic_ablation_metrics.csv) — the runner's writer is unchanged; only the run_dir
 src/benchmarking/runner.py:                        if self.critic_ablation.is_strategy
 src/benchmarking/runner.py:                    config=critic_ablation_cfg,
 src/benchmarking/runner.py:                    critic_losses = self.critic_ablation.update_strategy(batch)

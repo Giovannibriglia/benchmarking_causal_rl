@@ -1,3 +1,4 @@
+src/benchmarking/regime_sweep.py:                set_seed(seed, deterministic=True)
 src/benchmarking/runner.py:        g = torch.Generator().manual_seed(0)
 src/benchmarking/runner.py:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
 src/benchmarking/runner.py:        set_seed(self.env_cfg.seed, deterministic=self.train_cfg.deterministic)
@@ -7,5 +8,6 @@ src/config/seeding.py:    torch.cuda.manual_seed_all(seed)
 src/config/seeding.py:    torch.manual_seed(seed)
 src/config/seeding.py:def set_seed(seed: int, deterministic: bool = False) -> None:
 src/data/experience_source.py:        self._g = torch.Generator().manual_seed(int(rng_seed))
+src/envs/offline/generate.py:    set_seed(seed, deterministic=True)
 src/envs/wrappers/confounded.py:            self._gen.manual_seed(int(seed))
 src/rl/policies/behavior_policy.py:        self._gen.manual_seed(int(seed))
