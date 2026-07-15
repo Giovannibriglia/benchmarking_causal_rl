@@ -196,17 +196,19 @@ _ABLATION_PATTERN = re.compile(r"critic_ablation")
 
 
 def _grep_py_files(pattern: re.Pattern) -> list[str]:
+    """Content snapshot: ``<file>:<matched line>`` with NO line number. Keying on
+    line numbers made this snapshot drift on every PR that merely inserted a line
+    anywhere above a match in main.py/runner.py; the anti-drift signal we actually
+    want is which matching LINES exist, not where. Sorted-unique = a content set."""
     files = sorted((REPO_ROOT / "src").rglob("*.py")) + [REPO_ROOT / "main.py"]
-    hits: list[str] = []
+    hits: set[str] = set()
     for path in files:
         if "__pycache__" in path.parts:
             continue
         rel = path.relative_to(REPO_ROOT)
-        for i, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line in path.read_text(encoding="utf-8").splitlines():
             if pattern.search(line):
-                hits.append(f"{rel}:{i}:{line}")
+                hits.add(f"{rel}:{line}")
     return sorted(hits)
 
 
@@ -221,7 +223,9 @@ def _grep_py_files(pattern: re.Pattern) -> list[str]:
 def test_grep_snapshot_unchanged(pattern, golden_name):
     golden = (GOLDEN_DIR / golden_name).read_text(encoding="utf-8").splitlines()
     current = _grep_py_files(pattern)
-    assert current == sorted(golden), (
-        f"{golden_name} drifted. If the change is an intentional, approved file "
-        "move, regenerate the snapshot and list the move in the phase summary."
+    # Content-set comparison (line numbers stripped): stable under line insertions,
+    # catches only genuine addition/removal of a matching call site.
+    assert set(current) == set(golden), (
+        f"{golden_name} drifted (a matching call site was ADDED or REMOVED, not "
+        "merely moved). If intentional, regenerate the snapshot and note it."
     )

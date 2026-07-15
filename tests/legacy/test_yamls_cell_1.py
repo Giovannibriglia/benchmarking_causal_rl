@@ -22,7 +22,7 @@ import sys
 import yaml
 from tests.conftest import REPO_ROOT
 
-CELL_1 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_1"
+CELL_1 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_1"
 
 
 def _load(name: str) -> dict:
@@ -71,7 +71,7 @@ def test_cell_1_yamls_parse():
 def test_reproduce_nested_path_resolution():
     # Mirrors main.py:197-201 inline resolution (no public resolver fn to import):
     # a name without an extension gets ".yaml" and is joined under reproducibility/.
-    name = "rl_regimes/cell_1/online_discrete"
+    name = "rl_regimes/_legacy/cell_1/online_discrete"
     repro_name = name if name.endswith((".yaml", ".yml")) else f"{name}.yaml"
     resolved = REPO_ROOT / "reproducibility" / repro_name
     assert resolved == CELL_1 / "online_discrete.yaml"
@@ -82,7 +82,7 @@ def test_cell_1_discrete_smoke(tmp_path):
     # Tiny YAML at the SAME nested path the real file uses (CLI can't shrink the
     # real file because reproduce-YAML overrides CLI). Exercises nested
     # resolution + flat-key parsing + runner consumption, fast.
-    repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "cell_1"
+    repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "_legacy" / "cell_1"
     repro_dir.mkdir(parents=True)
     (repro_dir / "online_discrete.yaml").write_text(
         yaml.safe_dump(
@@ -108,7 +108,7 @@ def test_cell_1_discrete_smoke(tmp_path):
             sys.executable,
             str(REPO_ROOT / "main.py"),
             "--reproduce",
-            "rl_regimes/cell_1/online_discrete",
+            "rl_regimes/_legacy/cell_1/online_discrete",
         ],
         cwd=tmp_path,
         env=env,

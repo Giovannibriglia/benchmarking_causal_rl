@@ -59,6 +59,25 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     "pearson_to_oracle",
     "spearman_to_oracle",
     "gap_closed_fraction",
+    # Γ (MSM sensitivity bound) — a METHOD parameter of the sensitivity critic,
+    # ORTHOGONAL to the (β, σ) regime axes. Logged (blank for non-sensitivity
+    # critics) but NEVER folded into the dataset/(β,σ) path encoding.
+    "gamma",
+    # NULL-CALIBRATION control for the ADAPTIVE critics ONLY (observational /
+    # proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin (no
+    # correction / posterior->prior / A⊥U), so at the origin they must agree with
+    # the oracle within estimator noise. True iff value_mse_to_oracle clears the
+    # noise floor AT the origin (σ=0); blank off-origin (undefined). The
+    # NON-ADAPTIVE sensitivity critic is EXEMPT (always blank) — its unconditional
+    # Γ-bound is pessimism BY DESIGN, reported as ``pessimism_cost`` instead.
+    "null_calibrated",
+    # PESSIMISM COST (sensitivity critic ONLY, at EVERY σ): apparent_q(observational)
+    # - apparent_q(sensitivity) = the value the Γ-bound shrinks off the unconditional
+    # observational floor. Referenced against OBSERVATIONAL (not the oracle) so it is
+    # the cost of the bound, not the floor's estimator residual: EXACTLY 0 at Γ=1 by
+    # byte-identity. σ=0 = pure cost; σ>0 = the same shrinkage buying deconfounding
+    # robustness. A REPORTED RESULT; blank only for the non-sensitivity critics.
+    "pessimism_cost",
 ]
 
 _EPS = 1e-8
@@ -95,8 +114,17 @@ class CriticSpec:
     # path). "strategy" = a Q(s,a,u) IDENTIFICATION strategy hosted on the
     # episode-grouped stream (the Cell-7 deconfounding ablation).
     kind: str = "v_head"
-    builder: str | None = None  # strategy only: observational | proximal | oracle_u
+    # strategy only: observational | proximal | oracle_u | sensitivity
+    builder: str | None = None
     requires_u: bool = False  # strategy only: oracle_u reads the realized U (its fill)
+    # Γ >= 1, the sensitivity critic's MSM confounding bound (a METHOD parameter,
+    # not a regime axis). Read ONLY by builder="sensitivity"; inert (unread) for
+    # the other strategy critics — the 1.0 field default is just that inert value.
+    # NB: Γ=1 is the MSM null (byte-identical Observational) — the deterministic
+    # ANCHOR of a Γ sweep, NOT a sensible default for the sensitivity critic (at
+    # Γ=1 its ablation row is a verbatim copy of the observational row, which
+    # silently deletes the method). The sensitivity spec sets Γ=2.0 explicitly.
+    gamma: float = 1.0
 
 
 CRITIC_LIBRARY: Dict[str, CriticSpec] = {
@@ -124,6 +152,28 @@ CRITIC_LIBRARY: Dict[str, CriticSpec] = {
         kind="strategy",
         builder="oracle_u",
         requires_u=True,
+    ),
+    # Sensitivity-bounds critic (Kallus-Zhou MSM). REUSES build_sensitivity_<base>
+    # verbatim (NO reweighter reimplementation): it shares the BASE algo's class
+    # (build_sensitivity_cql -> a CQL learner with SensitivityBounds + the reward
+    # reweighter), so --algos cql compares CQL-sensitivity against CQL-oracle with
+    # no base-learner confound — the same base-parity fix the observational floor
+    # got. Γ is the method's bound, read from THIS spec, logged as the ``gamma``
+    # column, and NEVER folded into the (β, σ) path encoding.
+    #
+    # DEFAULT Γ=2.0 — a GENUINELY ACTIVE MSM bound (NOT the Γ=1 no-op, which would
+    # make the ablation row a verbatim copy of observational and silently delete
+    # the method from the paper). The sensitivity critic is NON-ADAPTIVE: it
+    # applies the worst-case Γ-bound unconditionally with no σ=0 detector, so it is
+    # EXEMPT from the null-calibration gate; its origin deviation is a REPORTED
+    # result (``pessimism_cost``), not a miscalibration. Γ=1 is the byte-identity
+    # anchor of a Γ sweep, not the default. Discrete-only; recurrent = DQN-base.
+    "sensitivity": CriticSpec(
+        target="q_adj",
+        loss="mse",
+        kind="strategy",
+        builder="sensitivity",
+        gamma=2.0,
     ),
 }
 
@@ -235,11 +285,13 @@ def _build_strategy_critic(
     action_dim: int,
     device: torch.device,
     encoder: str = "mlp",
+    gamma: float = 1.0,
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
     (no estimator reimplementation). ``builder`` selects the identification arm
-    (observational floor / proximal / oracle_u); ``encoder`` selects the
-    ORTHOGONAL architecture axis:
+    (observational floor / proximal / oracle_u / sensitivity); ``gamma`` is the
+    sensitivity critic's MSM bound Γ (ignored by the others); ``encoder`` selects
+    the ORTHOGONAL architecture axis:
 
       * ``encoder="mlp"`` (default, BYTE-FROZEN — the Cell-7 MLP row):
         observational = MLP + DQN(Observational()); proximal/oracle_u =
@@ -360,6 +412,34 @@ def _build_strategy_critic(
             "iql": build_oracle_u_iql,
         }[suffix]
         return fn(**kwargs)
+    if builder == "sensitivity":
+        # SHARES THE BASE ALGO'S CLASS: build_sensitivity_<base> = the base builder
+        # (build_cql / build_iql / build_bcq / build_offline_dqn) with a
+        # SensitivityBounds strategy + reward reweighter installed — NOT a bare DQN.
+        # So the ablation isolates the identification method, not the base learner
+        # (the same base-parity requirement as the observational floor). Γ is the
+        # method parameter, threaded via ``gamma_sensitivity`` (the builders' own
+        # seam); Γ=1 -> byte-identical Observational.
+        if recurrent:
+            from src.rl.offline.sensitivity import build_sensitivity_dqn_recurrent
+
+            return build_sensitivity_dqn_recurrent(
+                critic_network=encoder, gamma_sensitivity=gamma, **kwargs
+            )
+        from src.rl.offline.sensitivity import (
+            build_sensitivity_bcq,
+            build_sensitivity_cql,
+            build_sensitivity_dqn,
+            build_sensitivity_iql,
+        )
+
+        fn = {
+            "dqn": build_sensitivity_dqn,
+            "bcq": build_sensitivity_bcq,
+            "cql": build_sensitivity_cql,
+            "iql": build_sensitivity_iql,
+        }[suffix]
+        return fn(gamma_sensitivity=gamma, **kwargs)
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 
@@ -396,8 +476,11 @@ class StrategyCritic:
         self.spec = spec
         self.device = device
         self.requires_u = spec.requires_u
+        # Γ (MSM bound) read from THIS critic's spec — a method parameter threaded
+        # into the sensitivity builder, inert for the other strategy critics.
+        self.gamma = float(spec.gamma)
         _net, agent = _build_strategy_critic(
-            spec.builder, base_algo, obs_dim, action_dim, device, encoder
+            spec.builder, base_algo, obs_dim, action_dim, device, encoder, self.gamma
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
@@ -497,6 +580,15 @@ class CriticAblationManager:
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")
+            # The observational floor is the REQUIRED baseline for the sensitivity
+            # critic's pessimism_cost (apparent_q(observational) - apparent_q(
+            # sensitivity)); reject a sensitivity ablation that omits it up front.
+            if "sensitivity" in strat and "observational" not in strat:
+                raise ValueError(
+                    "the sensitivity critic requires the 'observational' baseline in "
+                    "the ablation set (pessimism_cost is measured against it); add "
+                    "'observational' to --ablation-critics."
+                )
             self.strategy_critics = strat
             self.critics: Dict[str, AuxiliaryCritic] = {}  # V-head path unused
             self._eval_obs: torch.Tensor | None = None
@@ -641,14 +733,30 @@ class CriticAblationManager:
             q_oracle = q_all.gather(1, act_e.unsqueeze(-1)).squeeze(-1)
             pi_oracle = q_all.argmax(1)
 
-        # Observational->oracle MSE = the denominator for the gap-closed fraction.
-        obs_mse = None
+        # Observational baseline. Its apparent_q is the REFERENCE for pessimism_cost
+        # (the sensitivity Γ-bound shrinks off the observational floor, not off the
+        # oracle), and its oracle-gap MSE is the gap-closed denominator. Computed
+        # once, reused per row.
+        obs_mse = obs_apparent_q_mean = None
         obs_c = self.strategy_critics.get("observational")
-        if oracle is not None and obs_c is not None:
+        if obs_c is not None:
             q_obs = (
                 obs_c.predict_q_adj(obs_e).gather(1, act_e.unsqueeze(-1)).squeeze(-1)
             )
-            obs_mse = float(torch.mean((q_obs - q_oracle) ** 2).item())
+            obs_apparent_q_mean = float(q_obs.mean().item())
+            if q_oracle is not None:  # gap-closed denominator needs the oracle
+                obs_mse = float(torch.mean((q_obs - q_oracle) ** 2).item())
+        # The observational floor is REQUIRED whenever a sensitivity critic is
+        # present — it is the baseline pessimism_cost is measured against, not an
+        # optional companion.
+        if obs_apparent_q_mean is None and any(
+            c.spec.builder == "sensitivity" for c in self.strategy_critics.values()
+        ):
+            raise ValueError(
+                "the sensitivity critic requires an 'observational' baseline in the "
+                "ablation set: pessimism_cost = apparent_q(observational) - "
+                "apparent_q(sensitivity) is measured against it."
+            )
 
         for name, critic in self.strategy_critics.items():
             row = {col: "" for col in STRATEGY_CRITIC_ABLATION_COLUMNS}
@@ -664,9 +772,30 @@ class CriticAblationManager:
                 train_loss=losses.get(name, ""),
                 apparent_q_mean=float(q_c.mean().item()),
             )
+            # Γ is a sensitivity-only method parameter; blank for the others (they
+            # apply no MSM bound). Orthogonal to (β, σ) — logged, never path-encoded.
+            if critic.spec.builder == "sensitivity":
+                row["gamma"] = float(critic.gamma)
+                # PESSIMISM COST at EVERY σ: apparent_q(observational) -
+                # apparent_q(sensitivity) — the value the Γ-bound shrinks off the
+                # unconditional observational floor. EXACTLY 0 at Γ=1 (byte-identity
+                # with observational), rising with Γ. σ=0 is pure cost (nothing to be
+                # robust against); at σ>0 the same shrinkage buys deconfounding
+                # robustness, so logging it across σ shows where robustness starts
+                # paying for itself — origin-only cannot produce that.
+                row["pessimism_cost"] = obs_apparent_q_mean - float(q_c.mean().item())
             if q_oracle is not None:
                 mse = float(torch.mean((q_c - q_oracle) ** 2).item())
                 tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
+                # NULL-CALIBRATION — ADAPTIVE critics only, at the (β=0, σ=0) origin.
+                # observational/proximal/oracle_u each self-null there (no correction
+                # / posterior->prior / A⊥U), so they must land within estimator noise
+                # of the oracle; a disagreement (e.g. a bare-DQN floor scored against
+                # a CQL oracle) is a base-learner confound the gate flags. The
+                # NON-ADAPTIVE sensitivity critic applies its Γ-bound unconditionally
+                # with no σ=0 detector, so it is EXEMPT (blank) — see pessimism_cost.
+                if float(sigma) == 0.0 and critic.spec.builder != "sensitivity":
+                    row["null_calibrated"] = bool(mse < _GAP_NOISE_FLOOR_MSE)
                 row.update(
                     oracle_q_mean=float(q_oracle.mean().item()),
                     q_inflation=float((q_c.mean() - q_oracle.mean()).item()),

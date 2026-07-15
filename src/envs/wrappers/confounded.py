@@ -71,6 +71,19 @@ class ConfoundedCollectionWrapper:
             self._gen = torch.Generator(device=self.device)
             self._gen.manual_seed(int(seed))
         self.current_u = self._sample_u()
+        # action_gated is DISCRETE-ONLY: the a_bad reward gate has no meaning on a
+        # continuous action space (a float action never equals a_bad -> the gate would
+        # never fire -> a silently UNCONFOUNDED dataset). The continuous confounder is
+        # deferred (see MarginallyMatchedConfoundedBehaviorPolicy + docs). Raise here
+        # rather than fail silently; test fakes without ``act_space`` are left alone.
+        if self.confounder_kind == "action_gated":
+            act_space = getattr(env, "act_space", None)
+            if act_space is not None and not hasattr(act_space, "n"):
+                raise NotImplementedError(
+                    "action_gated (action-dependent) confounding is DISCRETE-ONLY; the "
+                    "continuous confounded arm is not runnable (see "
+                    "docs/rl_regimes_restructure.md)."
+                )
 
     def __getattr__(self, name):
         # Delegate everything not overridden (obs_space, act_space, close,
@@ -99,7 +112,7 @@ class ConfoundedCollectionWrapper:
         # produced it), then expose U; obs is passed through untouched.
         if self.confounder_kind == "additive":
             reward = reward + self.c_r * self.current_u  # cells 7/8 — BYTE-FROZEN
-        else:  # action_gated: shift ONLY on the a_bad transitions (U changes argmax)
+        else:  # action_gated (discrete-only): shift ONLY on the a_bad transitions
             gate = (action == self.a_bad).to(reward.dtype)
             reward = reward + self.c_r * self.current_u * gate
         info = {**info, "confounder_u": self.current_u.clone()}

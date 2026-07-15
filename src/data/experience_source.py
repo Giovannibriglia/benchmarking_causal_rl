@@ -361,20 +361,26 @@ class OnlineSource(ExperienceSource):
         """
         last_batch = None
         for _ in range(n_steps):
-            actions = collection_policy.act(obs).action
+            act_out = collection_policy.act(obs)
+            actions = act_out.action
+            # intervened: emitted only by the marginally-matched confounded policy
+            # (None otherwise -> the transition dict is unchanged and the additive /
+            # default collection paths stay byte-identical / golden).
+            intervened = act_out.intervened
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             # store each env transition separately
             for i in range(n_envs):
-                replay_buffer.add(
-                    {
-                        "obs": obs[i].detach(),
-                        "actions": actions[i].detach(),
-                        "rewards": reward[i].detach(),
-                        "next_obs": next_obs[i].detach(),
-                        "dones": done[i].detach(),
-                    }
-                )
+                transition = {
+                    "obs": obs[i].detach(),
+                    "actions": actions[i].detach(),
+                    "rewards": reward[i].detach(),
+                    "next_obs": next_obs[i].detach(),
+                    "dones": done[i].detach(),
+                }
+                if intervened is not None:
+                    transition["intervened"] = intervened[i].detach()
+                replay_buffer.add(transition)
             obs = next_obs
 
             if len(replay_buffer) > max(warmup, batch_size):
@@ -432,22 +438,27 @@ class OnlineSource(ExperienceSource):
             # Behavior policy may override the emitted action (state still
             # evolved through the agent's forward on the real obs).
             if collection_policy is not None:
-                actions = collection_policy.act(obs).action
+                act_out = collection_policy.act(obs)
+                actions = act_out.action
+                intervened = act_out.intervened  # None except the confounded arm
             else:
                 actions = out.action
+                intervened = None
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             for i in range(n_envs):
-                replay_buffer.add(
-                    i,
-                    {
-                        "obs": obs[i].detach(),
-                        "actions": actions[i].detach(),
-                        "rewards": reward[i].detach(),
-                        "next_obs": next_obs[i].detach(),
-                        "dones": done[i].detach(),
-                    },
-                )
+                transition = {
+                    "obs": obs[i].detach(),
+                    "actions": actions[i].detach(),
+                    "rewards": reward[i].detach(),
+                    "next_obs": next_obs[i].detach(),
+                    "dones": done[i].detach(),
+                }
+                # Store intervened on EVERY transition (per run) so sample_sequences'
+                # key-stacking never KeyErrors; None -> byte-identical to before.
+                if intervened is not None:
+                    transition["intervened"] = intervened[i].detach()
+                replay_buffer.add(i, transition)
                 if bool(done[i]):
                     replay_buffer.mark_episode_end(i)
             # Reset per-env hidden state at episode boundaries.
@@ -502,7 +513,9 @@ class OnlineSource(ExperienceSource):
         (``online=True``), re-applying the label-persistence canonicalization each
         refresh. Each step then samples a same-episode ``(B, T, *)`` window ->
         ``agent.update`` (the proximal ``m_step``, which flattens for the MLP base).
-        Returns the carried obs, the latest metrics, and whether the handoff fired."""
+        Returns ``(obs, metrics_cache, handed_off, last_batch)`` — the carried obs, the
+        latest metrics, whether the handoff fired, and the last sampled (B,T) batch (for
+        the checkpoint coverage / online intervened diagnostics; None until warmup)."""
         # Seed every stored transition with a DEFAULT r_tau = prior. The E-step only
         # scatters posteriors into episodes present at a refresh; online, fresh
         # episodes are added between refreshes and could be sampled first — without a
@@ -513,22 +526,27 @@ class OnlineSource(ExperienceSource):
         # INFERRED latent, not the realized U -> five-keys is untouched.
         em = getattr(agent, "_proximal_em", None)
         prior = float(getattr(em, "prior_p", 0.5))
+        last_batch = None
         for _ in range(n_steps):
-            actions = collection_policy.act(obs).action
+            act_out = collection_policy.act(obs)
+            actions = act_out.action
+            intervened = act_out.intervened  # None except the confounded arm
             next_obs, reward, terminated, truncated, _ = self.env.step(actions)
             done = torch.logical_or(terminated, truncated).float()
             for i in range(n_envs):
-                replay_buffer.add(
-                    i,
-                    {
-                        "obs": obs[i].detach(),
-                        "actions": actions[i].detach(),
-                        "rewards": reward[i].detach(),
-                        "next_obs": next_obs[i].detach(),
-                        "dones": done[i].detach(),
-                        "r_tau": torch.tensor(prior),
-                    },
-                )
+                transition = {
+                    "obs": obs[i].detach(),
+                    "actions": actions[i].detach(),
+                    "rewards": reward[i].detach(),
+                    "next_obs": next_obs[i].detach(),
+                    "dones": done[i].detach(),
+                    "r_tau": torch.tensor(prior),
+                }
+                # Store intervened on EVERY transition (per run) so sample_sequences'
+                # key-stacking never KeyErrors; None -> byte-identical to before.
+                if intervened is not None:
+                    transition["intervened"] = intervened[i].detach()
+                replay_buffer.add(i, transition)
                 if bool(done[i]):
                     replay_buffer.mark_episode_end(i)
             obs = next_obs
@@ -543,4 +561,5 @@ class OnlineSource(ExperienceSource):
                     handed_off = True
                 batch = replay_buffer.sample_sequences(batch_size, seq_len)
                 metrics_cache = agent.update(batch)
-        return obs, metrics_cache, handed_off
+                last_batch = batch
+        return obs, metrics_cache, handed_off, last_batch

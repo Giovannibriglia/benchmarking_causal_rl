@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import argparse
 
-from src.envs.offline.generate import generate_offline_dataset
+from src.envs.offline.generate import default_gate_for, generate_offline_dataset
 
 
 def main() -> None:
@@ -55,6 +55,15 @@ def main() -> None:
         help="rollout behavior (provenance axis). Composes with --offline-tier.",
     )
     p.add_argument("--behavior-strength", type=float, default=None)
+    # Declarative confounder config (action-dependent arm). c_r is the FIXED U->R
+    # reward-shift magnitude (decoupled from sigma); the gate tolerances override the
+    # action_dependent point-check defaults.
+    p.add_argument("--confounder-c-r", type=float, default=None)
+    p.add_argument("--pi-basic-epsilon", type=float, default=None)
+    p.add_argument("--a-bad", type=int, default=1)
+    p.add_argument("--gate-corr-tolerance", type=float, default=None)
+    p.add_argument("--gate-ungated-reward-corr-max", type=float, default=None)
+    p.add_argument("--gate-intervened-tolerance", type=float, default=None)
     p.add_argument("--train-episodes", type=int, default=50)
     p.add_argument("--n-checkpoints", type=int, default=10)
     p.add_argument("--rollout-episodes", type=int, default=20)
@@ -67,12 +76,26 @@ def main() -> None:
     )
     args = p.parse_args()
 
+    # Build the declarative gate config from defaults + any CLI tolerance overrides.
+    gate = default_gate_for(args.behavior_policy)
+    for key, val in (
+        ("corr_tolerance", args.gate_corr_tolerance),
+        ("ungated_reward_corr_max", args.gate_ungated_reward_corr_max),
+        ("intervened_tolerance", args.gate_intervened_tolerance),
+    ):
+        if val is not None:
+            gate[key] = val
+
     ds = generate_offline_dataset(
         env_id=args.env,
         generator_algo=args.algo,
         tier=args.offline_tier,
         behavior_policy=args.behavior_policy,
         behavior_strength=args.behavior_strength,
+        confounder_c_r=args.confounder_c_r,
+        pi_basic_epsilon=args.pi_basic_epsilon,
+        a_bad=args.a_bad,
+        gate=gate,
         fraction=args.tier_fraction,
         train_episodes=args.train_episodes,
         n_checkpoints=args.n_checkpoints,

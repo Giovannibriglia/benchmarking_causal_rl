@@ -22,8 +22,8 @@ ENVS = ["CartPole-v1", "Acrobot-v1"]
 MASKS = {"CartPole-v1": [1, 3], "Acrobot-v1": [4, 5]}  # §5, matches offline Cell 8
 SIGMAS = [("000", 0.0), ("025", 0.25), ("050", 0.5), ("075", 0.75), ("100", 1.0)]
 
-CELL_7 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_7"
-CELL_8 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_8"
+CELL_7 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_7"
+CELL_8 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_8"
 
 
 def _online_files():

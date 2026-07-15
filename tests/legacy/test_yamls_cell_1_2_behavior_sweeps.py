@@ -36,6 +36,7 @@ def _path(cell: str, stem: str, behavior: str, nnn: str):
         REPO_ROOT
         / "reproducibility"
         / "rl_regimes"
+        / "_legacy"
         / cell
         / f"{stem}_{behavior}_{nnn}.yaml"
     )

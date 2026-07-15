@@ -75,15 +75,18 @@ first (resumable, one-time; ~30 min cold, near-instant once present):
 # 1. Generate the offline datasets:
 bash tools/generate_all_datasets.sh
 ```
-Then run Cells 1–4, 7, 8 (76 YAMLs, 8 concurrent), which plots every resulting
-run dir:
+Then run the `(regime × L-sweep)` cells. One cell = one job; each builds ONE
+generator checkpoint per (env, seed) and runs its 7 paired sweep points from it,
+writing parameter-addressed leaves under `results/`:
 ```bash
-# 2. Run the full paper-matrix simulation:
-bash tools/run_cells_1234_parallel.sh
+# 2. Run the offline regime cells (offline_mdp + offline_pomdp):
+bash tools/run_regime_sweep.sh
+# or a single cell:  bash tools/run_regime_sweep.sh offline_mdp
 ```
-Step 1 is optional on a fresh machine: the sweep's preflight auto-builds any
-missing datasets on first run via the same `tools/generate_all_datasets.sh`.
-Running it explicitly first just front-loads that one-time cost.
+Results land under `results/{regime}/beta_{bbb}_sigma_{sss}/{env}/{algo}/{critic}/{seed}/`;
+each leaf is an ordinary run dir. Plotting is a separate step (the reporting layer is
+being wired to read this tree). The legacy flat `cell_1…9` YAMLs are frozen under
+`reproducibility/rl_regimes/_legacy/` — see `docs/cell_mapping.md`.
 
 ---
 

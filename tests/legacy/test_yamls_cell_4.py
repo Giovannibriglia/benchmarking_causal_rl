@@ -25,7 +25,7 @@ from tests.conftest import REPO_ROOT
 
 warnings.filterwarnings("ignore")
 
-CELL_4 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_4"
+CELL_4 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_4"
 
 DISCRETE_ENVS = ["CartPole-v1", "LunarLander-v3", "Acrobot-v1"]
 CONTINUOUS_ENVS = ["Pendulum-v1", "HalfCheetah-v5", "Hopper-v5", "Walker2d-v5"]
@@ -110,7 +110,7 @@ def test_cell_4_discrete_smoke(tmp_path):
         dataset_id=did,
     )
     try:
-        repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "cell_4"
+        repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "_legacy" / "cell_4"
         repro_dir.mkdir(parents=True)
         (repro_dir / "offline_random_masked_discrete.yaml").write_text(
             yaml.safe_dump(
@@ -138,7 +138,7 @@ def test_cell_4_discrete_smoke(tmp_path):
                 sys.executable,
                 str(REPO_ROOT / "main.py"),
                 "--reproduce",
-                "rl_regimes/cell_4/offline_random_masked_discrete",
+                "rl_regimes/_legacy/cell_4/offline_random_masked_discrete",
             ],
             cwd=tmp_path,
             env=env,

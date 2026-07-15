@@ -443,12 +443,265 @@ class ConfoundedBehaviorPolicy(BehaviorPolicy):
         return ActionOutput(action=agent_a + self.c_a * u.unsqueeze(-1))
 
 
+_CONF_EPS = 1e-8
+# Default FIXED exploration for pi_basic on discrete/DQN bases. NOT 1.0 (that would
+# make the 2-action base UNIFORM RANDOM = the `random` coverage tier, not `basic`):
+# 0.5 keeps a real preference (argmax gets 0.75, the other 0.25) while holding p away
+# from 0 so corr(1[a=a_bad], U) = sigma*sqrt(p(1-p)) stays visible.
+PI_BASIC_EPSILON_DEFAULT = 0.5
+
+
+def _pi_basic_probs(
+    agent: Algorithm, obs: torch.Tensor, action_space, epsilon: float
+) -> torch.Tensor:
+    """``pi_basic(.|s)`` as a normalized ``[B, A]`` categorical at a FIXED ``epsilon``
+    (NEVER the learner's decaying epsilon). Resolution order: an explicit
+    ``action_probs`` seam (tests + clean integration) or an on-policy ``distribution``
+    head are used AS-IS (they already define pi_basic); a DQN ``q_network`` is softened
+    to eps-greedy at the fixed ``epsilon``. An opaque agent RAISES — a one-hot base
+    would pin ``p in {0,1}`` and silently kill the confounding.
+
+    This is the SINGLE source of pi_basic shared by ``PiBasicBehaviorPolicy`` (the
+    basic arm) and ``MarginallyMatchedConfoundedBehaviorPolicy`` (the confounded arm),
+    so the (beta=0, sigma=0) origin is one identical policy across subcells."""
+    fn = getattr(agent, "action_probs", None)
+    if callable(fn):
+        probs = fn(obs)
+    elif hasattr(agent, "distribution"):
+        probs = agent.distribution(obs).probs
+    elif hasattr(agent, "q_network"):
+        with torch.no_grad():
+            q = agent.q_network(obs)
+        if isinstance(q, tuple):
+            q = q[0]
+        n = q.shape[-1]
+        eps = min(max(float(epsilon), 0.0), 1.0)
+        probs = torch.full_like(q, eps / n)  # eps-greedy at the FIXED epsilon
+        rows = torch.arange(q.shape[0], device=q.device)
+        probs[rows, q.argmax(dim=-1)] += 1.0 - eps
+    else:
+        raise ValueError(
+            "pi_basic needs the base policy's action distribution (an `action_probs` "
+            "method, an on-policy `distribution` head, or a DQN `q_network`); a one-hot "
+            "fallback would pin p in {0,1} and silently kill the confounding signal."
+        )
+    probs = probs.float().clamp_min(0.0)
+    return probs / probs.sum(dim=-1, keepdim=True).clamp_min(_CONF_EPS)
+
+
+class PiBasicBehaviorPolicy(BehaviorPolicy):
+    """The shared base policy ``pi_basic`` — a FIXED policy (fixed epsilon, NOT the
+    learner's decaying epsilon) that is the common ORIGIN of all three subcells:
+
+      * ``basic``      collects with ``pi_basic`` directly (this policy);
+      * ``biased``     applies ``bias_skew`` ON TOP of ``pi_basic``;
+      * ``confounded`` applies the U-swap ON TOP of ``pi_basic``.
+
+    Because the basic arm and the confounded arm read the SAME ``pi_basic`` (same
+    fixed epsilon), the ``(beta=0, sigma=0)`` point of both is one identical policy —
+    the shared origin the orthogonality claim rests on. Online, the fixed epsilon also
+    keeps the basic behavior policy STATIONARY (the learner's epsilon anneals; this one
+    does not)."""
+
+    def __init__(
+        self,
+        agent: Algorithm,
+        action_type: str,
+        action_space,
+        *,
+        epsilon: float = PI_BASIC_EPSILON_DEFAULT,
+    ) -> None:
+        self.agent = agent
+        self.action_type = action_type
+        self.action_space = action_space
+        self.epsilon = min(max(float(epsilon), 0.0), 1.0)
+
+    def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        return _pi_basic_probs(self.agent, obs, self.action_space, self.epsilon)
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        if self.action_type == "discrete":
+            probs = self.action_probs(obs)
+            return ActionOutput(action=torch.multinomial(probs, 1).reshape(-1))
+        # continuous: pi_basic is the fixed base policy's own (continuous) action.
+        return ActionOutput(action=self.agent.act(obs).action)
+
+
+class BiasedArmPolicy(BehaviorPolicy):
+    """The biased subcell: CONCENTRATE ``pi_basic`` toward its per-state greedy action.
+    With probability ``beta`` take ``argmax_a pi_basic(a|s)``, else sample ``pi_basic``.
+    ``beta`` is the bias strength; ``beta=0`` IS ``pi_basic`` (the shared origin).
+
+    It is bias_skew applied ON TOP of pi_basic (wraps a ``PiBasicBehaviorPolicy``), but
+    the skew target is the per-state MODE, not a global fixed action. This is required
+    by the state-conditional coverage metric ``mean_s[min_a p_b(a|s)]``: concentrating
+    toward the mode degrades it MONOTONICALLY in ``beta`` (``beta->1`` => per-state
+    one-hot => coverage 0), whereas a fixed-preferred skew RAISES coverage at states
+    where the preferred action is the minority (non-monotone). Discrete only.
+    """
+
+    def __init__(self, base, action_type, action_space, *, beta: float = 0.5) -> None:
+        self.base = base  # a PiBasicBehaviorPolicy exposing action_probs
+        self.action_type = action_type
+        self.action_space = action_space
+        self.beta = float(beta)
+
+    def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """The realized (U-free) per-state distribution:
+        ``(1-beta)*pi_basic(.|s) + beta*onehot(argmax pi_basic)``."""
+        p = self.base.action_probs(obs)
+        onehot = torch.zeros_like(p)
+        rows = torch.arange(p.shape[0], device=p.device)
+        onehot[rows, p.argmax(dim=-1)] = 1.0
+        return (1.0 - self.beta) * p + self.beta * onehot
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        probs = self.action_probs(obs)
+        return ActionOutput(action=torch.multinomial(probs, 1).reshape(-1))
+
+
+class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
+    """Action-dependent confounded collection = the U-swap applied ON TOP of the shared
+    ``pi_basic`` (see ``PiBasicBehaviorPolicy``), EXACTLY marginally-matched:
+    ``E_U[pi_b(a|s,U)] == pi_basic(a|s)`` for all ``s``, ``p``, ``sigma``
+    (``U ~ Bernoulli(0.5)``). Pairs with ``ConfoundedCollectionWrapper`` in
+    ``action_gated`` mode (``bias_confounded_action``). Replaces
+    ``ConfoundedBehaviorPolicy`` for the action-dependent arm only; the additive cells
+    7/8 keep the byte-frozen ``ConfoundedBehaviorPolicy`` untouched.
+
+    Construction (discrete, per obs, with ``p = pi_basic(a_bad|s)``,
+    ``g = pi_basic(a_good|s)``, ``pbar = p/(p+g)``) — the MIXTURE form of the swap:
+
+      * draw a confounder coin ``c ~ Bernoulli(sigma)``;
+      * ``c == 0`` (prob ``1-sigma``): keep ``a0 ~ pi_basic`` — the learner's own
+        draw (a genuine ``do(a)`` online);
+      * ``c == 1`` (prob ``sigma``): if ``a0 in {a_good, a_bad}`` redraw WITHIN the
+        pair with ``P(a_bad | U=1) = pbar*(2-pbar)``, ``P(a_bad | U=0) = pbar^2``
+        (other actions pass through). Both lie in ``[0,1]`` by construction — NO
+        clipping. Averaged over ``U`` the pair split is ``pbar`` again, so the
+        marginal is ``pi_basic`` EXACTLY, and at ``sigma=0`` the policy IS ``pi_basic``.
+
+    ``sigma`` (``strength``) scales the U->A edge ONLY; the U->R reward shift lives in
+    the wrapper's fixed ``c_r``. ``pi_basic_epsilon`` is the SHARED fixed exploration
+    (default ``0.5``): NOT the learner's decaying epsilon (which would desync the
+    origin and shrink the signal online) and NOT uniform (which would be the random
+    tier). The U->A gap is ``2*sigma*p*g/(p+g)`` (``= 2*sigma*p*(1-p)`` binary): it
+    VANISHES where ``pi_basic`` is deterministic — an action always/never taken cannot
+    be confounded without moving the marginal.
+
+    This is the binary PARTITION SWAP with cells ``{a_good}``, ``{a_bad}`` and cell
+    indicator ``h``. DISCRETE-ONLY: the continuous arm is HARD-GATED (the ``__init__``
+    raises ``NotImplementedError``) pending a dedicated follow-up — see that message and
+    docs/rl_regimes_restructure.md for the three open defects (post-squash noise, the
+    untested ``deterministic=True`` API assumption, and the silent ``current_h`` gate).
+
+    ``intervened`` (per element): ``is_online AND (c == 0)`` — True only where the
+    learner's own action executed under an online regime. Offline it is False
+    everywhere; hence ``mean(intervened) == 0`` offline, ``~= 1 - sigma`` online.
+    """
+
+    @classmethod
+    def affects_on_policy(cls) -> bool:
+        # Also wraps train_env with ConfoundedCollectionWrapper (reward shift),
+        # so on-policy algorithms genuinely respond — same rationale as
+        # ConfoundedBehaviorPolicy.
+        return True
+
+    def __init__(
+        self,
+        agent: Algorithm,
+        action_type: str,
+        action_space,
+        env,
+        *,
+        strength: float = 1.0,
+        a_bad: int = 1,
+        a_good: int = 0,
+        pi_basic_epsilon: float = PI_BASIC_EPSILON_DEFAULT,
+        is_online: bool = False,
+    ) -> None:
+        if action_type == "continuous":
+            raise NotImplementedError(
+                "MarginallyMatchedConfoundedBehaviorPolicy is DISCRETE-ONLY. The "
+                "continuous partition swap is hard-gated pending a dedicated follow-up "
+                "PR with three open defects:\n"
+                "  (a) POST-SQUASH noise -> pi_basic is an unbounded Gaussian the env "
+                "then CLIPS: the realized policy is a clipped Gaussian with atoms at "
+                "the bounds and the reported noise scale does not describe it. The "
+                "construction must move PRE-squash (tanh is monotone, so the halfspace, "
+                "the reflection, and the cell indicator all commute with it and the "
+                "action is bounded with NO clipping).\n"
+                "  (b) agent.act(obs, deterministic=True) is an UNTESTED API "
+                "assumption (mocks swallow it via **kwargs; a real SAC/TD3 would "
+                "TypeError) -> continuous must be validated against a REAL registered "
+                "algo.\n"
+                "  (c) the current_h reward-gate side-channel fails SILENTLY (a "
+                "float action never equals a_bad -> the gate never fires -> c_r has no "
+                "effect -> a silently UNCONFOUNDED dataset).\n"
+                "See docs/rl_regimes_restructure.md (continuous confounded cells)."
+            )
+        self.agent = agent
+        self.action_type = action_type
+        self.action_space = action_space
+        self.env = env  # the ConfoundedCollectionWrapper (exposes current_u)
+        self.strength = float(strength)
+        self.a_bad = int(a_bad)
+        self.a_good = int(a_good)
+        # SHARED fixed exploration defining pi_basic (same object as the basic arm's).
+        self.pi_basic_epsilon = min(max(float(pi_basic_epsilon), 0.0), 1.0)
+        self.is_online = bool(is_online)
+
+    def _base_action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """``pi_basic(.|s)`` via the SHARED helper at the fixed ``pi_basic_epsilon`` —
+        identical to what ``PiBasicBehaviorPolicy`` samples for the basic arm."""
+        return _pi_basic_probs(
+            self.agent, obs, self.action_space, self.pi_basic_epsilon
+        )
+
+    def action_probs(self, obs: torch.Tensor) -> torch.Tensor:
+        """The U-MARGINALIZED realized action distribution
+        ``E_U[pi_b(.|s,U)] == pi_basic(.|s)`` (marginal-matching theorem). Used by the
+        state-conditional coverage metric — so confounded coverage EQUALS basic
+        coverage by construction (a check on the marginal matching, not evidence)."""
+        return self._base_action_probs(obs)
+
+    def _intervened(self, coin_fired: torch.Tensor) -> torch.Tensor:
+        if self.is_online:
+            return ~coin_fired
+        return torch.zeros_like(coin_fired)
+
+    def act(self, obs: torch.Tensor) -> ActionOutput:
+        # DISCRETE-ONLY (continuous is hard-gated in __init__). Binary partition swap
+        # on cells {a_good}, {a_bad}.
+        b = obs.shape[0]
+        u = self.env.current_u.to(obs.device).reshape(-1)
+        sigma = min(max(self.strength, 0.0), 1.0)
+        coin = torch.rand(b, device=obs.device) < sigma  # confounder acts w.p. sigma
+        probs = self._base_action_probs(obs)  # == pi_basic (shared origin)
+        a0 = torch.multinomial(probs, 1).reshape(-1)  # a0 ~ pi_basic
+        p = probs[:, self.a_bad]
+        g = probs[:, self.a_good]
+        pbar = p / (p + g).clamp_min(_CONF_EPS)  # within-pair P(a_bad)
+        # confounded within-pair P(a_bad): pbar(2-pbar) if U==1 else pbar^2.
+        w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
+        in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
+        redraw = coin & in_pair
+        pair_action = torch.where(
+            torch.rand(b, device=obs.device) < w,
+            torch.full_like(a0, self.a_bad),
+            torch.full_like(a0, self.a_good),
+        )
+        action = torch.where(redraw, pair_action, a0)
+        return ActionOutput(action=action, intervened=self._intervened(coin))
+
+
 # Collection-policy registry. The "agent" entry is handled by the runner with
 # the original AgentBehaviorPolicy(self.agent) construction (byte-identical to
 # the pre-A1 path), so the off-policy golden is untouched; this factory only
 # builds the opt-in policies.
 _STRENGTH_PARAM = {
     "anti_reward": "strength",  # P(take argmin-Q action) vs the agent's action
+    "biased": "beta",  # the biased arm: beta = concentration strength on pi_basic
     "bias_skew": "p",  # probability of the preferred action
     "bias_suboptimal": "beta",  # probability of using the agent (vs uniform base)
     "curiosity": "strength",  # probability of emitting the max-disagreement action
@@ -461,15 +714,22 @@ _STRENGTH_PARAM = {
 # by build_collection_policy.
 _BEHAVIOR_POLICY_CLASSES: dict[str, type[BehaviorPolicy]] = {
     "agent": AgentBehaviorPolicy,
+    # The shared fixed-epsilon base policy pi_basic — the basic subcell's collector
+    # and the common origin the biased / confounded arms transform on top of.
+    "pi_basic": PiBasicBehaviorPolicy,
+    # The biased subcell: pi_basic concentrated toward its per-state greedy (bias_skew
+    # ON TOP of pi_basic, mode-targeted). Shares the basic/confounded origin;
+    # action-only -> affects_on_policy False.
+    "biased": BiasedArmPolicy,
     "anti_reward": AntiRewardBehaviorPolicy,
     "bias_skew": SkewBehaviorPolicy,
     "bias_suboptimal": SuboptimalBehaviorPolicy,
     "curiosity": CuriosityBehaviorPolicy,
     "bias_confounded": ConfoundedBehaviorPolicy,
-    # Action-dependent confounder (new cell): SAME behavior policy (biases the action
-    # toward pref=round(U)=a_bad, the U->A edge); only the reward wrapper differs
-    # (confounder_kind="action_gated"), wired at the wrapper construction sites.
-    "bias_confounded_action": ConfoundedBehaviorPolicy,
+    # Action-dependent confounder: the marginally-matched swap policy (sigma scales
+    # the U->A edge only, E_U[pi_b] == pi_basic exactly). Distinct class from the
+    # additive bias_confounded above, which stays byte-frozen (cells 7/8).
+    "bias_confounded_action": MarginallyMatchedConfoundedBehaviorPolicy,
 }
 
 
@@ -486,14 +746,46 @@ def build_collection_policy(
     action_space,
     strength: float | None = None,
     env=None,
+    is_online: bool = False,
+    pi_basic_epsilon: float | None = None,
 ) -> BehaviorPolicy:
     """Build an opt-in collection policy. ``strength`` maps to the policy's
     primary parameter (see ``_STRENGTH_PARAM``); ``None`` keeps the default.
-    ``env`` is the (confounded) train-env handle, used only by
-    ``bias_confounded`` to read ``current_u`` (default ``None``, so the existing
-    policies build unchanged)."""
+    ``env`` is the (confounded) train-env handle, used only by the confounded
+    policies to read ``current_u`` (default ``None``, so the existing policies
+    build unchanged). ``is_online`` distinguishes the online collection loop
+    (learner-controlled = ``do(a)``) from the offline generation loop (fixed
+    exogenous logger); it is consumed ONLY by the marginally-matched confounded
+    policy's ``intervened`` flag. The runner (online) passes ``True``; the offline
+    generator passes ``False`` (default), so the two regimes — which share the
+    ``build_collection_policy`` seam — are cleanly distinguished at construction.
+    ``pi_basic_epsilon`` is the SHARED fixed exploration defining ``pi_basic``, read
+    identically by the ``pi_basic`` (basic) and ``bias_confounded_action`` (confounded)
+    arms so their ``(beta=0, sigma=0)`` origin is one identical policy."""
     if name == "agent":
         return AgentBehaviorPolicy(agent)
+    if name in ("pi_basic", "biased") and action_type == "continuous":
+        # The continuous pi_basic is a DETERMINISTIC expert (no exploration noise) ->
+        # near-zero coverage; the continuous basic/biased arms are DEFERRED with the
+        # continuous confounder (see PR 1 hard-gate + docs). Discrete only for now.
+        raise NotImplementedError(
+            f"continuous '{name}' arm is not runnable: the continuous pi_basic is "
+            "deterministic (no exploration noise). Deferred to the continuous "
+            "follow-up PR (see docs/rl_regimes_restructure.md)."
+        )
+    if name == "pi_basic":
+        eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
+        return PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
+    if name == "biased":
+        # Concentrate pi_basic toward its per-state greedy (bias ON TOP of pi_basic,
+        # same fixed pi_basic_epsilon as the other arms), beta = bias strength.
+        eps = {} if pi_basic_epsilon is None else {"epsilon": float(pi_basic_epsilon)}
+        base = PiBasicBehaviorPolicy(agent, action_type, action_space, **eps)
+        b_kw = {} if strength is None else {"beta": float(strength)}
+        return BiasedArmPolicy(base, action_type, action_space, **b_kw)
+    conf_kw = {}
+    if pi_basic_epsilon is not None:
+        conf_kw["pi_basic_epsilon"] = float(pi_basic_epsilon)
     kw = {} if strength is None else {_STRENGTH_PARAM[name]: float(strength)}
     if name == "anti_reward":
         return AntiRewardBehaviorPolicy(agent, action_type, action_space, **kw)
@@ -503,12 +795,54 @@ def build_collection_policy(
         return SuboptimalBehaviorPolicy(agent, action_type, action_space, **kw)
     if name == "curiosity":
         return CuriosityBehaviorPolicy(agent, action_type, action_space, **kw)
-    if name in ("bias_confounded", "bias_confounded_action"):
-        # Same U-biased action policy for both; the action-gated REWARD shift lives in
-        # ConfoundedCollectionWrapper (confounder_kind), selected by the name upstream.
+    if name == "bias_confounded":
+        # Additive confounder (cells 7/8) — byte-frozen; U-indexed action mixture.
         return ConfoundedBehaviorPolicy(agent, action_type, action_space, env, **kw)
+    if name == "bias_confounded_action":
+        # Action-dependent confounder (DISCRETE-ONLY) — the U partition-swap on top of
+        # the SHARED pi_basic (same fixed pi_basic_epsilon as the basic arm; None ->
+        # the policy default).
+        return MarginallyMatchedConfoundedBehaviorPolicy(
+            agent, action_type, action_space, env, is_online=is_online, **kw, **conf_kw
+        )
     raise ValueError(
-        f"Unknown behavior policy '{name}'. Choose from: agent, anti_reward, "
-        "bias_skew, bias_suboptimal, curiosity, bias_confounded, "
+        f"Unknown behavior policy '{name}'. Choose from: agent, pi_basic, biased, "
+        "anti_reward, bias_skew, bias_suboptimal, curiosity, bias_confounded, "
         "bias_confounded_action."
     )
+
+
+# The three subcell arms, all built on the SHARED pi_basic (fixed pi_basic_epsilon).
+ARM_BEHAVIOR_POLICIES: frozenset[str] = frozenset(
+    {"pi_basic", "biased", "bias_confounded_action"}
+)
+
+
+def is_arm_policy(name: str) -> bool:
+    """True iff ``name`` is a subcell arm (basic / biased / confounded) built on the
+    shared pi_basic — as opposed to ``agent`` or a legacy exploration shaper."""
+    return name in ARM_BEHAVIOR_POLICIES
+
+
+def assert_shared_pi_basic_epsilon(arms) -> None:
+    """Assert every arm of a CELL reads the SAME pi_basic_epsilon — the shared
+    ``(beta=0, sigma=0)`` origin B1 depends on. ``arms`` is an iterable of
+    ``(behavior_policy, pi_basic_epsilon)``. Every arm policy must declare an
+    EXPLICIT (non-None) epsilon and they must all be equal; non-arm policies (agent /
+    legacy) are ignored. Raises ``ValueError`` loudly on a missing or mismatched value,
+    so the shared origin can never silently revert to per-arm defaults."""
+    eps_by_arm: dict[str, float] = {}
+    for behavior_policy, eps in arms:
+        if behavior_policy not in ARM_BEHAVIOR_POLICIES:
+            continue
+        if eps is None:
+            raise ValueError(
+                f"arm '{behavior_policy}' must declare pi_basic_epsilon explicitly "
+                "(the shared origin must not default silently); got None."
+            )
+        eps_by_arm[behavior_policy] = float(eps)
+    if len({round(e, 12) for e in eps_by_arm.values()}) > 1:
+        raise ValueError(
+            f"cell arms must share pi_basic_epsilon; got {eps_by_arm}. Differing arm "
+            "epsilons break the shared (beta=0, sigma=0) origin -> B1 silently reverts."
+        )

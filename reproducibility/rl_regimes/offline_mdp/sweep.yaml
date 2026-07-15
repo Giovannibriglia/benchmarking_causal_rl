@@ -1,0 +1,39 @@
+# offline_mdp — the L-shaped sweep (offline learning, full observability).
+#
+# The L: two 1-D arms sharing an origin, NO cross-product.
+#   basic      = (beta=0,   sigma=0)                    ONE run, the shared reference
+#   biased     = (beta in {0.25,0.50,0.75}, sigma=0)    beta = behavior-policy bias
+#   confounded = (beta=0,   sigma in {0.25,0.50,1.00})  sigma = confounding strength
+# => 7 points/cell. All three arms declare the SAME pi_basic_epsilon (PR 3 asserts
+# this) and share ONE generator checkpoint per (env, seed) so the arm deltas are
+# paired. Confounding is ACTION-DEPENDENT: r += c_r·U·1[a==a_bad] (bias_confounded_action).
+#
+# DISCRETE ONLY — the continuous basic/biased arms are hard-gated (PR 1 / PR 3):
+# the continuous pi_basic is a deterministic expert (≈zero coverage), deferred.
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5      # SHARED across all three arms
+confounder_c_r: 1.0        # action-dependent confounder magnitude (confounded arm)
+
+# envs / algos / seeds / budgets are inherited from ../_base (override here if needed).
+
+# The L, declared (documentation of the two arms + shared origin; the driver
+# enforces the same canonical points and refuses the beta>0,sigma>0 cross-product).
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# Critic set per arm (CHANGE 4). basic is the null-calibration run (full set — it is
+# what makes the gate meaningful, not optional); biased runs observational only
+# (sigma=0 has no backdoor path, so the deconfounding critics have nothing to do and
+# the biased arm's metric is coverage); confounded runs the full set. `sensitivity`
+# requires `observational` in the set (PR 4) — the full set includes it.
+critics:
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  biased:     [observational]
+  confounded: [observational, proximal, oracle_u, sensitivity]

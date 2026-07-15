@@ -15,11 +15,19 @@ class ActionOutput:
     `state` carries recurrent / per-agent state through time (POMDP- and
     MARL-ready); single-agent feed-forward algorithms pass it through
     untouched.
+
+    `intervened` is an optional per-element boolean tensor set only by the
+    marginally-matched confounded collection policy: True where the executed
+    action is the learner's own draw under an ONLINE regime (a genuine
+    ``do(a)`` intervention), False where the confounder's coin fired or the
+    regime is offline (a fixed exogenous logger). ``None`` for every other
+    policy, so nothing downstream changes unless this policy is in use.
     """
 
     action: torch.Tensor
     log_prob: Optional[torch.Tensor] = None
     state: Optional[Any] = None
+    intervened: Optional[torch.Tensor] = None
 
 
 class Algorithm(abc.ABC, nn.Module):

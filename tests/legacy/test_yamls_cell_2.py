@@ -19,7 +19,7 @@ import yaml
 from main import _resolve_mask_indices_map
 from tests.conftest import REPO_ROOT
 
-CELL_2 = REPO_ROOT / "reproducibility" / "rl_regimes" / "cell_2"
+CELL_2 = REPO_ROOT / "reproducibility" / "rl_regimes" / "_legacy" / "cell_2"
 
 # §5 per-env mask spec (the source of truth).
 DISCRETE_MASKS = {
@@ -75,7 +75,7 @@ def test_strict_mode_raises_on_missing_env():
 def test_cell_2_discrete_smoke(tmp_path):
     # Tiny mirror YAML (same per-env map) at the nested path; --reproduce
     # overrides CLI, so settings are shrunk in the YAML itself.
-    repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "cell_2"
+    repro_dir = tmp_path / "reproducibility" / "rl_regimes" / "_legacy" / "cell_2"
     repro_dir.mkdir(parents=True)
     (repro_dir / "online_masked_discrete.yaml").write_text(
         yaml.safe_dump(
@@ -102,7 +102,7 @@ def test_cell_2_discrete_smoke(tmp_path):
             sys.executable,
             str(REPO_ROOT / "main.py"),
             "--reproduce",
-            "rl_regimes/cell_2/online_masked_discrete",
+            "rl_regimes/_legacy/cell_2/online_masked_discrete",
         ],
         cwd=tmp_path,
         env=env,

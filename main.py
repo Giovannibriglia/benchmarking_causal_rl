@@ -237,11 +237,14 @@ def parse_args():
         default="agent",
         choices=[
             "agent",
+            "pi_basic",
+            "biased",
             "anti_reward",
             "bias_skew",
             "bias_suboptimal",
             "curiosity",
             "bias_confounded",
+            "bias_confounded_action",
         ],
         help=(
             "Off-policy online collection behavior policy (opt-in; default "
@@ -257,8 +260,25 @@ def parse_args():
         default=None,
         help=(
             "Primary knob for --behavior-policy: anti_reward=epsilon, bias_skew=p, "
-            "bias_suboptimal=beta, curiosity=strength. None keeps the policy default."
+            "biased=beta (skew-on-pi_basic), bias_suboptimal=beta, curiosity=strength, "
+            "bias_confounded[_action]=sigma. None keeps the policy default."
         ),
+    )
+    p.add_argument(
+        "--pi-basic-epsilon",
+        type=float,
+        default=None,
+        help=(
+            "FIXED exploration epsilon of the SHARED base policy pi_basic, read "
+            "identically by the basic (pi_basic), biased and confounded arms so their "
+            "(beta=0, sigma=0) origin is one policy. REQUIRED for arm runs."
+        ),
+    )
+    p.add_argument(
+        "--confounder-c-r",
+        type=float,
+        default=None,
+        help="Action-dependent confounder fixed U->R reward-shift magnitude (c_r).",
     )
     p.add_argument(
         "--mask-indices",
@@ -446,6 +466,14 @@ def main():
     behavior_strength = env_cfg_src.get(
         "behavior_strength",
         cfg_from_file.get("behavior_strength", args.behavior_strength),
+    )
+    pi_basic_epsilon = env_cfg_src.get(
+        "pi_basic_epsilon",
+        cfg_from_file.get("pi_basic_epsilon", args.pi_basic_epsilon),
+    )
+    confounder_c_r = env_cfg_src.get(
+        "confounder_c_r",
+        cfg_from_file.get("confounder_c_r", args.confounder_c_r),
     )
     # mask_indices may be a per-env map ({env_id: [..]}), a uniform list, or a
     # CLI string; resolve to a per-env {env_id: tuple|None} lookup. Strict for
@@ -653,6 +681,8 @@ def main():
                 offline_dataset=offline_by_env[env_id],
                 behavior_policy=behavior_policy,
                 behavior_strength=behavior_strength,
+                pi_basic_epsilon=pi_basic_epsilon,
+                confounder_c_r=confounder_c_r,
                 mask_indices=mask_by_env[env_id],
             )
             train_cfg = TrainingConfig(
