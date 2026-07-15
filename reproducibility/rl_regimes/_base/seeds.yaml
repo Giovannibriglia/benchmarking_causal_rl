@@ -1,6 +1,12 @@
 # Shared seeds. The 7 sweep points of a cell share the seed AND the generator
 # checkpoint, so the arm deltas are PAIRED (never confounded by generator variance).
+# FIVE seeds (was three): the reporting layer's across-seed sd needs a usable n —
+# n=3 gives ~50% relative error on the sd, n=5 ~25% (the relative null-calibration
+# gate in regime_report divides by that sd, so it must be stable). Compute cost is
+# 5/3× the sweep.
 seeds:
   - 0
   - 1
   - 2
+  - 3
+  - 4

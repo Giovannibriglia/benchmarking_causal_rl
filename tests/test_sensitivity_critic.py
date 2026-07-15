@@ -10,17 +10,16 @@ spec, logged as its own column, never folded into the dataset/(β,σ) path. Defa
 Γ=2.0 — a genuinely active bound (Γ=1 would make the ablation row a verbatim copy
 of observational and silently delete the method).
 
-NULL-CALIBRATION applies to the three ADAPTIVE critics ONLY (observational /
-proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin, so they must agree
-with the oracle within estimator noise — the anti-artifact check that still
-catches a bare-DQN base confound (J5). The sensitivity critic is NON-ADAPTIVE (an
-unconditional worst-case Γ-bound, no σ=0 detector) so it is EXEMPT from the gate
-(J4'); its deviation is a REPORTED result, ``pessimism_cost`` =
-apparent_q(observational) - apparent_q(sensitivity), the value the Γ-bound shrinks
-off the floor. Referenced against OBSERVATIONAL (not the oracle) it is EXACTLY 0 at
-Γ=1 by byte-identity and rises with Γ (J6); logged at EVERY σ — σ=0 is pure cost,
-σ>0 is the same shrinkage buying deconfounding robustness. Observational is the
-REQUIRED baseline whenever sensitivity is present.
+NULL-CALIBRATION (PR 6 / N1): the broken absolute per-run column was REMOVED — it
+tested whether a plain-Q head and a UMarginalizedQ head are numerically close (an
+architectural offset that grows with training), not whether a confounding artifact
+exists. checkpoint_rows_strategy now emits only the RAW value_mse_to_oracle for the
+adaptive critics (J4'); the relative, seed-based, cell-level verdict is computed in
+the reporting layer (test_regime_report). The bare-DQN base confound is caught in the
+raw MSE gap, floor-independent (J5). The sensitivity critic is non-adaptive; its
+deviation is ``pessimism_cost`` = apparent_q(observational) - apparent_q(sensitivity),
+EXACTLY 0 at Γ=1 by byte-identity, rising with Γ (J6), logged at EVERY σ.
+Observational is the REQUIRED baseline whenever sensitivity is present.
 """
 
 from __future__ import annotations
@@ -32,7 +31,6 @@ import pytest
 import torch
 from src.benchmarking.critic_ablation import (
     _build_strategy_critic,
-    _GAP_NOISE_FLOOR_MSE,
     CRITIC_LIBRARY,
     CriticAblationConfig,
     CriticAblationManager,
@@ -131,8 +129,11 @@ def _rows_with_stubs(stubs: list[_StubCritic], sigma: float) -> dict:
 def test_j1_sensitivity_registered_flat_and_recurrent():
     assert _SPEC.kind == "strategy" and _SPEC.builder == "sensitivity"
     assert _SPEC.gamma == 2.0  # a GENUINELY ACTIVE default (not the Γ=1 no-op)
-    for col in ("gamma", "null_calibrated", "pessimism_cost"):
+    for col in ("gamma", "pessimism_cost"):
         assert col in STRATEGY_CRITIC_ABLATION_COLUMNS
+    # PR 6 (N1): the broken absolute per-run null_calibrated column was REMOVED —
+    # null-calibration is now a relative, seed-based, cell-level reporting property.
+    assert "null_calibrated" not in STRATEGY_CRITIC_ABLATION_COLUMNS
 
     flat = StrategyCritic("sensitivity", _SPEC, "cql", _OBS, _ACT, _CPU, "mlp")
     rec = StrategyCritic(
@@ -207,54 +208,46 @@ def test_j3_sensitivity_shares_base_algo_class(base, cls):
 
 
 # --------------------------------------------------------------------------- #
-# J4' — NULL CALIBRATION: the three ADAPTIVE critics agree at the origin;        #
-#        sensitivity is EXEMPT (blank) and reports pessimism_cost instead        #
+# J4' — checkpoint_rows_strategy emits the RAW signal the reporting layer reads  #
+#        (value_mse_to_oracle for adaptive; pessimism_cost for sensitivity). The  #
+#        null_calibrated verdict is NO LONGER a per-run column (PR 6 / N1).        #
 # --------------------------------------------------------------------------- #
-def test_j4_prime_null_gate_adaptive_critics_only():
-    # Controlled Q: the three adaptive critics land within estimator noise of the
-    # oracle at σ=0 -> null_calibrated True. The NON-ADAPTIVE sensitivity critic is
-    # pessimistic BY DESIGN, so it is EXEMPT from the gate: its null_calibrated is
-    # BLANK and its deviation is reported as pessimism_cost (vs the observational
-    # floor) at EVERY σ.
+def test_j4_prime_rows_emit_raw_signal_not_null_calibrated():
     g = torch.Generator().manual_seed(7)
     base_q = torch.randn(30, _ACT, generator=g)
 
-    def near(seed):  # a within-noise perturbation (mse well below the floor)
+    def near(seed):
         return base_q + 0.03 * torch.randn(
             30, _ACT, generator=torch.Generator().manual_seed(seed)
         )
 
-    # observational is the pessimism_cost reference — give it an exact value so the
-    # cost is deterministic: apparent_q(observational) - apparent_q(sensitivity).
     stubs = [
         _StubCritic("oracle_u", base_q, "oracle_u"),
         _StubCritic("observational", base_q, "observational"),
         _StubCritic("proximal", near(12), "proximal"),
-        _StubCritic("sensitivity", base_q - 0.4, "sensitivity", gamma=2.0),  # pessim.
+        _StubCritic("sensitivity", base_q - 0.4, "sensitivity", gamma=2.0),
     ]
     rows0 = _rows_with_stubs(stubs, sigma=0.0)
 
-    # the three adaptive critics: gate applies and PASSES; no pessimism column
-    for name in ("oracle_u", "observational", "proximal"):
-        assert rows0[name]["null_calibrated"] is True, name
-        assert float(rows0[name]["value_mse_to_oracle"]) < _GAP_NOISE_FLOOR_MSE
-        assert rows0[name]["pessimism_cost"] == ""  # adaptive: no pessimism column
+    # the broken absolute gate is gone: no per-run null_calibrated on ANY critic.
+    for name in ("oracle_u", "observational", "proximal", "sensitivity"):
+        assert "null_calibrated" not in rows0[name]
 
-    # sensitivity: EXEMPT from the gate (blank), reports pessimism_cost vs the
-    # observational floor = apparent_q(obs) - apparent_q(sens) = 0.4.
-    assert rows0["sensitivity"]["null_calibrated"] == ""
+    # the RAW value_mse_to_oracle IS logged for the adaptive critics — this is what
+    # the reporting layer's relative, seed-based gate consumes.
+    for name in ("oracle_u", "observational", "proximal"):
+        assert rows0[name]["value_mse_to_oracle"] != ""
+        assert rows0[name]["pessimism_cost"] == ""  # adaptive: no pessimism column
+    assert float(rows0["oracle_u"]["value_mse_to_oracle"]) == pytest.approx(0.0)
+
+    # sensitivity: pessimism_cost vs the observational floor (= 0.4), logged at EVERY σ.
     assert float(rows0["sensitivity"]["pessimism_cost"]) == pytest.approx(0.4, abs=1e-5)
     assert rows0["sensitivity"]["gamma"] == 2.0
-
-    # off-origin: null_calibrated is undefined (blank), but pessimism_cost is logged
-    # at EVERY σ (the σ>0 half is where the shrinkage buys robustness).
     rows_off = _rows_with_stubs(stubs, sigma=0.5)
-    for name in ("oracle_u", "observational", "proximal", "sensitivity"):
-        assert rows_off[name]["null_calibrated"] == "", name
     assert float(rows_off["sensitivity"]["pessimism_cost"]) == pytest.approx(
         0.4, abs=1e-5
     )
-    assert rows_off["observational"]["pessimism_cost"] == ""  # non-sensitivity: blank
+    assert rows_off["observational"]["pessimism_cost"] == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -303,7 +296,7 @@ def test_j6_pessimism_cost_zero_at_gamma1_and_rises_with_gamma():
         row = {
             r["critic"]: r for r in mgr.checkpoint_rows_strategy(1, "cql", "X", sigma)
         }["sensitivity"]
-        assert row["null_calibrated"] == ""  # exempt at every Γ and σ
+        assert "null_calibrated" not in row  # removed per-run column (PR 6 / N1)
         return float(row["pessimism_cost"]), sens
 
     pc1, sens1 = pessimism_cost(1.0)
@@ -325,21 +318,36 @@ def test_j6_pessimism_cost_zero_at_gamma1_and_rises_with_gamma():
 
 
 # --------------------------------------------------------------------------- #
-# J5 — NULL CALIBRATION: gate FAILS on a bare-DQN floor scored vs a CQL oracle  #
+# J5 — the bare-DQN base confound INFLATES value_mse_to_oracle (floor-independent) #
+#      — the raw signal the reporting layer's relative gate flags (PR 6 / N1)     #
 # --------------------------------------------------------------------------- #
-def test_j5_null_gate_fails_on_bare_dqn_floor_vs_cql_oracle():
+def test_j5_bare_dqn_floor_inflates_raw_mse_vs_matched():
     # The prior bug: a bare-DQN observational floor scored against a CQL oracle.
     # DQN's max-overestimation inflates Q above the conservative oracle EVEN at the
-    # origin — a base-learner gap, not deconfounding. The null gate must catch it:
-    # value_mse_to_oracle >> floor -> null_calibrated False.
+    # origin — a base-learner gap, not deconfounding. It shows up in the RAW
+    # value_mse_to_oracle (no absolute floor needed): the mismatched floor's MSE is
+    # much larger than a matched floor's. The reporting layer's relative, seed-based
+    # gate compares this obs-MSE against the proximal-MSE and flags the inflation.
     g = torch.Generator().manual_seed(3)
     base_q = torch.randn(30, _ACT, generator=g)
-    stubs = [
-        _StubCritic("oracle_u", base_q, "oracle_u"),  # conservative CQL oracle
-        _StubCritic("observational", base_q + 0.5, "observational"),  # DQN inflation
-    ]
-    rows = _rows_with_stubs(stubs, sigma=0.0)
-    assert rows["observational"]["null_calibrated"] is False
-    assert float(rows["observational"]["value_mse_to_oracle"]) > _GAP_NOISE_FLOOR_MSE
-    # the gate is not vacuously failing — a matched critic (the oracle itself) passes
-    assert rows["oracle_u"]["null_calibrated"] is True
+    matched = _rows_with_stubs(
+        [
+            _StubCritic("oracle_u", base_q, "oracle_u"),
+            _StubCritic("observational", base_q, "observational"),  # matched CQL floor
+        ],
+        sigma=0.0,
+    )
+    confounded = _rows_with_stubs(
+        [
+            _StubCritic("oracle_u", base_q, "oracle_u"),
+            _StubCritic(
+                "observational", base_q + 0.5, "observational"
+            ),  # DQN inflation
+        ],
+        sigma=0.0,
+    )
+    matched_mse = float(matched["observational"]["value_mse_to_oracle"])
+    confounded_mse = float(confounded["observational"]["value_mse_to_oracle"])
+    assert matched_mse == pytest.approx(0.0)  # matched floor: no gap
+    assert confounded_mse == pytest.approx(0.25, abs=1e-4)  # (+0.5)^2 inflation
+    assert confounded_mse > matched_mse  # the confound is caught in the RAW gap

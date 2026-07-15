@@ -255,12 +255,20 @@ def render_eval_per_context(
 def _sigma_from_run(run_dir: Path) -> Optional[float]:
     """The confounding strength σ for a run, or None.
 
-    Reads it from the run-dir name first (``confounded_sigma_050_*`` -> 0.50),
-    then falls back to the σ-encoded id in config.yaml's offline_dataset map
-    (``...-sigma050-v0`` -> 0.50). config.yaml does not store behavior_strength
-    directly, so these two encodings are the source of truth.
+    DISPATCHES on which tree the path belongs to (PR 6, CHANGE 1):
+      * a ``results/`` leaf carries σ in the PATH SEGMENT ``beta_bbb_sigma_sss`` —
+        read it from the segment, NOT a folder-name regex;
+      * a legacy ``runs/`` folder carries σ in its NAME (``confounded_sigma_050_*``);
+      * else fall back to the σ-encoded id in config.yaml's offline_dataset map
+        (``...-sigma050-v0``). config.yaml does not store behavior_strength directly.
     """
     run_dir = Path(run_dir)
+    # results/ tree: σ is a path SEGMENT (beta_*_sigma_*), anywhere in the path.
+    for seg in run_dir.parts:
+        seg_m = re.fullmatch(r"beta_\d{3}_sigma_(\d{3})", seg)
+        if seg_m:
+            return int(seg_m.group(1)) / 100.0
+    # legacy runs/ tree: σ is in the folder NAME.
     m = re.search(r"sigma_?(\d{3})", run_dir.name)
     if m:
         return int(m.group(1)) / 100.0

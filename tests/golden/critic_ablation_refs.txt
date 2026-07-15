@@ -14,6 +14,8 @@ main.py:from src.benchmarking.critic_ablation import CriticAblationConfig, defau
 src/benchmarking/plotting.py:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/plotting.py:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:    critic_path = run_dir / "critic_ablation_metrics.csv"
+src/benchmarking/regime_report.py:    ``critic_ablation_metrics.csv`` (one critic per leaf). None if absent/blank."""
+src/benchmarking/regime_report.py:    p = Path(leaf) / "critic_ablation_metrics.csv"
 src/benchmarking/regime_sweep.py:            "mode": "critic_ablation",
 src/benchmarking/regime_sweep.py:            leaf / "critic_ablation_metrics.csv",
 src/benchmarking/regime_sweep.py:            staging / "critic_ablation_metrics.csv",

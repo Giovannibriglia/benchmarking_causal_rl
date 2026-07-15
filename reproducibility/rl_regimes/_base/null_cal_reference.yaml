@@ -1,0 +1,23 @@
+# Null-calibration reference denominators (PR 6 follow-up 2).
+#
+# noise_ref[(env, algo)] = the CORRECT pipeline's basic-point (β=0, σ=0) pooled
+# across-seed sd of value_mse_to_oracle over the adaptive critics {observational,
+# proximal}, measured from a KNOWN-GOOD run (observational and oracle built on the
+# SAME base class). regime_report.compute_null_calibration gates on this FIXED
+# reference, NOT the judged cell's own noise:
+#     null_calibrated = gap < k * noise_ref        (k = NULL_CALIBRATION_K = 2.4)
+# because the bare-DQN base-confound inflates the judged cell's own noise almost as
+# fast as the gap, which let the confound pass a gap/(cell-noise) gate. A MISSING
+# (env, algo) key -> the gate returns "uncalibrated" (blank), never a silent pass.
+#
+# Provenance: measured 2026-07-15 via tools/measure_null_calibration_k.py and its
+# per-base variant, CartPole-v1, 5 seeds, budget NE=30 / rollout_len=16 / batch 128 /
+# seq_len 8. noise_ref is per-(env, algo): IQL is ~2.7x noisier than CQL at the same
+# budget, so a single global denominator would be wrong. Each base's OWN correct
+# endpoint calibrates comfortably (gap/noise_ref: cql 1.02, iql 0.57 — both << k=2.4);
+# the broken cql endpoint (obs forced to bare DQN) is 5.75 >> k. Re-measure and update
+# these when the budget or the estimator changes.
+reference:
+  CartPole-v1:
+    cql: 0.04257
+    iql: 0.11485

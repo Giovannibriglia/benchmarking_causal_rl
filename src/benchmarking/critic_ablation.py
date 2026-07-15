@@ -63,14 +63,11 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # ORTHOGONAL to the (β, σ) regime axes. Logged (blank for non-sensitivity
     # critics) but NEVER folded into the dataset/(β,σ) path encoding.
     "gamma",
-    # NULL-CALIBRATION control for the ADAPTIVE critics ONLY (observational /
-    # proximal / oracle_u): each self-nulls at the (β=0, σ=0) origin (no
-    # correction / posterior->prior / A⊥U), so at the origin they must agree with
-    # the oracle within estimator noise. True iff value_mse_to_oracle clears the
-    # noise floor AT the origin (σ=0); blank off-origin (undefined). The
-    # NON-ADAPTIVE sensitivity critic is EXEMPT (always blank) — its unconditional
-    # Γ-bound is pessimism BY DESIGN, reported as ``pessimism_cost`` instead.
-    "null_calibrated",
+    # NB (PR 6 / N1): null_calibrated is NO LONGER a per-run column. The absolute
+    # value_mse_to_oracle < floor gate was broken by construction (it tested
+    # architectural closeness, not confounding). Null-calibration is now a relative,
+    # seed-based, CELL-level property computed in the reporting layer (regime_report)
+    # from the raw value_mse_to_oracle logged above.
     # PESSIMISM COST (sensitivity critic ONLY, at EVERY σ): apparent_q(observational)
     # - apparent_q(sensitivity) = the value the Γ-bound shrinks off the unconditional
     # observational floor. Referenced against OBSERVATIONAL (not the oracle) so it is
@@ -787,15 +784,16 @@ class CriticAblationManager:
             if q_oracle is not None:
                 mse = float(torch.mean((q_c - q_oracle) ** 2).item())
                 tgt, pred = _to_vector(q_oracle), _to_vector(q_c)
-                # NULL-CALIBRATION — ADAPTIVE critics only, at the (β=0, σ=0) origin.
-                # observational/proximal/oracle_u each self-null there (no correction
-                # / posterior->prior / A⊥U), so they must land within estimator noise
-                # of the oracle; a disagreement (e.g. a bare-DQN floor scored against
-                # a CQL oracle) is a base-learner confound the gate flags. The
-                # NON-ADAPTIVE sensitivity critic applies its Γ-bound unconditionally
-                # with no σ=0 detector, so it is EXEMPT (blank) — see pessimism_cost.
-                if float(sigma) == 0.0 and critic.spec.builder != "sensitivity":
-                    row["null_calibrated"] = bool(mse < _GAP_NOISE_FLOOR_MSE)
+                # NB (PR 6 / N1): the per-run null_calibrated column was REMOVED here.
+                # An absolute value_mse_to_oracle < floor verdict measures whether a
+                # plain-Q head and a UMarginalizedQ head are numerically close (an
+                # architectural offset that GROWS with DQN training), NOT whether a
+                # confounding artifact exists — it can never pass on a correct
+                # pipeline. Null-calibration is now a RELATIVE, seed-based, CELL-level
+                # property computed in the reporting layer (regime_report) from the raw
+                # value_mse_to_oracle logged below, where each critic's architectural
+                # offset cancels in the obs-vs-prox difference. J5 keeps the raw-gap
+                # bare-DQN check (floor-independent).
                 row.update(
                     oracle_q_mean=float(q_oracle.mean().item()),
                     q_inflation=float((q_c.mean() - q_oracle.mean()).item()),

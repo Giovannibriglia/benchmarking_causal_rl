@@ -7,8 +7,8 @@ M2  a full offline_mdp cell runs end-to-end and produces the 7 result dirs at th
     expected parameter paths, each leaf holding the same file set a run dir holds.
 M3  the reporting layer DERIVES {basic, biased, confounded} from (beta, sigma) and
     reslices without re-running — labels are never stored in a path.
-M4  basic runs the full critic set and emits null_calibrated for the three adaptive
-    critics at the origin.
+M4  basic runs the full critic set and emits the RAW value_mse_to_oracle signal for
+    the adaptive critics (the per-run null_calibrated column was removed in PR 6).
 M5  _legacy/ is inert: no live code path globs the legacy cell_N taxonomy.
 """
 
@@ -219,10 +219,10 @@ def test_m3_reslice_derives_arms_from_params(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# M4 — basic runs the FULL critic set; the null gate fires for the adaptive     #
-#      critics at the origin (oracle_u is the exact anchor; sensitivity exempt)  #
+# M4 — basic runs the FULL critic set; emits the RAW value_mse_to_oracle signal  #
+#      the reporting layer's relative gate consumes (oracle_u = exact anchor)     #
 # --------------------------------------------------------------------------- #
-def test_m4_basic_runs_full_critic_set_and_null_gate_fires(tmp_path):
+def test_m4_basic_runs_full_critic_set_and_emits_raw_signal(tmp_path):
     # basic's critic set is the FULL set (not optional — it is the null-calibration
     # run that makes the gate meaningful).
     assert critics_for_arm("basic") == [
@@ -262,28 +262,20 @@ def test_m4_basic_runs_full_critic_set_and_null_gate_fires(tmp_path):
         top = max(int(r["episode"]) for r in rows)
         return [r for r in rows if int(r["episode"]) == top][0]
 
-    # NULL CALIBRATION at the origin (σ=0): the gate FIRES for the three ADAPTIVE
-    # critics (a real True/False verdict, not blank) and oracle_u is the exact anchor
-    # (it scores against itself -> value_mse_to_oracle == 0 -> True). The
-    # NON-ADAPTIVE sensitivity critic is EXEMPT (blank) and reports pessimism_cost.
-    #
-    # NB: we do NOT assert observational/proximal == True here. At the origin the
-    # deconfounded value is identified, but the ABSOLUTE value_mse_to_oracle<floor
-    # verdict reflects the irreducible plain-Q vs UMarginalizedQ estimator gap (and,
-    # for a DQN base, max-overestimation that grows with training) — the same
-    # convergence limit surfaced in PR 4's J4. Full collapse to True is a
-    # production-budget property; the unit gate verifies wiring + firing + the anchor.
+    # PR 6 (N1): the broken per-run null_calibrated column is GONE. The basic run
+    # emits the RAW value_mse_to_oracle for the adaptive critics — the signal the
+    # reporting layer's relative, seed-based, cell-level gate consumes (see
+    # test_regime_report P5/P6). oracle_u is the exact anchor (scores against itself
+    # -> MSE 0). The non-adaptive sensitivity critic reports pessimism_cost + gamma.
     for critic in ("observational", "proximal", "oracle_u"):
         row = _last(critic)
-        assert row["null_calibrated"] in ("True", "False"), (
-            critic,
-            row["null_calibrated"],
-        )
+        assert "null_calibrated" not in row  # removed per-run column
+        assert row["value_mse_to_oracle"] != ""  # RAW signal is logged
         assert row["pessimism_cost"] == ""  # adaptive: no pessimism column
-    assert _last("oracle_u")["null_calibrated"] == "True"  # exact ground-truth anchor
+    assert float(_last("oracle_u")["value_mse_to_oracle"]) == 0.0  # exact anchor
     sens = _last("sensitivity")
-    assert sens["null_calibrated"] == ""  # non-adaptive: EXEMPT from the gate
     assert sens["gamma"] == "2.0"  # the active MSM default, logged (PR 4)
+    assert sens["pessimism_cost"] != ""  # sensitivity reports its cost
     _purge("m4test/")
 
 
