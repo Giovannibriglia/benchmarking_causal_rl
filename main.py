@@ -380,17 +380,37 @@ def main():
             repro_name = f"{repro_name}.yaml"
         repro_path = Path("reproducibility") / repro_name
         cfg_from_file = yaml.safe_load(repro_path.read_text())
-        # Signpost: a sweep-driver cell (regime/L-sweep schema) is NOT a legacy flat
-        # cell — its envs/algos live in ../_base and it is run by regime_sweep, so
-        # --reproduce would otherwise die with an unhelpful "no algorithms" error.
+        # A sweep-driver cell (regime/L-sweep schema) is NOT a legacy flat cell — its
+        # envs/algos live in ../_base and it is run by regime_sweep, not the flat-cell
+        # path below. DISPATCH it to the sweep driver instead of dying with the
+        # unhelpful "no algorithms" error. A ``*_smoke.yaml`` carries a tiny budget
+        # in-file, so `--reproduce <cell>/sweep_smoke.yaml` is a one-command smoke
+        # (routed to results_smoke/ so it never mixes with a full run's results/).
         if isinstance(cfg_from_file, dict) and (
             "regime" in cfg_from_file or "sweep" in cfg_from_file
         ):
+            from src.benchmarking.regime_sweep import run_cell
+
+            is_smoke = "smoke" in repro_path.stem
+            results_root = "results_smoke" if is_smoke else "results"
+            dataset_prefix = "smoke" if is_smoke else "sweep"
             print(
-                f"{repro_path} is a sweep-driver cell (regime/L-sweep schema), not a "
-                "legacy flat cell.\nRun it with:  uv run python -m "
-                f"src.benchmarking.regime_sweep {repro_path} [--smoke]"
+                f"[main] {repro_path} is a sweep-driver cell -> regime_sweep.run_cell "
+                f"(results_root={results_root})"
             )
+            try:
+                leaves = run_cell(
+                    str(repro_path),
+                    results_root=results_root,
+                    dataset_prefix=dataset_prefix,
+                    device=str(detect_device()),
+                )
+            except NotImplementedError as e:
+                print(
+                    f"[main] this cell cannot be run by the offline sweep driver:\n  {e}"
+                )
+                return
+            print(f"[main] wrote {len(leaves)} run-dir leaves under {results_root}/")
             return
 
     env_cfg_src = (

@@ -26,6 +26,7 @@ from src.benchmarking.regime_sweep import (
     arm_label,
     assert_shared_generator,
     critics_for_arm,
+    load_sweep_spec,
     param_dirname,
     reslice_results,
     results_leaf,
@@ -92,6 +93,35 @@ def test_sweep_yamls_declare_canonical_L(regime):
     if "critics" in cfg:
         for arm in ("basic", "biased", "confounded"):
             assert cfg["critics"][arm] == critics_for_arm(arm), (regime, arm)
+
+
+# --------------------------------------------------------------------------- #
+# offline_pomdp must use a recurrent-capable base (accepts lstm), and each        #
+# runnable offline cell ships a tiny-budget sweep_smoke.yaml.                     #
+# --------------------------------------------------------------------------- #
+def test_offline_pomdp_uses_recurrent_capable_base():
+    from src.benchmarking.registry import register_default_algorithms, registry
+
+    register_default_algorithms()
+    spec = load_sweep_spec(
+        _REPO / "reproducibility" / "rl_regimes" / "offline_pomdp" / "sweep.yaml"
+    )
+    # the pomdp arm runs with critic_network=lstm; the base MUST accept that. Plain
+    # offline_dqn carries the reject-guard, so the cell has to declare the recurrent
+    # variant (registered WITHOUT the guard). Regression guard for the base fix.
+    assert spec.algos == ["offline_dqn_recurrent"]
+    base = registry.get("offline_dqn_recurrent")  # registered (else KeyError)
+    assert base.data_regime == "offline"
+
+
+@pytest.mark.parametrize("regime", ["offline_mdp", "offline_pomdp"])
+def test_sweep_smoke_yaml_is_a_tiny_runnable_spec(regime):
+    p = _REPO / "reproducibility" / "rl_regimes" / regime / "sweep_smoke.yaml"
+    assert p.exists(), p
+    spec = load_sweep_spec(p)
+    assert spec.regime == regime and spec.data_regime == "offline"
+    assert spec.budget("n_episodes", 999) == 1  # tiny budget baked in
+    assert len(spec.envs) == 1 and len(spec.algos) == 1 and len(spec.seeds) == 1
 
 
 # --------------------------------------------------------------------------- #

@@ -23,9 +23,10 @@ sweep:
   confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
 
 # The recurrent strategy triad is DQN-base only (Cell 8), so the pomdp cell runs the
-# offline_dqn base with lstm critics; algos is narrowed here.
+# offline_dqn_recurrent base (which ACCEPTS the lstm critic_network the pomdp arm needs
+# — plain offline_dqn carries the reject-guard). algos is narrowed here.
 algos:
-  - offline_dqn
+  - offline_dqn_recurrent
 
 critics:
   basic:      [observational, proximal, oracle_u, sensitivity]

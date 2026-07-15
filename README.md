@@ -90,6 +90,10 @@ uv run python -m src.benchmarking.regime_sweep \
 
 # or the multi-cell wrapper:  bash tools/run_regime_sweep.sh offline_mdp
 ```
+`main.py --reproduce` also dispatches a sweep cell — `--reproduce <cell>/sweep.yaml`
+runs it, `--reproduce <cell>/sweep_smoke.yaml` is the tiny-budget smoke (→ `results_smoke/`).
+`offline_mdp` and `offline_pomdp` run; online cells report cleanly that they need the
+on-policy path (no offline generator to share).
 Offline cells only (`--reproduce` on a sweep.yaml prints a signpost; online cells raise
 NotImplementedError — their behavior policy IS the learner, so there is no offline
 generator to share). Results land under
