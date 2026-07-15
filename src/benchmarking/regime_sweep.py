@@ -552,32 +552,87 @@ def run_cell(
     return written
 
 
+# The one-flag --smoke budget: tiny everything so a cell runs end-to-end in a couple
+# of minutes (rollout_episodes=40 is deliberate — fewer makes the σ=1.0 gate flaky).
+_SMOKE_BUDGET = {
+    "n_episodes": 1,
+    "n_checkpoints": 2,
+    "n_train_envs": 2,
+    "n_eval_envs": 2,
+    "rollout_len": 2,
+    "rollout_episodes": 40,
+}
+
+
 def _main(argv: List[str] | None = None) -> int:
     import argparse
 
+    from src.config.device import detect_device
+
     ap = argparse.ArgumentParser(
         description="Run one (regime × L-sweep) cell: ONE generator checkpoint per "
-        "(env, seed), 7 paired sweep points, parameter-addressed results/ leaves."
+        "(env, seed), 7 paired sweep points, parameter-addressed results/ leaves. "
+        "Offline cells only — online cells raise NotImplementedError (their behavior "
+        "policy IS the learner, so there is no offline generator to share).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     ap.add_argument("sweep_yaml", help="path to a cell's sweep.yaml")
-    ap.add_argument("--results-root", default="results")
-    ap.add_argument("--dataset-prefix", default="sweep")
-    ap.add_argument("--device", default=None)
-    ap.add_argument("--envs", nargs="*", default=None)
-    ap.add_argument("--algos", nargs="*", default=None)
-    ap.add_argument("--seeds", nargs="*", type=int, default=None)
+    ap.add_argument(
+        "--results-root",
+        default=None,
+        help="results tree root (default 'results'; 'results_smoke' under --smoke)",
+    )
+    ap.add_argument(
+        "--dataset-prefix",
+        default=None,
+        help="Minari dataset id prefix (default 'sweep'; 'smoke' under --smoke)",
+    )
+    ap.add_argument(
+        "--device",
+        default=None,
+        help="torch device (default: cuda if available else cpu)",
+    )
+    ap.add_argument(
+        "--envs", nargs="+", default=None, help="override the cell's env list"
+    )
+    ap.add_argument(
+        "--algos", nargs="+", default=None, help="override the cell's algo list"
+    )
+    ap.add_argument(
+        "--seeds",
+        nargs="+",
+        type=int,
+        default=None,
+        help="override the cell's seed list",
+    )
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help="one-flag smoke run: tiny 1-episode budget + results_smoke/ + 'smoke' "
+        "dataset prefix (confirm a cell runs before committing to the full budget)",
+    )
     args = ap.parse_args(argv)
+
+    # --smoke sets the tiny budget AND the throwaway results_root/prefix, but an
+    # explicit --results-root/--dataset-prefix still wins (None = not given).
+    budget_overrides = dict(_SMOKE_BUDGET) if args.smoke else None
+    results_root = args.results_root or ("results_smoke" if args.smoke else "results")
+    dataset_prefix = args.dataset_prefix or ("smoke" if args.smoke else "sweep")
+    device = args.device or str(detect_device())
+
     leaves = run_cell(
         args.sweep_yaml,
-        results_root=args.results_root,
-        dataset_prefix=args.dataset_prefix,
-        device=args.device,
+        results_root=results_root,
+        dataset_prefix=dataset_prefix,
+        device=device,
         envs=args.envs,
         algos=args.algos,
         seeds=args.seeds,
+        budget_overrides=budget_overrides,
     )
     print(
-        f"[regime_sweep] wrote {len(leaves)} run-dir leaves under {args.results_root}"
+        f"[regime_sweep] wrote {len(leaves)} run-dir leaves under {results_root}/ "
+        f"(device={device}{'; SMOKE budget' if args.smoke else ''})"
     )
     return 0
 

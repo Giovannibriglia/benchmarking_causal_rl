@@ -380,6 +380,18 @@ def main():
             repro_name = f"{repro_name}.yaml"
         repro_path = Path("reproducibility") / repro_name
         cfg_from_file = yaml.safe_load(repro_path.read_text())
+        # Signpost: a sweep-driver cell (regime/L-sweep schema) is NOT a legacy flat
+        # cell — its envs/algos live in ../_base and it is run by regime_sweep, so
+        # --reproduce would otherwise die with an unhelpful "no algorithms" error.
+        if isinstance(cfg_from_file, dict) and (
+            "regime" in cfg_from_file or "sweep" in cfg_from_file
+        ):
+            print(
+                f"{repro_path} is a sweep-driver cell (regime/L-sweep schema), not a "
+                "legacy flat cell.\nRun it with:  uv run python -m "
+                f"src.benchmarking.regime_sweep {repro_path} [--smoke]"
+            )
+            return
 
     env_cfg_src = (
         cfg_from_file.get("env", {}) if isinstance(cfg_from_file, dict) else {}

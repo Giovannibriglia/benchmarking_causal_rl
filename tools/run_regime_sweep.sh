@@ -14,10 +14,19 @@
 # reporting; the legacy runs/rl_regimes/cell_N/ renderers keep serving _legacy/ runs.
 # NO plotting phase here (that was the old script's Phase 2; it belongs to PR 6).
 #
-# Usage:
+# Usage (this wrapper runs whole cells at the full budget):
 #   tools/run_regime_sweep.sh                       # offline_mdp + offline_pomdp
 #   tools/run_regime_sweep.sh offline_mdp           # one cell
 #   tools/run_regime_sweep.sh offline_mdp offline_pomdp
+#
+# For a ONE-LINER on a single cell (and a --smoke tiny-budget dry run first), call the
+# driver directly instead of this wrapper:
+#   uv run python -m src.benchmarking.regime_sweep \
+#     reproducibility/rl_regimes/offline_mdp/sweep.yaml --smoke \
+#     --envs CartPole-v1 --algos cql --seeds 0          # smoke: ~1-2 min, results_smoke/
+#   uv run python -m src.benchmarking.regime_sweep \
+#     reproducibility/rl_regimes/offline_mdp/sweep.yaml --device cuda   # full
+#   ( uv run python -m src.benchmarking.regime_sweep --help  for all flags )
 #
 # Online cells (online_mdp / online_pomdp) have no offline generator to share — their
 # behavior policy IS the learner — so the offline driver refuses them by design; run

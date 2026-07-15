@@ -79,11 +79,21 @@ Then run the `(regime × L-sweep)` cells. One cell = one job; each builds ONE
 generator checkpoint per (env, seed) and runs its 7 paired sweep points from it,
 writing parameter-addressed leaves under `results/`:
 ```bash
-# 2. Run the offline regime cells (offline_mdp + offline_pomdp):
-bash tools/run_regime_sweep.sh
-# or a single cell:  bash tools/run_regime_sweep.sh offline_mdp
+# 2a. Smoke ONE cell first (one flag = tiny budget + results_smoke/ + 'smoke' prefix):
+uv run python -m src.benchmarking.regime_sweep \
+  reproducibility/rl_regimes/offline_mdp/sweep.yaml --smoke \
+  --envs CartPole-v1 --algos cql --seeds 0
+
+# 2b. Full run of one cell (all envs/algos/seeds from the sweep.yaml):
+uv run python -m src.benchmarking.regime_sweep \
+  reproducibility/rl_regimes/offline_mdp/sweep.yaml --device cuda
+
+# or the multi-cell wrapper:  bash tools/run_regime_sweep.sh offline_mdp
 ```
-Results land under `results/{regime}/beta_{bbb}_sigma_{sss}/{env}/{algo}/{critic}/{seed}/`;
+Offline cells only (`--reproduce` on a sweep.yaml prints a signpost; online cells raise
+NotImplementedError — their behavior policy IS the learner, so there is no offline
+generator to share). Results land under
+`results/{regime}/beta_{bbb}_sigma_{sss}/{env}/{algo}/{critic}/{seed}/`;
 each leaf is an ordinary run dir. Plotting is a separate step (the reporting layer is
 being wired to read this tree). The legacy flat `cell_1…9` YAMLs are frozen under
 `reproducibility/rl_regimes/_legacy/` — see `docs/cell_mapping.md`.
