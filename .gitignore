@@ -4,6 +4,7 @@ BenchmarkingCausalRL.egg-info
 build
 runs
 results
+results_smoke
 outputs
 __pycache__/
 *.pyc

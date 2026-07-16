@@ -157,13 +157,37 @@ def collect_sigma_siblings(
 # --------------------------------------------------------------------------- #
 # Metric reading + CHANGE 3 seed aggregation                                  #
 # --------------------------------------------------------------------------- #
-def read_critic_metric(leaf: str | Path, column: str) -> Optional[float]:
-    """The last-checkpoint value of ``column`` from a leaf's sliced
-    ``critic_ablation_metrics.csv`` (one critic per leaf). None if absent/blank."""
-    p = Path(leaf) / "critic_ablation_metrics.csv"
-    if not p.exists():
+# Which per-leaf CSV each report metric is read from. The critic-ablation strategy
+# schema (value_mse_to_oracle, apparent_q_mean, ...) is per-critic SLICED; the return
+# and arm-diagnostics metrics live in SHARED per-leaf files copied unchanged onto every
+# critic leaf (regime_sweep._run_point.shared_files), so a per-(env,algo,critic) cell
+# still resolves them — the base actor is shared across critics, so those values are
+# identical across the critic siblings of one (env, algo, σ, seed) point. A column not
+# named here defaults to critic_ablation_metrics.csv (the existing behavior).
+_METRIC_SOURCE_FILE: Dict[str, str] = {
+    # evaluation return (the learned policy rolled out) — eval_metrics.csv
+    "eval_return_mean": "eval_metrics.csv",
+    "eval_return_std": "eval_metrics.csv",
+    # training/behavior return — train_metrics.csv. NB: BLANK for offline algos (the
+    # offline training loop logs no per-episode rollout return); populated only for the
+    # online regimes. Aggregates to NaN where blank, which the renderer guards handle.
+    "train_return_mean": "train_metrics.csv",
+    "train_return_std": "train_metrics.csv",
+    # per-checkpoint arm diagnostics — arm_diagnostics.csv (action_coverage is the
+    # biased arm's metric; (1-β)·coverage(0) by construction).
+    "action_coverage": "arm_diagnostics.csv",
+    "separability": "arm_diagnostics.csv",
+    "action_overlap": "arm_diagnostics.csv",
+    "intervened_mean": "arm_diagnostics.csv",
+}
+
+
+def _read_last_checkpoint(csv_path: Path, column: str) -> Optional[float]:
+    """The last-checkpoint (max ``episode``) value of ``column`` from a per-leaf CSV.
+    None if the file/column is absent or the value is blank."""
+    if not csv_path.exists():
         return None
-    rows = list(csv.DictReader(p.open()))
+    rows = list(csv.DictReader(csv_path.open()))
     rows = [r for r in rows if r.get(column, "") not in ("", None)]
     if not rows:
         return None
@@ -172,6 +196,21 @@ def read_critic_metric(leaf: str | Path, column: str) -> Optional[float]:
         return float(last[column])
     except (ValueError, KeyError):
         return None
+
+
+def read_critic_metric(leaf: str | Path, column: str) -> Optional[float]:
+    """The last-checkpoint value of ``column`` from a leaf's sliced
+    ``critic_ablation_metrics.csv`` (one critic per leaf). None if absent/blank."""
+    return _read_last_checkpoint(Path(leaf) / "critic_ablation_metrics.csv", column)
+
+
+def read_leaf_metric(leaf: str | Path, column: str) -> Optional[float]:
+    """The last-checkpoint value of ``column`` from whichever per-leaf CSV owns it
+    (``_METRIC_SOURCE_FILE`` dispatch; default critic_ablation_metrics.csv). Additive
+    reader for the return / arm-diagnostics columns the new figures need — the file
+    walker/aggregator is unchanged, only the source file per column is resolved."""
+    filename = _METRIC_SOURCE_FILE.get(column, "critic_ablation_metrics.csv")
+    return _read_last_checkpoint(Path(leaf) / filename, column)
 
 
 def _mean_sd(values: List[float]) -> Tuple[float, float, int]:
@@ -208,7 +247,7 @@ def aggregate_over_seeds(
         seeds_seen.setdefault(key, set()).add(leaf["seed"])
         bucket = cells.setdefault(key, {m: [] for m in metrics})
         for m in metrics:
-            bucket[m].append(read_critic_metric(leaf["path"], m))
+            bucket[m].append(read_leaf_metric(leaf["path"], m))
     out: List[Dict] = []
     for key, bucket in sorted(cells.items(), key=lambda kv: str(kv[0])):
         regime_, beta, sigma, env, algo, critic = key
@@ -330,6 +369,13 @@ _REPORT_METRICS = (
     "apparent_q_mean",
     "gap_closed_fraction",
     "pessimism_cost",
+    # Return + coverage columns for Figs B/C (additive; read from the SHARED per-leaf
+    # eval/train/arm_diagnostics files, not the critic slice). eval_return_mean is the
+    # learned-policy rollout return; train_return_mean is the training/behavior return
+    # (blank → NaN for offline algos); action_coverage is the biased arm's metric.
+    "eval_return_mean",
+    "train_return_mean",
+    "action_coverage",
 )
 
 

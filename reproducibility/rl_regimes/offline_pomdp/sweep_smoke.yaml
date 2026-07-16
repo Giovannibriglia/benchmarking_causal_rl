@@ -24,7 +24,7 @@ algos:
 seeds:
   - 0
 budgets:
-  n_episodes: 1
+  n_episodes: 20
   n_checkpoints: 2
   n_train_envs: 2
   n_eval_envs: 2
