@@ -168,6 +168,12 @@ class SweepSpec:
     discrete_only: bool = True
     # POMDP regimes mask these obs indices per env (the Cell-4/8 observability axis).
     mask_indices: Dict[str, List[int]] = field(default_factory=dict)
+    # How many (env, seed) GROUPS the supervisor runs concurrently (regime-shared
+    # ``_base/parallel.yaml``, overridable per sweep.yaml). DEFAULT 1 = the serial
+    # in-process run_cell path (byte-identical to pre-supervisor). >=2 opts into the
+    # subprocess pool (src/benchmarking/sweep_supervisor.py). run_cell itself is
+    # untouched — it stays serial WITHIN a group; parallelism is across groups only.
+    max_workers: int = 1
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
@@ -182,7 +188,7 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
     base_dir = p.parent.parent / "_base"
     base: Dict = {}
     if base_dir.is_dir():
-        for frag in ("envs", "algos", "seeds", "budgets"):
+        for frag in ("envs", "algos", "seeds", "budgets", "parallel"):
             fp = base_dir / f"{frag}.yaml"
             if fp.exists():
                 loaded = yaml.safe_load(fp.read_text()) or {}
@@ -206,6 +212,7 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         mask_indices={
             k: [int(i) for i in v] for k, v in (pick("mask_indices", {}) or {}).items()
         },
+        max_workers=int(pick("max_workers", 1)),
     )
 
 
@@ -611,6 +618,14 @@ def _main(argv: List[str] | None = None) -> int:
         help="one-flag smoke run: tiny 1-episode budget + results_smoke/ + 'smoke' "
         "dataset prefix (confirm a cell runs before committing to the full budget)",
     )
+    ap.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help="how many (env, seed) GROUPS to run concurrently (overrides the cell's "
+        "max_workers; default from _base/parallel.yaml = 1 = serial). 1 keeps the "
+        "byte-identical in-process path; >=2 fans groups across subprocesses.",
+    )
     args = ap.parse_args(argv)
 
     # --smoke sets the tiny budget AND the throwaway results_root/prefix, but an
@@ -619,6 +634,32 @@ def _main(argv: List[str] | None = None) -> int:
     results_root = args.results_root or ("results_smoke" if args.smoke else "results")
     dataset_prefix = args.dataset_prefix or ("smoke" if args.smoke else "sweep")
     device = args.device or str(detect_device())
+
+    # Effective workers: --max-workers wins over the cell's max_workers (from
+    # _base/parallel.yaml). >=2 hands off to the supervisor; 1 stays on the
+    # byte-identical in-process run_cell path below.
+    spec = load_sweep_spec(args.sweep_yaml)
+    eff_workers = int(
+        args.max_workers if args.max_workers is not None else spec.max_workers
+    )
+
+    if eff_workers >= 2:
+        from src.benchmarking.sweep_supervisor import format_summary, run_sweep
+
+        result = run_sweep(
+            args.sweep_yaml,
+            results_root=results_root,
+            dataset_prefix=dataset_prefix,
+            device=device,
+            envs=args.envs,
+            algos=args.algos,
+            seeds=args.seeds,
+            max_workers=eff_workers,
+            smoke=args.smoke,
+        )
+        print(format_summary(result))
+        # A failing group must surface: non-zero exit, never a silent drop.
+        return 0 if result.ok else 1
 
     leaves = run_cell(
         args.sweep_yaml,

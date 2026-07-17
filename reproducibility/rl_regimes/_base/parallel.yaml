@@ -1,0 +1,18 @@
+# Shared parallelism knob for the (regime × L-sweep) supervisor.
+#
+# max_workers = how many (env, seed) GROUPS run concurrently. The parallel grain is
+# the whole (env, seed) L-sweep (all 7 points + training), never a single point — one
+# subprocess owns one group start-to-finish, so the shared-generator invariant lives
+# entirely inside a group and different groups share nothing (see
+# src/benchmarking/sweep_supervisor.py).
+#
+# DEFAULT 1 = the serial in-process run_cell path, BYTE-IDENTICAL to the
+# pre-supervisor behaviour (same leaves, same order). >=2 opts into the subprocess
+# pool: each worker gets its OWN Minari store via MINARI_DATASETS_PATH (no shared
+# namespace file, no full-store list scan), and per-worker logs are kept separate.
+#
+# GPU note (single-GPU laptop, ~200 MB/process, 16 GB card): memory-safe up to ~4.
+# Workers share COMPUTE, so speedup is sub-linear (not N×) — expected, fine.
+#
+# Override per cell in its sweep.yaml if a regime wants a different default.
+max_workers: 1
