@@ -15,6 +15,12 @@ observability: mdp
 data_regime: offline
 discrete_only: true
 
+# How many (env, seed) GROUPS the sweep supervisor runs concurrently. 1 = serial,
+# BYTE-IDENTICAL to the pre-supervisor path; >=2 fans groups across subprocesses, each
+# in its own isolated Minari store. Default is inherited from ../_base/parallel.yaml;
+# declared here so it is discoverable + overridable per cell (or via --max-workers).
+max_workers: 1
+
 generator_algo: dqn
 pi_basic_epsilon: 0.5      # SHARED across all three arms
 confounder_c_r: 1.0        # action-dependent confounder magnitude (confounded arm)

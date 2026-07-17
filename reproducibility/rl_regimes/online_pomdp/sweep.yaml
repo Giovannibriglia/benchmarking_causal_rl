@@ -9,6 +9,12 @@ observability: pomdp
 data_regime: online
 discrete_only: true
 
+# How many (env, seed) GROUPS to run concurrently. 1 = serial. Declared here for
+# parity with the offline cells; the supervisor's pool is driver-agnostic, so the
+# future ONLINE driver will honor this key over its own (env, seed) groups. Until
+# then the offline driver refuses this regime, so the knob is inert (default 1).
+max_workers: 1
+
 pi_basic_epsilon: 0.5
 confounder_c_r: 1.0
 

@@ -7,6 +7,8 @@ observability: pomdp
 data_regime: offline
 discrete_only: true
 
+max_workers: 1  # groups run serially by default; --max-workers N (or >=2 here) parallelizes
+
 generator_algo: dqn
 pi_basic_epsilon: 0.5
 confounder_c_r: 1.0
