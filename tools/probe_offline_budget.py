@@ -205,6 +205,10 @@ def orchestrate(out_root: Path, max_workers: int, device: str) -> int:
 
     from src.benchmarking.sweep_supervisor import _supervise, GroupResult
 
+    # ABSOLUTE paths only: a relative MINARI_DATASETS_PATH trips a Minari 0.5.3 HDF5
+    # get_size() bug that DOUBLES the relative store path -> FileNotFoundError. Resolve
+    # here so the per-worker store (and every --out passed to a child) is absolute.
+    out_root = out_root.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
     stores = out_root / "_stores"
     logs = out_root / "_logs"
