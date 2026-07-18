@@ -10,14 +10,35 @@
 # fast as the gap, which let the confound pass a gap/(cell-noise) gate. A MISSING
 # (env, algo) key -> the gate returns "uncalibrated" (blank), never a silent pass.
 #
-# Provenance: measured 2026-07-15 via tools/measure_null_calibration_k.py and its
-# per-base variant, CartPole-v1, 5 seeds, budget NE=30 / rollout_len=16 / batch 128 /
-# seq_len 8. noise_ref is per-(env, algo): IQL is ~2.7x noisier than CQL at the same
-# budget, so a single global denominator would be wrong. Each base's OWN correct
-# endpoint calibrates comfortably (gap/noise_ref: cql 1.02, iql 0.57 — both << k=2.4);
-# the broken cql endpoint (obs forced to bare DQN) is 5.75 >> k. Re-measure and update
-# these when the budget or the estimator changes.
+# Provenance: RE-MEASURED 2026-07-18 at the PRODUCTION offline budget via
+# tools/measure_null_calibration_k.py (NE / RL / ALGO env overrides), CartPole-v1,
+# 5 seeds, NE=250 / rollout_len=1024 => 256_000 grad steps / batch 128 / seq_len 8 /
+# rollout_episodes 40. This SUPERSEDES the 2026-07-15 probe numbers (0.04257 / 0.11485),
+# which were measured at NE=30 / rollout_len=16 = 480 grad steps — ~3 orders of
+# magnitude too few. At the probe budget the critics barely move, so the seed-sd (and
+# thus noise_ref) was tiny; at the production budget the offline critics run to their
+# (diverged) fixed point and value_mse_to_oracle is ~4 orders larger, so the stale
+# probe noise_ref would have flagged EVERY production cell as not-calibrated
+# (gap≈283 vs 2.4·0.04257≈0.10). Use the production numbers below with a production run.
+#
+# Separation STILL HOLDS at k=2.4 (this is the gate that matters — gap over the FIXED
+# reference, not gap over the cell's own noise):
+#     cql: gap_A/noise_ref = 0.49 (correct calibrates) | gap_B/noise_ref = 88.7 (broken fails)
+#     iql: gap_A/noise_ref = 0.06 (correct calibrates) | gap_B/noise_ref = 142.1 (broken fails)
+# The broken-endpoint margin WIDENED vs the probe (5.75x -> 88-142x), so k=2.4 is
+# unchanged. NB the tool's own "ratio_B < 2 STOP" fires here but is the WRONG lens: it
+# divides by the BROKEN cell's own (divergence-inflated) noise — exactly the pathology
+# the fixed-reference gate exists to defeat.
+#
+# CAVEAT (offline-training stability, NOT a gate problem): at 256k grad steps the
+# per-seed value_mse_to_oracle is large and high-variance (cql obs 82..1315; the noise
+# is divergence-dominated), so noise_ref itself is uncertain at n=5. The straddle margin
+# is large enough that a 2x error in noise_ref flips no verdict, but the divergence is a
+# flag worth acting on separately (e.g. revisiting the 256k-step offline budget). Also
+# note rollout_episodes=40 here vs run_cell's production 30 — a second-order dataset-size
+# difference kept for continuity with the original reference's convention. Re-measure and
+# update when the budget, dataset size, or estimator changes.
 reference:
   CartPole-v1:
-    cql: 0.04257
-    iql: 0.11485
+    cql: 574.37
+    iql: 214.02

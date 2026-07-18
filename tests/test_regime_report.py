@@ -322,6 +322,8 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
     assert row["n_seeds"] == 5
     for col in ("gap", "noise_ref", "cell_noise", "ratio", "null_calibrated"):
         assert col in row
-    assert row["noise_ref"] == 0.04257  # the stored reference, not the cell's noise
+    assert (
+        row["noise_ref"] == 574.37
+    )  # the stored production reference, not the cell's noise
     assert row["null_calibrated"] is not None  # reference present -> a real verdict
     _purge("p6test/")

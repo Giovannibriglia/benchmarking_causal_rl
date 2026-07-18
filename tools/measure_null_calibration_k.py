@@ -19,11 +19,19 @@ offline-grouped budget (batch 128, seq_len 8, n_episodes*rollout_len updates).
 
 Measurement only — imports the shipped machinery, changes no source. Run:
     uv run python tools/measure_null_calibration_k.py
+
+Budget + base overridable via env vars (defaults = the historical NE=30 probe):
+    NE, RL (rollout_len), ALGO (the correct base, cql|iql|...). The shipped
+    null_cal_reference.yaml (2026-07-18) was measured at the PRODUCTION budget with:
+        NE=250 RL=1024 ALGO=cql uv run python tools/measure_null_calibration_k.py
+        NE=250 RL=1024 ALGO=iql uv run python tools/measure_null_calibration_k.py
+    (256_000 grad steps/seed; ~2-3 h/seed). BATCH/SEQ track the runner (128/8).
 """
 
 from __future__ import annotations
 
 import math
+import os
 
 import minari
 import torch
@@ -42,7 +50,12 @@ from src.envs.registry import register_default_env_wrappers
 from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
 
 SEEDS = [0, 1, 2, 3, 4]
-NE, ROLLOUT_LEN, BATCH, SEQ = 30, 16, 128, 8  # match the ratio-probe run_cell budget
+# Defaults = the historical NE=30 ratio-probe budget; override NE / RL / ALGO via env
+# to re-measure at the production offline budget (see the module docstring).
+NE = int(os.environ.get("NE", "30"))
+ROLLOUT_LEN = int(os.environ.get("RL", "16"))
+BATCH, SEQ = 128, 8
+ALGO = os.environ.get("ALGO", "cql")  # the CORRECT base class (broken stays bare DQN)
 OBS_DIM, ACT_DIM = 4, 2
 
 
@@ -77,7 +90,7 @@ def _measure_seed(seed: int, dev: torch.device):
         obs_dim=OBS_DIM,
         device=dev,
         config=CriticAblationConfig(critics=["observational", "proximal", "oracle_u"]),
-        base_algo="cql",
+        base_algo=ALGO,
         action_dim=ACT_DIM,
         encoder="mlp",
     )
@@ -98,7 +111,7 @@ def _measure_seed(seed: int, dev: torch.device):
         mgr.update_strategy(buf.sample_sequences(BATCH, SEQ))
     rows = {
         r["critic"]: r
-        for r in mgr.checkpoint_rows_strategy(1, "cql", "CartPole-v1", 0.0)
+        for r in mgr.checkpoint_rows_strategy(1, ALGO, "CartPole-v1", 0.0)
     }
     try:
         minari.delete_dataset(did)
@@ -143,7 +156,7 @@ def main() -> int:
         prox.append(p)
         print(f"seed {s}: obs_cql={a:.5f} obs_dqn={b:.5f} prox={p:.5f}")
     print()
-    gA, nA, rA = _report("A CORRECT (obs=CQL)   ", obs_cql, prox)
+    gA, nA, rA = _report(f"A CORRECT (obs={ALGO})   ", obs_cql, prox)
     gB, nB, rB = _report("B BROKEN  (obs=bareDQN)", obs_dqn, prox)
     print(
         f"\nratio_A={rA:.3f} ratio_B={rB:.3f}  noise_A={nA:.5f} noise_B={nB:.5f} "
