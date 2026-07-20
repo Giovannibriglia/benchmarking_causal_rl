@@ -15,17 +15,28 @@ Both configs are measured in ONE harness per seed: oracle_u/proximal/observation
 are all CQL, and a bare-DQN observational is injected alongside — all trained on the
 SAME episode-grouped stream and scored against the SAME CQL oracle, so A and B differ
 ONLY in the observational's base class. The training loop matches the runner's
-offline-grouped budget (batch 128, seq_len 8, n_episodes*rollout_len updates).
+offline-grouped budget (batch 128, seq_len 8, offline_grad_steps updates).
 
 Measurement only — imports the shipped machinery, changes no source. Run:
     uv run python tools/measure_null_calibration_k.py
 
-Budget + base overridable via env vars (defaults = the historical NE=30 probe):
-    NE, RL (rollout_len), ALGO (the correct base, cql|iql|...). The shipped
-    null_cal_reference.yaml (2026-07-18) was measured at the PRODUCTION budget with:
-        NE=250 RL=1024 ALGO=cql uv run python tools/measure_null_calibration_k.py
-        NE=250 RL=1024 ALGO=iql uv run python tools/measure_null_calibration_k.py
-    (256_000 grad steps/seed; ~2-3 h/seed). BATCH/SEQ track the runner (128/8).
+Budget overridable via env: OGS (offline_grad_steps), RE (rollout_episodes), ALGO
+(cql|iql|...). The training loop MIRRORS the runner's new flat offline step-loop
+(runner._offline_grouped_step_loop): fill the buffer, check can_sample(SEQ) ONCE, then
+run EXACTLY offline_grad_steps critic updates via
+mgr.update_strategy(buf.sample_sequences(BATCH, SEQ)) — no per-epoch break. This is
+the runner's critic sub-call (self.critic_ablation.update_strategy(batch) on
+batch = sample_sequences(batch_size, seq_len)); the base actor's self.agent.update is
+intentionally OMITTED because value_mse_to_oracle is a critic-only quantity (the base
+actor is a separate network that never enters the critic scoring), and noise_ref has
+always been measured critic-only.
+
+The shipped null_cal_reference.yaml (feat/noise-ref-v3, 2026-07-20) is measured at the
+NEW production budget (offline_grad_steps=50_000, rollout_episodes=3000), CartPole-v1,
+5 seeds, for cql and iql:
+    OGS=50000 RE=3000 ALGO=cql uv run python tools/measure_null_calibration_k.py
+    OGS=50000 RE=3000 ALGO=iql uv run python tools/measure_null_calibration_k.py
+BATCH/SEQ track the runner (offpolicy_batch_size=128 / offpolicy_seq_len=8).
 """
 
 from __future__ import annotations
@@ -49,12 +60,12 @@ from src.envs.offline.minari_loader import fill_sequence_buffer_from_minari
 from src.envs.registry import register_default_env_wrappers
 from src.rl.off_policy.sequence_replay_buffer import SequenceReplayBuffer
 
-SEEDS = [0, 1, 2, 3, 4]
-# Defaults = the historical NE=30 ratio-probe budget; override NE / RL / ALGO via env
-# to re-measure at the production offline budget (see the module docstring).
-NE = int(os.environ.get("NE", "30"))
-ROLLOUT_LEN = int(os.environ.get("RL", "16"))
-BATCH, SEQ = 128, 8
+SEEDS = [int(s) for s in os.environ.get("SEEDS", "0,1,2,3,4").split(",")]
+# The offline budget, mirroring the runner: OFFLINE_GRAD_STEPS optimiser steps against
+# a rollout_episodes=RE dataset. Defaults = the NEW production budget (50_000, 3000).
+OFFLINE_GRAD_STEPS = int(os.environ.get("OGS", "50000"))
+RE = int(os.environ.get("RE", "3000"))
+BATCH, SEQ = 128, 8  # = runner.offpolicy_batch_size / offpolicy_seq_len
 ALGO = os.environ.get("ALGO", "cql")  # the CORRECT base class (broken stays bare DQN)
 OBS_DIM, ACT_DIM = 4, 2
 
@@ -76,7 +87,7 @@ def _measure_seed(seed: int, dev: torch.device):
         behavior_strength=0.0,
         pi_basic_epsilon=0.5,
         confounder_c_r=1.0,
-        rollout_episodes=40,
+        rollout_episodes=RE,
         seed=seed,
         dataset_id=did,
         agent=agent,
@@ -105,9 +116,15 @@ def _measure_seed(seed: int, dev: torch.device):
         "mlp",
     )
     mgr.set_sequence_buffer(buf)
-    for _ in range(NE * ROLLOUT_LEN):
-        if not buf.can_sample(SEQ):
-            break
+    # MIRROR runner._offline_grouped_step_loop: check can_sample ONCE, then run EXACTLY
+    # offline_grad_steps critic updates with no per-epoch break (sampling is
+    # with-replacement, so a buffer that can-sample once can serve every step).
+    if not buf.can_sample(SEQ):
+        raise ValueError(
+            f"buffer has no episode >= seq_len={SEQ}; cannot run the "
+            f"{OFFLINE_GRAD_STEPS}-step offline_grad_steps budget."
+        )
+    for _ in range(OFFLINE_GRAD_STEPS):
         mgr.update_strategy(buf.sample_sequences(BATCH, SEQ))
     rows = {
         r["critic"]: r
