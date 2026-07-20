@@ -299,6 +299,8 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
             "n_eval_envs": 2,
             "rollout_len": 2,
             "rollout_episodes": 40,
+            # small offline budget (else the _base merge inherits 50_000 steps).
+            "offline_grad_steps": 4,
         },
         device=str(detect_device()),
     )
@@ -322,6 +324,12 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
     assert row["n_seeds"] == 5
     for col in ("gap", "noise_ref", "cell_noise", "ratio", "null_calibrated"):
         assert col in row
+    # STALE (feat/offline-budget-key): 574.37 was measured at the OLD offline budget
+    # (256_000 steps / RE=40); the offline budget is now (50_000, 3000), so this
+    # reference is SCIENTIFICALLY INVALID and MUST be re-measured (see budgets.yaml +
+    # the pending null-cal re-measure). This assertion still passes because it checks
+    # the read-through of the (unchanged) yaml value — it is NOT a re-derived number and
+    # is left as-is rather than inventing a new one here.
     assert (
         row["noise_ref"] == 574.37
     )  # the stored production reference, not the cell's noise

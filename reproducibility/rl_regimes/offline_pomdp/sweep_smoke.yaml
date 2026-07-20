@@ -31,4 +31,8 @@ budgets:
   n_train_envs: 2
   n_eval_envs: 2
   rollout_len: 2
+  # rollout_episodes stays SMALL (40, the existing convention that keeps the sigma=1.0
+  # gate stable) — the production 3000 must NOT leak into the smoke. offline_grad_steps
+  # also tiny so the smoke exercises the new offline-budget path fast (not the 50k prod).
   rollout_episodes: 40
+  offline_grad_steps: 40

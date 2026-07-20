@@ -48,6 +48,8 @@ _TINY = {
     "n_eval_envs": 2,
     "rollout_len": 2,
     "rollout_episodes": 40,
+    # small offline budget (else the merge with _base inherits 50_000 offline_grad_steps).
+    "offline_grad_steps": 4,
 }
 _LEAF_FILES = {
     "config.yaml",

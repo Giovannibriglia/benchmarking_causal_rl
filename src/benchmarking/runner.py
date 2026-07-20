@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
@@ -1379,6 +1380,22 @@ class BenchmarkRunner:
         checkpoint_eps = self.train_cfg.checkpoint_episodes()
         grad_steps_per_epoch = self.env_cfg.rollout_len
         batch_size = min(self.offpolicy_batch_size, len(self.replay_buffer))
+        # CHANGE 1/3: an explicit offline gradient-step budget. When set, run EXACTLY
+        # offline_grad_steps optimiser steps with n_checkpoints spread uniformly over
+        # them; otherwise WARN and fall back to the legacy n_episodes*rollout_len loop
+        # below (kept byte-identical so existing offline goldens are unchanged).
+        if self.train_cfg.offline_grad_steps is not None:
+            self._offline_flat_step_loop(
+                train_logger, eval_logger, aux_logger, value_trace_on, batch_size
+            )
+            return
+        warnings.warn(
+            "offline_grad_steps not set; falling back to the legacy "
+            "n_episodes*rollout_len offline budget. Set offline_grad_steps in "
+            "budgets.yaml (the on-policy rollout params must not size the offline "
+            "learner).",
+            stacklevel=2,
+        )
         metrics_cache = None
         last_batch = None
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
@@ -1419,6 +1436,53 @@ class BenchmarkRunner:
                 # Offline arm coverage is taken from the dataset (flat batch has no
                 # episode structure); no intervened offline (all-0 by construction).
                 self._log_arm_diagnostics(ep, None)
+
+    def _offline_flat_step_loop(
+        self, train_logger, eval_logger, aux_logger, value_trace_on, batch_size
+    ):
+        """CHANGE 1/3 (flat offline): run EXACTLY ``offline_grad_steps`` optimiser steps
+        and checkpoint at the uniformly spaced step counts from
+        ``offline_checkpoint_steps()`` (the logged ``episode`` is the cumulative step
+        count; regime_report reads the max/last checkpoint). The legacy
+        n_episodes*rollout_len loop is untouched — this is a parallel path."""
+        total = int(self.train_cfg.offline_grad_steps)
+        ckpt = set(self.train_cfg.offline_checkpoint_steps())
+        metrics_cache = None
+        last_batch = None
+        step = 0
+        for _ in tqdm(range(total), desc=self.progress_label):
+            batch = self.replay_buffer.sample(batch_size)
+            metrics_cache = self.agent.update(batch)
+            if self.aux_models is not None:
+                self.aux_models.update(batch)
+            last_batch = batch
+            step += 1
+            if step in ckpt:
+                if value_trace_on and last_batch is not None:
+                    self._log_offline_value_trace(step, last_batch)
+                self._save_checkpoint(step)
+                eval_metrics = self.evaluate(step)
+                eval_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                eval_row = self._make_row(EVAL_COLUMNS, eval_metrics, step)
+                train_metrics = (metrics_cache or {}).copy()
+                train_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                train_row = self._make_row(TRAIN_COLUMNS, train_metrics, step)
+                train_logger.log(train_row)
+                eval_logger.log(eval_row)
+                self._log_aux_rows(aux_logger, last_batch, step)
+                self._log_arm_diagnostics(step, None)
+        # T1: the ACTUAL optimiser-step count, asserted by tests + a divergence guard.
+        self._offline_steps_taken = step
 
     def _train_offline_grouped(
         self,
@@ -1520,6 +1584,28 @@ class BenchmarkRunner:
         grad_steps_per_epoch = self.env_cfg.rollout_len
         seq_len = self.offpolicy_seq_len
         batch_size = self.offpolicy_batch_size
+        # CHANGE 1/3 (episode-grouped offline): explicit offline_grad_steps budget.
+        # Set => exactly that many optimiser steps with uniformly spaced checkpoints;
+        # None => WARN + the legacy n_episodes*rollout_len loop below (byte-identical).
+        if self.train_cfg.offline_grad_steps is not None:
+            self._offline_grouped_step_loop(
+                train_logger,
+                eval_logger,
+                critic_logger,
+                seq_len,
+                batch_size,
+                strategy_ablation,
+                base_consumes_sequences,
+                _sigma,
+            )
+            return
+        warnings.warn(
+            "offline_grad_steps not set; falling back to the legacy "
+            "n_episodes*rollout_len offline budget. Set offline_grad_steps in "
+            "budgets.yaml (the on-policy rollout params must not size the offline "
+            "learner).",
+            stacklevel=2,
+        )
         metrics_cache = None
         critic_losses: Dict[str, float] = {}
         for ep in tqdm(range(self.train_cfg.n_episodes), desc=self.progress_label):
@@ -1575,3 +1661,76 @@ class BenchmarkRunner:
                         latest_losses=critic_losses,
                     ):
                         critic_logger.log(row)
+
+    def _offline_grouped_step_loop(
+        self,
+        train_logger,
+        eval_logger,
+        critic_logger,
+        seq_len,
+        batch_size,
+        strategy_ablation,
+        base_consumes_sequences,
+        _sigma,
+    ):
+        """CHANGE 1/3 (episode-grouped offline): run EXACTLY ``offline_grad_steps``
+        optimiser steps and checkpoint at the uniformly spaced step counts from
+        ``offline_checkpoint_steps()`` (logged ``episode`` == cumulative step count).
+        The legacy loop is untouched — this is a parallel path. Sampling is
+        with-replacement, so once the buffer has any episode >= seq_len it can serve
+        every step; a buffer that never can-sample is a hard error, not a silent skip.
+        """
+        total = int(self.train_cfg.offline_grad_steps)
+        ckpt = set(self.train_cfg.offline_checkpoint_steps())
+        if not self.replay_buffer.can_sample(seq_len):
+            raise ValueError(
+                f"offline buffer has no episode >= seq_len={seq_len}; cannot run the "
+                f"{total}-step offline_grad_steps budget."
+            )
+        metrics_cache = None
+        critic_losses: Dict[str, float] = {}
+        step = 0
+        for _ in tqdm(range(total), desc=self.progress_label):
+            batch = self.replay_buffer.sample_sequences(batch_size, seq_len)
+            if strategy_ablation and not base_consumes_sequences:
+                base_batch = {
+                    k: (v.flatten(0, 1) if torch.is_tensor(v) and v.dim() >= 2 else v)
+                    for k, v in batch.items()
+                }
+            else:
+                base_batch = batch
+            metrics_cache = self.agent.update(base_batch)  # base actor
+            if strategy_ablation:
+                critic_losses = self.critic_ablation.update_strategy(batch)
+            step += 1
+            if step in ckpt:
+                self._save_checkpoint(step)
+                eval_metrics = self.evaluate(step)
+                eval_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                eval_row = self._make_row(EVAL_COLUMNS, eval_metrics, step)
+                train_metrics = (metrics_cache or {}).copy()
+                train_metrics.update(
+                    {
+                        "algorithm": self.train_cfg.algorithm,
+                        "environment": self.env_cfg.env_id,
+                    }
+                )
+                train_row = self._make_row(TRAIN_COLUMNS, train_metrics, step)
+                train_logger.log(train_row)
+                eval_logger.log(eval_row)
+                self._log_arm_diagnostics(step, None)
+                if strategy_ablation and critic_logger is not None:
+                    for row in self.critic_ablation.checkpoint_rows_strategy(
+                        episode=step,
+                        algorithm=self.train_cfg.algorithm,
+                        environment=self.env_cfg.env_id,
+                        sigma=_sigma,
+                        latest_losses=critic_losses,
+                    ):
+                        critic_logger.log(row)
+        self._offline_steps_taken = step  # T1

@@ -72,6 +72,12 @@ class TrainingConfig:
     actor_network: str = "mlp"
     critic_network: str = "mlp"
     network_kwargs: dict = field(default_factory=dict)
+    # OFFLINE gradient-step budget (feat/offline-budget-key). The offline learner reads
+    # THIS as its total optimiser-step count, NOT n_episodes x rollout_len (those are
+    # on-policy vectorized-rollout params that were leaking into the offline path). None
+    # => the runner warns and falls back to the legacy product (keeps existing offline
+    # goldens byte-identical). Production sets it in _base/budgets.yaml.
+    offline_grad_steps: Optional[int] = None
 
     def checkpoint_episodes(self) -> list[int]:
         """Compute uniformly spaced checkpoint episodes including first and last."""
@@ -85,6 +91,21 @@ class TrainingConfig:
         unique[0] = 0
         unique[-1] = self.n_episodes - 1
         return unique
+
+    def offline_checkpoint_steps(self) -> list[int]:
+        """Uniformly spaced offline checkpoint STEP counts (1-indexed; the last is
+        exactly ``offline_grad_steps``) — the step-keyed analogue of
+        ``checkpoint_episodes`` for the offline_grad_steps loop (CHANGE 3). Example:
+        offline_grad_steps=50_000, n_checkpoints=25 -> [2000, 4000, ..., 50000]."""
+        if self.offline_grad_steps is None:
+            raise ValueError(
+                "offline_checkpoint_steps() requires offline_grad_steps to be set."
+            )
+        total = int(self.offline_grad_steps)
+        count = max(1, min(self.n_checkpoints, total))
+        steps = sorted({int(round(total * (i + 1) / count)) for i in range(count)})
+        steps[-1] = total  # the final checkpoint is exactly offline_grad_steps
+        return steps
 
 
 @dataclass

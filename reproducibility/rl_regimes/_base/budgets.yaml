@@ -1,8 +1,34 @@
-# Shared training / generation budgets (matches the frozen cell_3/cell_7 settings).
+# Shared training / generation budgets.
+#
+# offline_grad_steps + rollout_episodes CALIBRATED 2026-07-20 (feat/offline-budget-key)
+# from docs/offline_budget_probe/FINDINGS_v2.md. The offline learner previously derived
+# its step count from n_episodes x rollout_len = 250 x 1024 = 256_000 — but those are
+# ON-POLICY vectorized-rollout params (n_train_envs=16, rollout_len=1024), the online
+# shape leaking into the offline learner, giving 256k SGD steps against ~750 transitions.
+#
+# offline_grad_steps: 50_000  (the offline path reads THIS; n_episodes x rollout_len is
+#   never used for offline once set). rollout_episodes: 3000 (was 30). At RE=3000 @ ~50k
+#   steps the v2 probe measured Q/anchor 5.4-6.1 (oracle 5.90; Q ~109 vs a ~100 target),
+#   rel_err 0.06-0.09 for BOTH obs and proximal, no proximal instability, eval saturated.
+#   Both v1 endpoints were rejected: 1k = under-trained (ratio 0.42); 256k = obs rel_err
+#   climbs and proximal explodes at small RE.
+#
+# STEP-0 sigma=1.0 GATE (2026-07-20, RE=3000, 50k steps, seeds 0/1/2): PASSED — proximal
+# STABLE across all 3 seeds (Q 70-83, NO blow-up; the sigma=0/RE=300 pathology did not
+# recur), absolute Q in the ~70-125 band, eval saturated (975-998). obs rel_err is high
+# at sigma=1.0 (0.33-0.56) BY DESIGN (obs is confounded at sigma>0 — the sigma-wedge, not
+# a budget failure); seed0 proximal is moderately above oracle (rel_err 0.26) but stable.
+#
+# n_episodes / rollout_len are retained for the ONLINE regimes and the generator rollout;
+# they NO LONGER size the offline learner. n_checkpoints spreads uniformly across
+# offline_grad_steps (25 => every 2000 steps at 50k). NOTE: noise_ref in
+# null_cal_reference.yaml (574.37 / 214.02) was measured at the OLD budget and is now
+# INVALID — re-measure at (50_000, 3000) before trusting any production null_calibrated.
 budgets:
   n_episodes: 250
   n_checkpoints: 25
   n_train_envs: 16
   n_eval_envs: 16
   rollout_len: 1024
-  rollout_episodes: 30
+  rollout_episodes: 3000
+  offline_grad_steps: 50000
