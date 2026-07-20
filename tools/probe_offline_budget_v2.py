@@ -107,7 +107,9 @@ def mc_anchor_from_dataset(dataset_id: str, device: str) -> Tuple[float, float, 
 # --------------------------------------------------------------------------- #
 # One training run                                                              #
 # --------------------------------------------------------------------------- #
-def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int:
+def run_one(
+    rollout_episodes: int, seed: int, out_dir: Path, device: str, sigma: float = 0.0
+) -> int:
     import minari
     from src.benchmarking.critic_ablation import CriticAblationConfig
     from src.benchmarking.registry import register_default_algorithms, registry
@@ -125,7 +127,9 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
     out_dir.mkdir(parents=True, exist_ok=True)
 
     agent, _ = build_generator_agent(ENV, GEN_ALGO, "random", seed=seed, device=device)
-    did = f"probev2/{ENV.split('-v')[0].lower()}-re{rollout_episodes}-seed{seed}-v0"
+    # sigma in the id so a sigma>0 gate run never collides with the sigma=0 sweep.
+    sig_tag = f"-sigma{int(round(sigma * 100)):03d}"
+    did = f"probev2/{ENV.split('-v')[0].lower()}-re{rollout_episodes}-seed{seed}{sig_tag}-v0"
     try:
         minari.delete_dataset(did)
     except Exception:
@@ -136,7 +140,7 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
         generator_algo=GEN_ALGO,
         tier="random",
         behavior_policy="bias_confounded_action",
-        behavior_strength=0.0,
+        behavior_strength=sigma,  # 0.0 = basic point; >0 = confounded (STEP-0 gate)
         confounder_c_r=1.0,
         pi_basic_epsilon=0.5,
         rollout_episodes=rollout_episodes,
@@ -145,7 +149,7 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
         agent=agent,
         device=device,
     )
-    ds.storage.update_metadata({"behavior_strength_sigma": 0.0})
+    ds.storage.update_metadata({"behavior_strength_sigma": float(sigma)})
 
     # ABSOLUTE anchor, computed from the dataset BEFORE training (training-independent).
     anchor_sub, anchor_full, n_trans = mc_anchor_from_dataset(did, device)
@@ -158,7 +162,7 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
         seed=seed,
         offline_dataset=did,
         behavior_policy="bias_confounded_action",
-        behavior_strength=0.0,
+        behavior_strength=sigma,
         pi_basic_epsilon=0.5,
         confounder_c_r=1.0,
         mask_indices=None,
@@ -190,6 +194,7 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
                 "rollout_len": ROLLOUT_LEN,
                 "n_episodes": N_EPISODES,
                 "n_transitions": n_trans,
+                "sigma": float(sigma),
                 "mc_anchor": anchor_sub,
                 "mc_anchor_full": anchor_full,
             },
@@ -210,7 +215,9 @@ def run_one(rollout_episodes: int, seed: int, out_dir: Path, device: str) -> int
 # --------------------------------------------------------------------------- #
 # Orchestration (reuses the merged supervisor pool)                             #
 # --------------------------------------------------------------------------- #
-def orchestrate(out_root: Path, max_workers: int, device: str) -> int:
+def orchestrate(
+    out_root: Path, max_workers: int, device: str, sigma: float = 0.0
+) -> int:
     import shutil
 
     from src.benchmarking.sweep_supervisor import _supervise, GroupResult
@@ -240,6 +247,8 @@ def orchestrate(out_root: Path, max_workers: int, device: str) -> int:
             str(_run_dir(g)),
             "--device",
             device,
+            "--sigma",
+            str(sigma),
         ]
 
     def _prep(g):
@@ -624,12 +633,19 @@ def main() -> int:
     ap.add_argument("--out-root", default="docs/offline_budget_probe/runs_v2")
     ap.add_argument("--max-workers", type=int, default=3)
     ap.add_argument("--device", default="cpu")
+    ap.add_argument(
+        "--sigma",
+        type=float,
+        default=0.0,
+        help="confounding strength of the collected point (0.0=basic; >0=confounded, "
+        "the STEP-0 gate). Threads into behavior_strength + behavior_strength_sigma.",
+    )
     a = ap.parse_args()
     if a.run_one:
         out = Path(a.out or f"probe_out_v2/ds{a.rollout_episodes}_seed{a.seed}")
-        return run_one(a.rollout_episodes, a.seed, out, a.device)
+        return run_one(a.rollout_episodes, a.seed, out, a.device, a.sigma)
     if a.orchestrate:
-        return orchestrate(Path(a.out_root), a.max_workers, a.device)
+        return orchestrate(Path(a.out_root), a.max_workers, a.device, a.sigma)
     if a.plot:
         plot(Path(a.out_root))
         return 0
