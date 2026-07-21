@@ -324,14 +324,12 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
     assert row["n_seeds"] == 5
     for col in ("gap", "noise_ref", "cell_noise", "ratio", "null_calibrated"):
         assert col in row
-    # STALE (feat/offline-budget-key): 574.37 was measured at the OLD offline budget
-    # (256_000 steps / RE=40); the offline budget is now (50_000, 3000), so this
-    # reference is SCIENTIFICALLY INVALID and MUST be re-measured (see budgets.yaml +
-    # the pending null-cal re-measure). This assertion still passes because it checks
-    # the read-through of the (unchanged) yaml value — it is NOT a re-derived number and
-    # is left as-is rather than inventing a new one here.
+    # noise_ref re-measured 2026-07-21 (feat/noise-ref-v3) at the NEW offline budget
+    # (offline_grad_steps=50_000, rollout_episodes=3000): cql 132.26 (was 574.37 at the
+    # old 256k/RE40 budget). Still straddles k=2.4 but the cql margin is now THIN
+    # (broken gap/noise_ref 2.95) — see null_cal_reference.yaml.
     assert (
-        row["noise_ref"] == 574.37
+        row["noise_ref"] == 132.26
     )  # the stored production reference, not the cell's noise
     assert row["null_calibrated"] is not None  # reference present -> a real verdict
     _purge("p6test/")
