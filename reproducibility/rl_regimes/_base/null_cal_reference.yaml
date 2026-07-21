@@ -5,7 +5,7 @@
 # proximal}, measured from a KNOWN-GOOD run (observational and oracle built on the
 # SAME base class). regime_report.compute_null_calibration gates on this FIXED
 # reference, NOT the judged cell's own noise:
-#     null_calibrated = gap < k * noise_ref        (k = NULL_CALIBRATION_K = 2.4)
+#     null_calibrated = gap < k * noise_ref        (k = NULL_CALIBRATION_K = 1.5)
 # because the bare-DQN base-confound inflates the judged cell's own noise almost as
 # fast as the gap, which let the confound pass a gap/(cell-noise) gate. A MISSING
 # (env, algo) key -> the gate returns "uncalibrated" (blank), never a silent pass.
@@ -17,25 +17,40 @@
 # exactly offline_grad_steps critic updates, no per-epoch break). This SUPERSEDES the
 # 2026-07-18 values (574.37 / 214.02), which were measured at the OLD budget
 # (256_000 steps / RE=40) — data-starved AND over-trained, invalid for the new budget.
-# k=2.4 is UNCHANGED (NOT re-pinned).
 #
-# Both endpoints STILL straddle k=2.4 (gap over the FIXED reference):
+# k RE-PINNED 2.4 -> 1.5 on 2026-07-21 (feat/repin-k-v3) to match these endpoints (k is
+# a BUDGET-DEPENDENT calibration constant, re-derived whenever the endpoints move — same
+# as noise_ref). Both endpoints straddle k=1.5 (gap over the FIXED reference):
 #     cql: gap_A/noise_ref = 0.72 (correct calibrates) | gap_B/noise_ref = 2.95 (broken fails)
 #     iql: gap_A/noise_ref = 0.58 (correct calibrates) | gap_B/noise_ref = 1784.6 (broken fails)
-# (Broken endpoint = observational forced to a bare DQN vs the matched oracle.)
+# (Broken endpoint = observational forced to a bare DQN vs the matched oracle.) cql's is
+# the BINDING interval (0.72, 2.95); log-halfway sqrt(0.72*2.95)=1.46 -> 1.5. k=2.4 sat
+# only 23% below 2.95, so a ~25% noise_ref error (n=5) would drop the broken ratio to
+# ~2.36 and PASS the bug; at 1.5 both cql endpoints clear by ~2x. See NULL_CALIBRATION_K
+# in regime_report.py.
 #
-# ⚠ CQL MARGIN IS NOW THIN (2.95 vs 88.7 at the old budget). At 50k steps the bare-DQN
-# broken endpoint barely over-inflates (obs_dqn mean ~417 vs ~52_000 at 256k), so the
-# budget that fixes over-training also removes the divergence that made "broken"
-# obviously broken. It STILL straddles k=2.4, but a ~2x error in the cql noise_ref
-# could flip a borderline cell — treat cql null_calibrated as a WEAK signal at this
-# budget. IQL is the opposite (oracle Q ~1-3, so bare-DQN ~5-8k towers over it ->
-# 1784x). NB the tool's own "ratio_B<2 STOP" fires for cql but is the WRONG lens (it
-# divides by the BROKEN cell's own noise — the pathology the fixed reference defeats).
+# ⚠ CQL MARGIN IS INTRINSICALLY THIN (broken 2.95 vs 88.7 at the old budget). At 50k
+# steps the bare-DQN broken endpoint barely over-inflates (obs_dqn mean ~417 vs ~52_000
+# at 256k), so the budget that fixes over-training also removes the divergence that made
+# "broken" obviously broken. k=1.5 is the best split of the thin interval, not a
+# comfortable one — treat cql null_calibrated as a WEAK signal. IQL is the opposite
+# (oracle Q ~1-3, so bare-DQN ~5-8k towers over it -> 1784x). NB the tool's own
+# "ratio_B<2 STOP" fires for cql but is the WRONG lens (it divides by the BROKEN cell's
+# own noise — the pathology the fixed reference defeats).
 #
 # ⚠ CQL SEED-UNSTABLE at this budget: per-seed cql obs MSE spans 1.5..443 (noise_ref
 # 132 is variance-dominated, shaky at n=5); iql is tight (0.14..9.7 -> noise_ref 2.85).
 # The two algos' noise_ref now differ 46x (vs 2.7x before) — cql is the problem base.
+#
+# OPEN ITEM (documented, NOT yet acted on): noise_ref is measured CRITICS-ONLY (the tool
+# omits the base-actor update) while the production sweep CO-TRAINS base + critics. v2
+# measured cql rel_err 0.06-0.09 at this budget with the FULL runner, yet this
+# critics-only measurement shows per-seed MSE 1.5..443 — a mismatch the base actor may
+# explain (its RNG / shared-buffer interaction shifts the critic stream). CROSS-CHECK
+# against the production sweep's basic point (beta=0, sigma=0, 5 seeds, full runner): if
+# its per-seed value_mse_to_oracle sd differs MATERIALLY from noise_ref=132, this
+# reference must be RE-MEASURED with the full runner (not the critics-only tool).
+#
 # Acrobot is deliberately OUT (RE=3000 gives it ~27x CartPole's data; needs its own
 # probe) -> no key -> it correctly reports "uncalibrated". Re-measure when the budget,
 # dataset size, or estimator changes.
