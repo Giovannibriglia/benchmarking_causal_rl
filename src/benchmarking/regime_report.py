@@ -39,14 +39,24 @@ ADAPTIVE_CRITICS = ("observational", "proximal", "oracle_u")
 # null_calibrated = gap < k * noise_ref, where noise_ref is the CORRECT pipeline's
 # basic-point seed-sd — a STORED constant per (env, algo), see null_cal_reference.yaml —
 # NOT the judged cell's OWN noise. The bare-DQN base-confound inflates the judged cell's
-# seed variance almost as fast as the gap (noise_B/noise_A = 3.6), so a gap/(cell-noise)
-# gate greenlit the very confound it exists to catch: the BROKEN cell scored ratio 1.58
-# and PASSED k=2.0. With a fixed reference denominator the two endpoints separate cleanly
-# (measured CartPole-v1/cql, 5 seeds, NE=30, 2026-07-15):
-#   correct  gap/noise_ref = 1.02   broken (obs forced to bare DQN vs CQL oracle) = 5.75
-# k = log-halfway = sqrt(1.02 * 5.75) ~= 2.4. noise_ref's own ~25% (n=5) uncertainty puts
-# the effective threshold band at ~1.9-3.2; both endpoints (1.02, 5.75) sit clear of it.
-NULL_CALIBRATION_K = 2.4
+# seed variance almost as fast as the gap, so a gap/(cell-noise) gate greenlit the very
+# confound it exists to catch; a fixed reference denominator separates the endpoints.
+#
+# k is a BUDGET-DEPENDENT calibration constant: it is re-derived (log-halfway between the
+# correct and broken gap/noise_ref endpoints) whenever the endpoints move — exactly like
+# noise_ref itself. RE-PINNED 2.4 -> 1.5 on 2026-07-21 (feat/repin-k-v3) for the NEW
+# offline budget (offline_grad_steps=50_000, rollout_episodes=3000; endpoints measured
+# CartPole-v1, 5 seeds):
+#   cql: correct gap/noise_ref = 0.72   broken (obs=bare DQN vs CQL oracle) = 2.95
+#   iql: correct = 0.58                 broken = 1784.6   (non-binding: huge margin)
+# The BINDING interval is cql's (0.72, 2.95); log-halfway = sqrt(0.72*2.95) = 1.46 -> 1.5.
+# WHY NOT keep 2.4: it was log-halfway of the OLD budget's endpoints (1.02, 5.75). At the
+# new budget it sits only 23% below the broken endpoint (2.95), so a ~25% error in
+# noise_ref (n=5) drops the broken ratio to ~2.36 and the confound PASSES. At k=1.5 both
+# cql endpoints clear by ~2x (0.72/1.5 = 0.48; 2.95/1.5 = 1.97) and survive that
+# uncertainty. NB the cql margin is intrinsically thin at this budget (see
+# null_cal_reference.yaml) — k=1.5 is the best split of it, not a comfortable one.
+NULL_CALIBRATION_K = 1.5
 
 # The stored correct-pipeline reference denominators, keyed by (env, algo). A MISSING
 # key -> the gate returns "uncalibrated" (None), never a silent pass.

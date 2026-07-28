@@ -1,0 +1,9 @@
+# Commit only the light probe artifacts (figures, tables, per-checkpoint CSVs, meta).
+# Exclude the bulky / transient byproducts of each training run.
+_logs/
+_stores/
+*/checkpoints/
+*/videos/
+*/offline_value_trace.csv
+*/arm_diagnostics.csv
+*/train_metrics.csv

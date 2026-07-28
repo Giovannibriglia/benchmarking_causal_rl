@@ -402,6 +402,10 @@ def _run_point(
         confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
         mask_indices=(spec.mask_indices.get(env) if recurrent else None),
     )
+    # offline_grad_steps (feat/offline-budget-key): the offline learner's total
+    # optimiser-step count. None when a cell omits the key -> the runner warns and
+    # falls back to the legacy n_episodes*rollout_len product (never silent).
+    _ogs = spec.budgets.get("offline_grad_steps")
     train_cfg = TrainingConfig(
         n_episodes=spec.budget("n_episodes", 1),
         n_checkpoints=spec.budget("n_checkpoints", 2),
@@ -410,6 +414,7 @@ def _run_point(
         algorithm=algo,
         aggregation="iqm",
         critic_network=("lstm" if recurrent else "mlp"),
+        offline_grad_steps=(int(_ogs) if _ogs is not None else None),
     )
     _write_run_metadata(staging, spec, env, algo, beta, sigma, seed, critics)
     BenchmarkRunner(
@@ -568,6 +573,9 @@ _SMOKE_BUDGET = {
     "n_eval_envs": 2,
     "rollout_len": 2,
     "rollout_episodes": 40,
+    # tiny offline budget so --smoke exercises the new offline path fast; without it
+    # the merge with _base inherits the 50_000 production offline_grad_steps.
+    "offline_grad_steps": 4,
 }
 
 

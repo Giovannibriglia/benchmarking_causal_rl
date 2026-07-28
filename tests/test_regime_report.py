@@ -8,7 +8,7 @@ P4  seed aggregation: mean + across-seed sd over 5 seeds at one point.
 Q1  the gate uses the FIXED reference denominator, not the judged cell's own noise:
     inflating cell noise 4x with the gap unchanged keeps the verdict (the pin-k fix).
 Q2  a missing (env,algo) reference -> uncalibrated (blank), never True.
-Q3  correct endpoint (gap ~ noise_ref) -> True at k=2.4; broken (gap ~ 5.75*noise_ref)
+Q3  correct endpoint (gap ~ noise_ref) -> True at k=1.5; broken (gap ~ 5.75*noise_ref)
     -> False. Both from the measured numbers.
 P6  reads a real offline_mdp cell end-to-end (5 seeds, tiny budget) and emits the
     aggregated table with derived labels + the fixed-denominator null_calibrated verdict.
@@ -249,12 +249,16 @@ def test_q2_missing_reference_is_uncalibrated(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# Q3 — correct endpoint calibrated at k=2.4; broken NOT (from the measured gaps) #
+# Q3 — correct endpoint calibrated at k=1.5; broken NOT (from the measured gaps) #
 # --------------------------------------------------------------------------- #
 def test_q3_correct_calibrated_broken_not_at_pinned_k(tmp_path):
-    assert rr.NULL_CALIBRATION_K == 2.4  # the documented pinned constant
+    assert rr.NULL_CALIBRATION_K == 1.5  # re-pinned 2.4->1.5 for the new budget
 
-    # correct: gap ~ noise_ref (measured gap 0.043) -> ratio ~1.0 < k=2.4 -> True.
+    # These SYNTHETIC endpoints (ratio ~1.0 correct, ~5.75 broken) are the gate-MATH
+    # fixture; they still separate cleanly at the re-pinned k=1.5 (1.0 < 1.5 < 5.75),
+    # so the synthetic gaps are unchanged. (The real budget endpoints moved to cql
+    # 0.72 / 2.95 — see null_cal_reference.yaml — which is why k dropped to 1.5.)
+    # correct: gap ~ noise_ref (measured gap 0.043) -> ratio ~1.0 < k=1.5 -> True.
     root_ok = tmp_path / "ok"
     _synth_tree(root_ok, obs_offset=0.069, prox_offset=0.026, jitter=0.01)
     ok = rr.compute_null_calibration(str(root_ok), "offline_mdp", reference=_REF)[0]
@@ -262,7 +266,7 @@ def test_q3_correct_calibrated_broken_not_at_pinned_k(tmp_path):
     assert ok["null_calibrated"] is True
 
     # broken (bare-DQN obs): gap ~ 5.75 * noise_ref (measured 0.245) -> ratio ~5.75
-    # > k=2.4 -> False. The confound the gap/(cell-noise) gate greenlit now FAILS.
+    # > k=1.5 -> False. The confound the gap/(cell-noise) gate greenlit now FAILS.
     root_bad = tmp_path / "bad"
     _synth_tree(root_bad, obs_offset=0.271, prox_offset=0.026, jitter=0.01)
     bad = rr.compute_null_calibration(str(root_bad), "offline_mdp", reference=_REF)[0]
@@ -299,6 +303,8 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
             "n_eval_envs": 2,
             "rollout_len": 2,
             "rollout_episodes": 40,
+            # small offline budget (else the _base merge inherits 50_000 steps).
+            "offline_grad_steps": 4,
         },
         device=str(detect_device()),
     )
@@ -322,8 +328,12 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
     assert row["n_seeds"] == 5
     for col in ("gap", "noise_ref", "cell_noise", "ratio", "null_calibrated"):
         assert col in row
+    # noise_ref re-measured 2026-07-21 (feat/noise-ref-v3) at the NEW offline budget
+    # (offline_grad_steps=50_000, rollout_episodes=3000): cql 132.26 (was 574.37 at the
+    # old 256k/RE40 budget). Straddles the re-pinned k=1.5 but the cql margin is THIN
+    # (broken gap/noise_ref 2.95) — see null_cal_reference.yaml.
     assert (
-        row["noise_ref"] == 574.37
+        row["noise_ref"] == 132.26
     )  # the stored production reference, not the cell's noise
     assert row["null_calibrated"] is not None  # reference present -> a real verdict
     _purge("p6test/")

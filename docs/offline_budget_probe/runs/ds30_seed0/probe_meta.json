@@ -1,0 +1,13 @@
+{
+  "rollout_episodes": 30,
+  "seed": 0,
+  "base_algo": "cql",
+  "gamma": 0.99,
+  "rollout_len": 1024,
+  "n_episodes": 250,
+  "n_checkpoints": 25,
+  "n_transitions": 417,
+  "r_max": 2.0,
+  "q_bound_infinite": 199.99999999999983,
+  "q_bound_finite": 198.68590339151692
+}

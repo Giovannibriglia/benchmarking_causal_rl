@@ -1,0 +1,11 @@
+{
+  "rollout_episodes": 300,
+  "seed": 0,
+  "base_algo": "cql",
+  "gamma": 0.99,
+  "rollout_len": 1024,
+  "n_episodes": 250,
+  "n_transitions": 4087,
+  "mc_anchor": 8.46540077517015,
+  "mc_anchor_full": 8.477120766068872
+}
