@@ -144,7 +144,9 @@ class DQN(BaseOffPolicy):
             target_param.data.copy_(
                 self.tau * param.data + (1.0 - self.tau) * target_param.data
             )
-        return {"loss": loss.item(), "critic_loss": loss.item(), "q_loss": loss.item()}
+        # one .item() (a device sync), fanned out — not three separate syncs
+        loss_val = loss.item()
+        return {"loss": loss_val, "critic_loss": loss_val, "q_loss": loss_val}
 
     def learn(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         if self.is_recurrent:
@@ -177,4 +179,6 @@ class DQN(BaseOffPolicy):
             target_param.data.copy_(
                 self.tau * param.data + (1.0 - self.tau) * target_param.data
             )
-        return {"loss": loss.item(), "critic_loss": loss.item(), "q_loss": loss.item()}
+        # one .item() (a device sync), fanned out — not three separate syncs
+        loss_val = loss.item()
+        return {"loss": loss_val, "critic_loss": loss_val, "q_loss": loss_val}

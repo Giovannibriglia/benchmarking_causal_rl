@@ -143,6 +143,50 @@ def iter_leaves(results_root: str | Path, regime: str) -> List[Dict]:
     return out
 
 
+def parse_classical_leaf(path: str | Path) -> Dict:
+    """A CLASSICAL-simulation run-dir leaf path -> its identity, from PATH SEGMENTS:
+
+        .../{regime}/classical/beta_{bbb}_sigma_{sss}/{env}/{algo}/{seed}[/...]
+
+    The classical tree has NO critic axis (plain algo x env benchmark); the
+    ``classical`` segment is what keeps its schema apart from the ablation tree.
+    Raises ValueError when the path does not match."""
+    parts = Path(path).parts
+    idx = next((i for i, seg in enumerate(parts) if _PARAM_RE.fullmatch(seg)), None)
+    if idx is None or idx < 2 or parts[idx - 1] != "classical":
+        raise ValueError(f"not a classical results/ leaf: {path!r}")
+    beta, sigma = parse_param_dir(parts[idx])
+    tail = parts[idx + 1 : idx + 4]  # env, algo, seed
+    if len(tail) < 3:
+        raise ValueError(f"classical leaf is missing env/algo/seed: {path!r}")
+    env, algo, seed = tail
+    return {
+        "regime": parts[idx - 2],
+        "beta": beta,
+        "sigma": sigma,
+        "arm": arm_label(beta, sigma),
+        "env": env,
+        "algo": algo,
+        "seed": int(seed),
+        "path": str(Path(path)),
+    }
+
+
+def iter_classical_leaves(results_root: str | Path, regime: str) -> List[Dict]:
+    """Every classical run-dir leaf under ``results/{regime}/classical``, parsed to
+    its segment identity."""
+    root = Path(results_root) / regime / "classical"
+    out: List[Dict] = []
+    if not root.is_dir():
+        return out
+    for cfg in sorted(root.rglob("config.yaml")):
+        try:
+            out.append(parse_classical_leaf(cfg.parent))
+        except ValueError:
+            continue
+    return out
+
+
 def collect_sigma_siblings(
     results_root: str | Path, regime: str
 ) -> Dict[Tuple[str, str, str, int], Dict[float, str]]:
@@ -284,6 +328,67 @@ def aggregate_over_seeds(
 
 
 # --------------------------------------------------------------------------- #
+# CLASSICAL aggregation — same seed-collapse, keyed WITHOUT the critic axis     #
+# --------------------------------------------------------------------------- #
+# The classical simulation's report metrics: return + arm diagnostics only (its
+# leaves are plain benchmark run dirs — no critic_ablation_metrics.csv exists).
+_CLASSICAL_REPORT_METRICS = (
+    "eval_return_mean",
+    "eval_return_std",
+    "train_return_mean",
+    "action_coverage",
+    "separability",
+    "action_overlap",
+    "intervened_mean",
+)
+
+
+def aggregate_classical(
+    results_root: str | Path,
+    regime: str,
+    metrics: Tuple[str, ...] = _CLASSICAL_REPORT_METRICS,
+) -> List[Dict]:
+    """Per (regime, β, σ, arm, env, algo): mean + across-seed sd of each metric,
+    over the CLASSICAL tree (no critic axis). The classical analogue of
+    aggregate_over_seeds; every metric resolves through the same
+    _METRIC_SOURCE_FILE dispatch (all classical metrics live in the
+    eval/train/arm_diagnostics CSVs)."""
+    cells: Dict[Tuple, Dict[str, List[float]]] = {}
+    seeds_seen: Dict[Tuple, set] = {}
+    for leaf in iter_classical_leaves(results_root, regime):
+        key = (leaf["regime"], leaf["beta"], leaf["sigma"], leaf["env"], leaf["algo"])
+        seeds_seen.setdefault(key, set()).add(leaf["seed"])
+        bucket = cells.setdefault(key, {m: [] for m in metrics})
+        for m in metrics:
+            bucket[m].append(read_leaf_metric(leaf["path"], m))
+    out: List[Dict] = []
+    for key, bucket in sorted(cells.items(), key=lambda kv: str(kv[0])):
+        regime_, beta, sigma, env, algo = key
+        rec = {
+            "regime": regime_,
+            "beta": beta,
+            "sigma": sigma,
+            "arm": arm_label(beta, sigma),  # DERIVED, never stored
+            "env": env,
+            "algo": algo,
+            "n_seeds": len(seeds_seen.get(key, ())),
+        }
+        for m in metrics:
+            mean, sd, n = _mean_sd(bucket[m])
+            rec[f"{m}_mean"] = mean
+            rec[f"{m}_sd"] = sd
+            rec[f"{m}_n"] = n
+        out.append(rec)
+    return out
+
+
+def build_classical_report(results_root: str | Path, regime: str) -> List[Dict]:
+    """The classical simulation's aggregated table (no null-calibration: that gate
+    is a property of the strategy-critic ablation, not of the plain benchmark)."""
+    return aggregate_classical(results_root, regime)
+
+
+# --------------------------------------------------------------------------- #
 # CHANGE 4 (N1) — RELATIVE, seed-based, CELL-level null_calibrated             #
 # --------------------------------------------------------------------------- #
 def _pooled_seed_sd(by_critic: Dict[str, Dict[int, float]]) -> float:
@@ -422,6 +527,14 @@ def _main(argv: List[str] | None = None) -> int:
     ap.add_argument("regime")
     ap.add_argument("--results-root", default="results")
     ap.add_argument(
+        "--simulation",
+        choices=["critic_ablation", "classical"],
+        default="critic_ablation",
+        help="which simulation's tree to aggregate: critic_ablation (per-critic "
+        "leaves, + null-calibration) or classical ({regime}/classical/ leaves, "
+        "return/coverage only)",
+    )
+    ap.add_argument(
         "--out", default=None, help="output dir (default: <results-root>/_report)"
     )
     ap.add_argument(
@@ -431,8 +544,13 @@ def _main(argv: List[str] | None = None) -> int:
         help=f"null-calibration factor (default {NULL_CALIBRATION_K}, see regime_report)",
     )
     args = ap.parse_args(argv)
-    agg, nc = build_report(args.results_root, args.regime, k=args.k)
     out = Path(args.out) if args.out else Path(args.results_root) / "_report"
+    if args.simulation == "classical":
+        agg = build_classical_report(args.results_root, args.regime)
+        _write_csv(agg, out / f"{args.regime}_classical_aggregated.csv")
+        print(f"[regime_report] {len(agg)} classical cells -> {out}")
+        return 0
+    agg, nc = build_report(args.results_root, args.regime, k=args.k)
     _write_csv(agg, out / f"{args.regime}_aggregated.csv")
     _write_csv(nc, out / f"{args.regime}_null_calibration.csv")
     print(f"[regime_report] {len(agg)} cells, {len(nc)} null-cal rows -> {out}")

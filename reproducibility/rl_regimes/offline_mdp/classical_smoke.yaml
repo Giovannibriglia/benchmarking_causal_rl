@@ -1,0 +1,37 @@
+# offline_mdp / CLASSICAL SMOKE — tiny-budget dry run of the classical benchmark
+# (full L, 1 env / 1 algo / 1 seed, ~1-2 min). Run with:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/classical_smoke.yaml
+# Routed to results_smoke/ (the --reproduce dispatch keys on "smoke" in the filename).
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: classical
+
+max_workers: 1
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+# tiny overrides of the ../_base defaults
+envs:
+  - CartPole-v1
+# TWO offline learners so the smoke exercises the multi-algo classical path
+# (per-algo figure lines), both designed for this cell (discrete offline, mlp).
+algos:
+  - cql
+  - iql
+seeds:
+  - 0
+budgets:
+  n_episodes: 20
+  n_checkpoints: 2
+  n_train_envs: 2
+  n_eval_envs: 2
+  rollout_len: 2
+  # rollout_episodes stays SMALL (40, the existing convention that keeps the sigma=1.0
+  # gate stable); offline_grad_steps tiny so the smoke exercises the offline-budget
+  # path fast (not the 50k prod).
+  rollout_episodes: 40
+  offline_grad_steps: 40

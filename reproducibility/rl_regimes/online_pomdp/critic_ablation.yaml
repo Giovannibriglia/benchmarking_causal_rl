@@ -1,0 +1,39 @@
+# online_pomdp / CRITIC ABLATION — the ONLINE strategy comparison over the L,
+# PARTIAL observability (masked obs, recurrent lstm trunk). As in online_mdp,
+# strategies are ALGO VARIANTS — but online_dqn_proximal has NO recurrent trunk
+# (only DQN/SAC have lstm variants), and comparing an lstm observational against
+# an mlp proximal would confound the encoder axis. So this cell runs
+# OBSERVATIONAL ONLY until an online recurrent proximal exists; the online
+# deconfounding row is online_mdp/critic_ablation.yaml.
+# Leaves: results/online_pomdp/beta_*_sigma_*/{env}/{algo}/{critic}/{seed}/
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/online_pomdp/critic_ablation.yaml
+regime: online_pomdp
+observability: pomdp
+data_regime: online
+discrete_only: true
+simulation: critic_ablation
+
+# (env, seed) groups run concurrently; online groups need no Minari isolation.
+max_workers: 4
+
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+  Acrobot-v1: [4, 5]
+
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+algos:
+  - dqn
+
+critics:
+  basic:      [observational]
+  biased:     [observational]
+  confounded: [observational]

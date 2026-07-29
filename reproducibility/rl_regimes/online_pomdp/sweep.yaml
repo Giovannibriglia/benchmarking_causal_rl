@@ -1,18 +1,14 @@
-# online_pomdp — the L-shaped sweep (ONLINE learning, PARTIAL observability).
-#
-# Same L as online_mdp but MASKED observations. ONLINE (data_regime: online): the
-# behavior policy is the learner, so there is no shared offline generator and the
-# offline `run_cell` driver refuses this regime — the arms run through the on-policy
-# path. DISCRETE ONLY.
+# online_pomdp — LEGACY ALIAS. The cell is split into two simulation components:
+#   classical.yaml       (plain online benchmark: algo x env, no critic axis)
+#   critic_ablation.yaml (online strategy comparison: dqn vs online_dqn_proximal)
+# Use those (+ their *_smoke.yaml variants). This file stays runnable as the
+# critic-ablation simulation for backward compatibility.
 regime: online_pomdp
 observability: pomdp
 data_regime: online
 discrete_only: true
+simulation: critic_ablation
 
-# How many (env, seed) GROUPS to run concurrently. 1 = serial. Declared here for
-# parity with the offline cells; the supervisor's pool is driver-agnostic, so the
-# future ONLINE driver will honor this key over its own (env, seed) groups. Until
-# then the offline driver refuses this regime, so the knob is inert (default 1).
 max_workers: 1
 
 pi_basic_epsilon: 0.5
@@ -26,3 +22,14 @@ sweep:
   basic:      { beta: 0.0,                sigma: 0.0 }
   biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
   confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# The _base algo list is offline-only; the online cell trains dqn (its strategy
+# variants resolve per the critics sets, as in critic_ablation.yaml).
+algos:
+  - dqn
+
+# observational ONLY: online_dqn_proximal has no recurrent (lstm) trunk.
+critics:
+  basic:      [observational]
+  biased:     [observational]
+  confounded: [observational]

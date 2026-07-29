@@ -91,10 +91,21 @@ def test_sweep_yamls_declare_canonical_L(regime):
     declared |= {(0.0, float(s)) for s in sw["confounded"]["sigma"]}
     assert declared == set(sweep_points())
     assert float(sw["basic"]["beta"]) == 0.0 and float(sw["basic"]["sigma"]) == 0.0
-    # if critic sets are declared, they must match the canonical per-arm sets.
+    # if critic sets are declared, they must match the canonical per-arm sets
+    # for the cell's data regime (online sets exclude the offline-only
+    # oracle_u/sensitivity strategies — no online algo variant exists).
+    # EXCEPTION online_pomdp: observational only (online_dqn_proximal has no
+    # recurrent trunk; an mlp-proximal-vs-lstm-observational comparison would
+    # confound the encoder axis).
     if "critics" in cfg:
+        data_regime = cfg.get("data_regime", "offline")
         for arm in ("basic", "biased", "confounded"):
-            assert cfg["critics"][arm] == critics_for_arm(arm), (regime, arm)
+            expected = (
+                ["observational"]
+                if regime == "online_pomdp"
+                else critics_for_arm(arm, data_regime)
+            )
+            assert cfg["critics"][arm] == expected, (regime, arm)
 
 
 # --------------------------------------------------------------------------- #
@@ -122,7 +133,9 @@ def test_sweep_smoke_yaml_is_a_tiny_runnable_spec(regime):
     assert p.exists(), p
     spec = load_sweep_spec(p)
     assert spec.regime == regime and spec.data_regime == "offline"
-    assert spec.budget("n_episodes", 999) == 1  # tiny budget baked in
+    # tiny budget baked in (20 since the offline-budget recalibration @d7f137e —
+    # the file changed without this pin; production is 250)
+    assert spec.budget("n_episodes", 999) == 20
     assert len(spec.envs) == 1 and len(spec.algos) == 1 and len(spec.seeds) == 1
 
 

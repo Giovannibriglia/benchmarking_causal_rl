@@ -78,6 +78,11 @@ class TrainingConfig:
     # => the runner warns and falls back to the legacy product (keeps existing offline
     # goldens byte-identical). Production sets it in _base/budgets.yaml.
     offline_grad_steps: Optional[int] = None
+    # Eval .mp4 recording. Rendering is side-effect-only (never changes numerics —
+    # see runner._render_capable), but it spawns an ffmpeg writer and encodes
+    # rollout_len frames at EVERY checkpoint. Default True keeps single runs
+    # unchanged; the sweep driver disables it (sweep leaves never keep videos).
+    record_eval_video: bool = True
 
     def checkpoint_episodes(self) -> list[int]:
         """Compute uniformly spaced checkpoint episodes including first and last."""

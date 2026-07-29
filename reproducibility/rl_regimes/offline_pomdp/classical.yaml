@@ -1,0 +1,39 @@
+# offline_pomdp / CLASSICAL — the plain benchmark over the L, PARTIAL observability.
+#
+# Same L as offline_mdp/classical.yaml but the observation is MASKED (velocities
+# hidden), so the learner is the recurrent offline base (lstm critic trunk).
+# Leaves: results/offline_pomdp/classical/beta_*_sigma_*/{env}/{algo}/{seed}/
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_pomdp/classical.yaml
+regime: offline_pomdp
+observability: pomdp
+data_regime: offline
+discrete_only: true
+simulation: classical
+
+# (env, seed) groups run concurrently; 4 is memory-safe on a 16 GB GPU.
+max_workers: 4
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+# Masked obs indices per env (the observability axis: hide the velocities).
+mask_indices:
+  CartPole-v1: [1, 3]
+  Acrobot-v1: [4, 5]
+
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# EXPLICIT algo selection. Only offline_dqn_recurrent has a recurrent (lstm)
+# trunk among the offline learners, so the second row is the same DQN base run
+# MEMORYLESS (explicit name__actor__critic form pins the mlp trunks) on the SAME
+# masked observations — the standard POMDP baseline pair (does memory help?).
+# Both are offline learners, designed for this cell's data regime.
+algos:
+  - offline_dqn_recurrent        # recurrent learner (pomdp cell -> lstm critic)
+  - offline_dqn__mlp__mlp        # memoryless baseline on the masked obs

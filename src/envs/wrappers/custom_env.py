@@ -134,8 +134,14 @@ class CustomEnv(BaseEnv):
 
     def _flatten_obs(self, obs) -> torch.Tensor:
         single_space = self._single_obs_space
-        flat_sample = flatten(single_space, single_space.sample())
-        target_shape = np.asarray(flat_sample).shape
+        # Cached: shape depends only on the fixed space; the per-call
+        # space.sample() drew from the space's own Generator (no shared RNG
+        # stream), so caching removes waste without touching any seeded stream.
+        target_shape = getattr(self, "_flat_target_shape", None)
+        if target_shape is None:
+            flat_sample = flatten(single_space, single_space.sample())
+            target_shape = np.asarray(flat_sample).shape
+            self._flat_target_shape = target_shape
 
         if isinstance(obs, dict):
             flat_list = []

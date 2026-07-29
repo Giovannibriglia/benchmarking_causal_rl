@@ -115,8 +115,15 @@ class GymnasiumEnv(BaseEnv):
     def _flatten_obs(self, obs) -> torch.Tensor:
         # Handle structured observations by flattening per environment
         single_space = self.env.single_observation_space
-        flat_sample = flatten(single_space, single_space.sample())
-        target_shape = np.asarray(flat_sample).shape
+        # target_shape depends only on the (fixed) space — cache it. The old
+        # per-call space.sample() drew from the space's OWN lazily-created
+        # Generator (not the global np.random / torch streams), so removing it
+        # consumes no RNG any run depends on; it was pure per-step waste.
+        target_shape = getattr(self, "_flat_target_shape", None)
+        if target_shape is None:
+            flat_sample = flatten(single_space, single_space.sample())
+            target_shape = np.asarray(flat_sample).shape
+            self._flat_target_shape = target_shape
 
         if isinstance(obs, dict):
             flat_list = []

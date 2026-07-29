@@ -7,7 +7,8 @@ from that single source of truth. It NEVER re-walks the tree, re-parses
 figure is not produced here (see the biased-coverage note below), it is not smuggled
 in by re-aggregating.
 
-Figures written to ``<results_root>/_report/figures/``, PNG + PDF:
+Figures written to ``<results_root>/_report/figures/``, PNG + PDF (stems are
+prefixed with the regime so two regimes sharing an (env, algo) never collide):
 
   1. Confounded σ-wedge (per env, algo) — ``value_mse_to_oracle_mean`` vs σ, one line
      per critic (the β=0 slice), error bars = ``_sd``. Fixes the ALGO, varies the
@@ -175,7 +176,9 @@ def _fig_sigma_wedge(agg, nc, regime, out, formats) -> List[Path]:
             fontsize=8,
         )
         ax.legend(fontsize=8, title="critic")
-        written += _save(fig, out, f"sigma_wedge_{_safe(env)}_{_safe(algo)}", formats)
+        written += _save(
+            fig, out, f"{regime}_sigma_wedge_{_safe(env)}_{_safe(algo)}", formats
+        )
     return written
 
 
@@ -221,7 +224,7 @@ def _fig_pessimism_cost(agg, regime, out, formats) -> List[Path]:
             fontsize=7,
         )
         written += _save(
-            fig, out, f"pessimism_cost_{_safe(env)}_{_safe(algo)}", formats
+            fig, out, f"{regime}_pessimism_cost_{_safe(env)}_{_safe(algo)}", formats
         )
     return written
 
@@ -270,7 +273,9 @@ def _fig_fix_critic_vary_algo(agg, regime, out, formats, *, critic="observationa
         ax.set_ylabel("value_mse_to_oracle (mean over seeds)")
         ax.set_title(f"Base fragility (critic={critic}) — {regime} / {env}")
         ax.legend(fontsize=8, title="algo")
-        written += _save(fig, out, f"fix_critic_vary_algo_{_safe(env)}", formats)
+        written += _save(
+            fig, out, f"{regime}_fix_critic_vary_algo_{_safe(env)}", formats
+        )
     return written
 
 
@@ -336,15 +341,25 @@ def _fig_reward_sweep(agg, regime, out, formats):
         ax.set_xlabel("σ (confounding strength)")
         ax.set_ylabel("return (mean over seeds)")
         ax.set_title(f"Reward across the sweep — {regime} / {env} / {algo}")
+        # Honest caveat, per data regime: OFFLINE ablation shares one base actor
+        # (per-critic eval lines coincide by construction); ONLINE ablation runs
+        # one training run per strategy VARIANT, so its lines genuinely differ.
+        note = (
+            "online ablation: one run per strategy variant -> eval lines differ"
+            if regime.startswith("online")
+            else "critic-ablation shares one base actor -> eval lines coincide; "
+            "train_return blank for offline"
+        )
         ax.annotate(
-            "critic-ablation shares one base actor -> eval lines coincide; "
-            "train_return blank for offline",
+            note,
             xy=(0.02, 0.02),
             xycoords="axes fraction",
             fontsize=7,
         )
         ax.legend(fontsize=8)
-        written += _save(fig, out, f"reward_sweep_{_safe(env)}_{_safe(algo)}", formats)
+        written += _save(
+            fig, out, f"{regime}_reward_sweep_{_safe(env)}_{_safe(algo)}", formats
+        )
     return written
 
 
@@ -400,7 +415,7 @@ def _fig_biased_coverage(agg, regime, out, formats, *, critic="observational"):
         )
         ax.legend(fontsize=8)
         written += _save(
-            fig, out, f"biased_coverage_{_safe(env)}_{_safe(algo)}", formats
+            fig, out, f"{regime}_biased_coverage_{_safe(env)}_{_safe(algo)}", formats
         )
     return written
 

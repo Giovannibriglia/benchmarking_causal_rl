@@ -1,3 +1,8 @@
+# offline_pomdp — LEGACY ALIAS of critic_ablation.yaml. The cell is split into two
+# simulation components: classical.yaml (plain benchmark) and critic_ablation.yaml
+# (this file's behavior). Prefer those (+ their *_smoke.yaml variants); this file
+# stays runnable and byte-identical for backward compatibility.
+#
 # offline_pomdp — the L-shaped sweep (offline learning, PARTIAL observability).
 #
 # Same L as offline_mdp (7 points; shared origin; two 1-D arms; action-dependent

@@ -1,0 +1,33 @@
+# online_pomdp / CLASSICAL SMOKE — tiny-budget dry run (full L, 1 env / 1 algo /
+# 1 seed). Run with:
+#   uv run python main.py --reproduce rl_regimes/online_pomdp/classical_smoke.yaml
+regime: online_pomdp
+observability: pomdp
+data_regime: online
+discrete_only: true
+simulation: classical
+
+max_workers: 1
+
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+mask_indices:
+  CartPole-v1: [1, 3]
+
+envs:
+  - CartPole-v1
+# TWO rows: recurrent learner vs memoryless mlp baseline on the same masked
+# obs (explicit trunks; see classical.yaml).
+algos:
+  - dqn__lstm__lstm
+  - dqn__mlp__mlp
+seeds:
+  - 0
+budgets:
+  # 20 x 64 x 2 = 2560 collection steps crosses the 1000-step off-policy warmup.
+  n_episodes: 20
+  n_checkpoints: 2
+  n_train_envs: 2
+  n_eval_envs: 2
+  rollout_len: 64

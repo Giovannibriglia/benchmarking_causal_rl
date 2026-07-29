@@ -1,20 +1,14 @@
-# online_mdp — the L-shaped sweep (ONLINE learning, full observability).
-#
-# Same L (7 points; shared origin; two 1-D arms; action-dependent confounder), but
-# ONLINE: there is no offline dataset and no offline generator to share — the
-# behavior policy IS the learner being trained. So the shared-generator-checkpoint
-# guarantee (CHANGE 1) does not apply here, and the offline `run_cell` driver
-# refuses this regime (data_regime: online) by design. The online arms run through
-# the on-policy benchmark path (PR 3's online intervened gate). DISCRETE ONLY.
+# online_mdp — LEGACY ALIAS. The cell is split into two simulation components:
+#   classical.yaml       (plain online benchmark: algo x env, no critic axis)
+#   critic_ablation.yaml (online strategy comparison: dqn vs online_dqn_proximal)
+# Use those (+ their *_smoke.yaml variants). This file stays runnable as the
+# critic-ablation simulation for backward compatibility.
 regime: online_mdp
 observability: mdp
 data_regime: online
 discrete_only: true
+simulation: critic_ablation
 
-# How many (env, seed) GROUPS to run concurrently. 1 = serial. Declared here for
-# parity with the offline cells; the supervisor's pool is driver-agnostic, so the
-# future ONLINE driver will honor this key over its own (env, seed) groups. Until
-# then the offline driver refuses this regime, so the knob is inert (default 1).
 max_workers: 1
 
 pi_basic_epsilon: 0.5
@@ -24,3 +18,13 @@ sweep:
   basic:      { beta: 0.0,                sigma: 0.0 }
   biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
   confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# The _base algo list is offline-only; the online cell trains dqn (its strategy
+# variants resolve per the critics sets, as in critic_ablation.yaml).
+algos:
+  - dqn
+
+critics:
+  basic:      [observational, proximal]
+  biased:     [observational]
+  confounded: [observational, proximal]

@@ -1,0 +1,39 @@
+# online_mdp / CRITIC ABLATION — the ONLINE strategy comparison over the L.
+#
+# The offline strategy-critic ablation trains its critic set on one shared stream;
+# ONLINE there is no such manager (the runner's strategy path is offline-only by
+# design), so the online ablation compares ALGO VARIANTS: one training run per
+# strategy — observational = the base learner (dqn), proximal = online_dqn_proximal
+# (Gate B: per-refresh label persistence on the fixed-behavior stream). oracle_u /
+# sensitivity have no online variant, so online critic sets are limited to
+# [observational, proximal]. Leaves reuse the ablation path schema:
+#   results/online_mdp/beta_*_sigma_*/{env}/{algo}/{critic}/{seed}/
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/online_mdp/critic_ablation.yaml
+regime: online_mdp
+observability: mdp
+data_regime: online
+discrete_only: true
+simulation: critic_ablation
+
+# (env, seed) groups run concurrently; online groups need no Minari isolation.
+max_workers: 4
+
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# Base online learner (the {algo} path segment; strategies resolve to its variants).
+algos:
+  - dqn
+
+# Online critic sets: only strategies with an online algo variant.
+critics:
+  basic:      [observational, proximal]
+  biased:     [observational]
+  confounded: [observational, proximal]

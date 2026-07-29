@@ -1,3 +1,8 @@
+# offline_mdp — LEGACY ALIAS of critic_ablation.yaml. The cell is split into two
+# simulation components: classical.yaml (plain benchmark) and critic_ablation.yaml
+# (this file's behavior). Prefer those (+ their *_smoke.yaml variants); this file
+# stays runnable and byte-identical for backward compatibility.
+#
 # offline_mdp — the L-shaped sweep (offline learning, full observability).
 #
 # The L: two 1-D arms sharing an origin, NO cross-product.
@@ -25,7 +30,15 @@ generator_algo: dqn
 pi_basic_epsilon: 0.5      # SHARED across all three arms
 confounder_c_r: 1.0        # action-dependent confounder magnitude (confounded arm)
 
-# envs / algos / seeds / budgets are inherited from ../_base (override here if needed).
+# envs / seeds / budgets are inherited from ../_base (override here if needed).
+
+# EXPLICIT algo selection (matches critic_ablation.yaml): the discrete OFFLINE
+# bases the strategy critics are built on.
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
 
 # The L, declared (documentation of the two arms + shared origin; the driver
 # enforces the same canonical points and refuses the beta>0,sigma>0 cross-product).

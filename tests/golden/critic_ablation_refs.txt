@@ -5,6 +5,7 @@ main.py:            "Auxiliary critics to train in critic_ablation mode. "
 main.py:            critic_ablation_cfg = None
 main.py:            f"Unknown mode '{mode}'. Supported values: benchmark, critic_ablation."
 main.py:            if mode == "critic_ablation":
+main.py:            simulation = cfg_from_file.get("simulation", "critic_ablation")
 main.py:        choices=["benchmark", "critic_ablation"],
 main.py:        help="Learning rate for auxiliary critics in critic_ablation mode.",
 main.py:        help="Shortcut for --mode critic_ablation.",
@@ -14,14 +15,30 @@ main.py:from src.benchmarking.critic_ablation import CriticAblationConfig, defau
 src/benchmarking/plotting.py:            "No metrics CSVs found (train_metrics.csv, eval_metrics.csv, or critic_ablation_metrics.csv)"
 src/benchmarking/plotting.py:        split == "both" and mode == "critic_ablation"
 src/benchmarking/plotting.py:    critic_path = run_dir / "critic_ablation_metrics.csv"
+src/benchmarking/regime_report.py:        choices=["critic_ablation", "classical"],
+src/benchmarking/regime_report.py:        default="critic_ablation",
+src/benchmarking/regime_report.py:        help="which simulation's tree to aggregate: critic_ablation (per-critic "
+src/benchmarking/regime_report.py:    (``_METRIC_SOURCE_FILE`` dispatch; default critic_ablation_metrics.csv). Additive
 src/benchmarking/regime_report.py:    ``critic_ablation_metrics.csv`` (one critic per leaf). None if absent/blank."""
-src/benchmarking/regime_report.py:    p = Path(leaf) / "critic_ablation_metrics.csv"
-src/benchmarking/regime_sweep.py:            "mode": "critic_ablation",
+src/benchmarking/regime_report.py:    filename = _METRIC_SOURCE_FILE.get(column, "critic_ablation_metrics.csv")
+src/benchmarking/regime_report.py:    return _read_last_checkpoint(Path(leaf) / "critic_ablation_metrics.csv", column)
+src/benchmarking/regime_report.py:# leaves are plain benchmark run dirs — no critic_ablation_metrics.csv exists).
+src/benchmarking/regime_report.py:# named here defaults to critic_ablation_metrics.csv (the existing behavior).
 src/benchmarking/regime_sweep.py:            leaf / "critic_ablation_metrics.csv",
 src/benchmarking/regime_sweep.py:            staging / "critic_ablation_metrics.csv",
+src/benchmarking/regime_sweep.py:        "sweep_yaml", help="path to a cell YAML (classical.yaml / critic_ablation.yaml)"
+src/benchmarking/regime_sweep.py:        "{regime}/classical/ leaves) or critic_ablation (per-{critic} leaves). "
 src/benchmarking/regime_sweep.py:        critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
 src/benchmarking/regime_sweep.py:    """Copy ``critic_ablation_metrics.csv`` keeping the header + only ``critic``'s
+src/benchmarking/regime_sweep.py:    # WHICH simulation this cell runs: "critic_ablation" (default — the historical
+src/benchmarking/regime_sweep.py:    ``critic_ablation`` = one run per (point, base algo, strategy VARIANT)
 src/benchmarking/regime_sweep.py:    from src.benchmarking.critic_ablation import CriticAblationConfig
+src/benchmarking/regime_sweep.py:    mode: str = "critic_ablation",
+src/benchmarking/regime_sweep.py:    per-{critic} leaves for the ``critic_ablation`` simulation, per-{algo}
+src/benchmarking/regime_sweep.py:    simulation = str(pick("simulation", "critic_ablation"))
+src/benchmarking/regime_sweep.py:    simulation: str = "critic_ablation"
+src/benchmarking/regime_sweep.py:# The two simulation components a cell can run. ``critic_ablation`` is the
+src/benchmarking/regime_sweep.py:SIMULATIONS: Tuple[str, ...] = ("classical", "critic_ablation")
 src/benchmarking/regime_sweep.py:critic_ablation_metrics.csv) — the runner's writer is unchanged; only the run_dir
 src/benchmarking/runner.py:                        if self.critic_ablation.is_strategy
 src/benchmarking/runner.py:                    config=critic_ablation_cfg,
@@ -30,6 +47,7 @@ src/benchmarking/runner.py:                    for row in self.critic_ablation.c
 src/benchmarking/runner.py:                    for row in self.critic_ablation.checkpoint_rows_strategy(
 src/benchmarking/runner.py:                    os.path.join(self.run_dir, "critic_ablation_metrics.csv"),
 src/benchmarking/runner.py:                critic_losses = self.critic_ablation.update(batch)
+src/benchmarking/runner.py:                critic_losses = self.critic_ablation.update_strategy(batch)
 src/benchmarking/runner.py:                if self.critic_ablation is not None
 src/benchmarking/runner.py:                if self.critic_ablation is not None and critic_logger is not None:
 src/benchmarking/runner.py:                self.critic_ablation = CriticAblationManager(
@@ -45,4 +63,8 @@ src/benchmarking/runner.py:        if self.critic_ablation is None:
 src/benchmarking/runner.py:        if self.critic_ablation is not None and self.critic_ablation.is_strategy:
 src/benchmarking/runner.py:        self.critic_ablation = None
 src/benchmarking/runner.py:from src.benchmarking.critic_ablation import (
+src/benchmarking/sweep_supervisor.py:        return ("config.yaml", "critic_ablation_metrics.csv")
+src/benchmarking/sweep_supervisor.py:    critic_ablation: one per (sweep point x algo x that arm's critic) — critic
+src/benchmarking/sweep_supervisor.py:    critic_ablation_metrics.csv into every leaf; classical and online-ablation
+src/benchmarking/sweep_supervisor.py:    if spec.simulation == "critic_ablation" and spec.data_regime == "offline":
 src/rl/on_policy/base_actor_critic.py:    # them, and critic_ablation / aux_models — which consume the flat (T*N, D)

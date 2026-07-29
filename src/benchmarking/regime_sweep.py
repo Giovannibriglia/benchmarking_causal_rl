@@ -37,6 +37,27 @@ import yaml
 BETA_ARM: Tuple[float, ...] = (0.25, 0.50, 0.75)
 SIGMA_ARM: Tuple[float, ...] = (0.25, 0.50, 1.00)
 
+# The two simulation components a cell can run. ``critic_ablation`` is the
+# historical (and default) one: every sweep point trains the arm's critic set on
+# ONE shared stream and explodes into per-{critic} leaves. ``classical`` is the
+# plain benchmark: every algo on every env at every sweep point, NO critic axis —
+# its leaves live under a separate ``{regime}/classical/`` subtree so the two
+# simulations never mix in one walker's path schema.
+SIMULATIONS: Tuple[str, ...] = ("classical", "critic_ablation")
+
+# Strategy names a ``critics:`` block may declare, per data regime. Offline runs
+# them through the CriticAblationManager on one shared stream; online has no such
+# manager (runner guard: "the online bias_confounded regime is deferred"), so the
+# online ablation compares ALGO VARIANTS (dqn vs online_dqn_proximal) — one run
+# per strategy, same leaf schema. oracle_u / sensitivity have no online variant.
+KNOWN_STRATEGIES: Tuple[str, ...] = (
+    "observational",
+    "proximal",
+    "oracle_u",
+    "sensitivity",
+)
+ONLINE_STRATEGIES: Tuple[str, ...] = ("observational", "proximal")
+
 # The critic sets per arm (CHANGE 4). ``basic`` and ``confounded`` run the FULL
 # strategy set (basic is the null-calibration run — it is what makes the gate
 # meaningful, so it is not optional). ``biased`` (sigma=0, no backdoor path) runs
@@ -47,11 +68,15 @@ ADAPTIVE_CRITICS: Tuple[str, ...] = ("observational", "proximal", "oracle_u")
 FULL_CRITICS: Tuple[str, ...] = ("observational", "proximal", "oracle_u", "sensitivity")
 
 
-def sweep_points() -> List[Tuple[float, float]]:
-    """The 7 (beta, sigma) points of the L: the shared origin, then the two arms."""
+def sweep_points(
+    beta_arm: Sequence[float] = BETA_ARM, sigma_arm: Sequence[float] = SIGMA_ARM
+) -> List[Tuple[float, float]]:
+    """The (beta, sigma) points of the L: the shared origin, then the two arms.
+    Defaults reproduce the canonical 7-point L; a cell's ``sweep:`` block may
+    declare different arm values (parsed by load_sweep_spec, same L shape)."""
     pts = [(0.0, 0.0)]  # basic — ONE run, the shared reference for both arms
-    pts += [(b, 0.0) for b in BETA_ARM]  # biased arm (sigma held at 0)
-    pts += [(0.0, s) for s in SIGMA_ARM]  # confounded arm (beta held at 0)
+    pts += [(float(b), 0.0) for b in beta_arm]  # biased arm (sigma held at 0)
+    pts += [(0.0, float(s)) for s in sigma_arm]  # confounded arm (beta held at 0)
     return pts
 
 
@@ -72,13 +97,18 @@ def arm_label(beta: float, sigma: float) -> str:
     )
 
 
-def critics_for_arm(arm: str) -> List[str]:
-    """The critic set for an arm (CHANGE 4)."""
-    if arm in ("basic", "confounded"):
-        return list(FULL_CRITICS)
+def critics_for_arm(arm: str, data_regime: str = "offline") -> List[str]:
+    """The DEFAULT critic set for an arm (CHANGE 4). Offline: the full strategy
+    set on basic/confounded (basic is the null-calibration run), observational
+    only on biased (sigma=0 has no backdoor path). Online: only the strategies
+    with an online algo variant (observational/proximal)."""
     if arm == "biased":
         return ["observational"]
-    raise ValueError(f"unknown arm '{arm}'")
+    if arm not in ("basic", "confounded"):
+        raise ValueError(f"unknown arm '{arm}'")
+    if data_regime == "online":
+        return list(ONLINE_STRATEGIES)
+    return list(FULL_CRITICS)
 
 
 def arm_behavior(beta: float, sigma: float) -> Tuple[str, float]:
@@ -146,6 +176,60 @@ def results_leaf(
     )
 
 
+def parse_algo_entry(entry: str, observability: str) -> Tuple[str, str, str, str]:
+    """Normalize one ``algos`` entry -> (name, actor_network, critic_network,
+    algo_id).
+
+    Two forms (both plain strings, so entries survive the supervisor's
+    ``--algos`` CLI hand-off verbatim):
+
+      * ``"cql"`` — the historical AUTO form: mlp trunks on an mdp cell, lstm
+        critic on a pomdp cell (byte-identical to the pre-split driver). The
+        leaf/path id is the bare name.
+      * ``"dqn__mlp__mlp"`` — EXPLICIT ``name__actor__critic`` (the repo's
+        canonical-id convention, PR #49): declares the trunks per row, e.g. a
+        memoryless mlp baseline next to the recurrent learner in a pomdp cell.
+        The leaf/path id is the entry VERBATIM, so two rows of the same base
+        algo with different trunks never collide."""
+    e = str(entry)
+    if "__" in e:
+        parts = e.split("__")
+        if len(parts) != 3 or not all(parts):
+            raise ValueError(
+                f"algo entry {e!r} is not 'name' or 'name__actor__critic' "
+                "(e.g. dqn__lstm__lstm, offline_dqn__mlp__mlp)."
+            )
+        name, actor, critic = parts
+        return name, actor, critic, e
+    critic = "lstm" if observability == "pomdp" else "mlp"
+    return e, "mlp", critic, e
+
+
+def classical_results_leaf(
+    root: str | Path,
+    regime: str,
+    beta: float,
+    sigma: float,
+    env: str,
+    algo: str,
+    seed: int,
+) -> Path:
+    """The CLASSICAL simulation's run-dir leaf: same parameter addressing, NO
+    critic segment, under a ``{regime}/classical/`` subtree. The subtree keeps the
+    two simulations' path schemas apart: the ablation walkers (regime_report)
+    require env/algo/critic/seed below the parameter dir and skip anything else,
+    so classical leaves are invisible to them by construction."""
+    return (
+        Path(root)
+        / regime
+        / "classical"
+        / param_dirname(beta, sigma)
+        / _safe(env)
+        / _safe(algo)
+        / str(seed)
+    )
+
+
 def _safe(name: str) -> str:
     return str(name).replace("/", "-")
 
@@ -174,9 +258,32 @@ class SweepSpec:
     # subprocess pool (src/benchmarking/sweep_supervisor.py). run_cell itself is
     # untouched — it stays serial WITHIN a group; parallelism is across groups only.
     max_workers: int = 1
+    # WHICH simulation this cell runs: "critic_ablation" (default — the historical
+    # behavior of every sweep.yaml) or "classical" (algo x env benchmark, no
+    # critic axis, ``{regime}/classical/`` leaves).
+    simulation: str = "critic_ablation"
+    # Per-arm critic-set OVERRIDE parsed from the cell's ``critics:`` block
+    # (previously documentation-only). Empty -> critics_for_arm defaults.
+    critics: Dict[str, List[str]] = field(default_factory=dict)
+    # The L's arm values parsed from the cell's ``sweep:`` block (previously
+    # documentation-only). Defaults = the canonical 7-point L.
+    beta_arm: Tuple[float, ...] = BETA_ARM
+    sigma_arm: Tuple[float, ...] = SIGMA_ARM
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
+
+    def points(self) -> List[Tuple[float, float]]:
+        """This cell's sweep points (the declared L; canonical 7 by default)."""
+        return sweep_points(self.beta_arm, self.sigma_arm)
+
+    def critics_for(self, arm: str) -> List[str]:
+        """This cell's critic set for an arm: the ``critics:`` block when
+        declared, else the data-regime-aware default."""
+        declared = self.critics.get(arm)
+        if declared is not None:
+            return list(declared)
+        return critics_for_arm(arm, self.data_regime)
 
 
 def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
@@ -197,10 +304,19 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
     def pick(key, default=None):
         return cfg.get(key, base.get(key, default))
 
+    simulation = str(pick("simulation", "critic_ablation"))
+    if simulation not in SIMULATIONS:
+        raise ValueError(
+            f"{p}: unknown simulation '{simulation}'; must be one of {SIMULATIONS}."
+        )
+    data_regime = str(pick("data_regime", "offline"))
+    beta_arm, sigma_arm = _parse_sweep_block(cfg.get("sweep"), source=str(p))
+    critics = _parse_critics_block(cfg.get("critics"), data_regime, source=str(p))
+
     return SweepSpec(
         regime=cfg["regime"],
         observability=pick("observability", "mdp"),
-        data_regime=pick("data_regime", "offline"),
+        data_regime=data_regime,
         generator_algo=pick("generator_algo", "dqn"),
         envs=list(pick("envs", [])),
         algos=list(pick("algos", [])),
@@ -213,7 +329,96 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
             k: [int(i) for i in v] for k, v in (pick("mask_indices", {}) or {}).items()
         },
         max_workers=int(pick("max_workers", 1)),
+        simulation=simulation,
+        critics=critics,
+        beta_arm=beta_arm,
+        sigma_arm=sigma_arm,
     )
+
+
+def _as_float_list(val) -> List[float]:
+    if isinstance(val, (list, tuple)):
+        return [float(x) for x in val]
+    return [float(val)]
+
+
+def _parse_sweep_block(
+    block, *, source: str
+) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    """Parse a cell's ``sweep:`` block into (beta_arm, sigma_arm), REFUSING any
+    declaration off the L (the basic origin must be (0,0); each arm varies exactly
+    one axis). Absent block -> the canonical arms. This makes the block REAL
+    config — before, it was documentation the driver silently ignored."""
+    if block is None:
+        return BETA_ARM, SIGMA_ARM
+    if not isinstance(block, dict):
+        raise ValueError(f"{source}: 'sweep' must be a map of arms, got {block!r}.")
+    unknown = set(block) - {"basic", "biased", "confounded"}
+    if unknown:
+        raise ValueError(
+            f"{source}: unknown sweep arm(s) {sorted(unknown)}; the L has exactly "
+            "basic/biased/confounded."
+        )
+    basic = block.get("basic", {"beta": 0.0, "sigma": 0.0})
+    if _as_float_list(basic.get("beta", 0.0)) != [0.0] or _as_float_list(
+        basic.get("sigma", 0.0)
+    ) != [0.0]:
+        raise ValueError(
+            f"{source}: sweep.basic must sit at the shared origin (beta=0, sigma=0)."
+        )
+    biased = block.get("biased", {"beta": list(BETA_ARM), "sigma": 0.0})
+    if _as_float_list(biased.get("sigma", 0.0)) != [0.0]:
+        raise ValueError(f"{source}: sweep.biased must hold sigma at 0 (the L).")
+    beta_arm = tuple(_as_float_list(biased.get("beta", list(BETA_ARM))))
+    confounded = block.get("confounded", {"beta": 0.0, "sigma": list(SIGMA_ARM)})
+    if _as_float_list(confounded.get("beta", 0.0)) != [0.0]:
+        raise ValueError(f"{source}: sweep.confounded must hold beta at 0 (the L).")
+    sigma_arm = tuple(_as_float_list(confounded.get("sigma", list(SIGMA_ARM))))
+    if any(b <= 0.0 for b in beta_arm) or any(s <= 0.0 for s in sigma_arm):
+        raise ValueError(
+            f"{source}: arm values must be > 0 (the origin is declared by basic)."
+        )
+    return beta_arm, sigma_arm
+
+
+def _parse_critics_block(
+    block, data_regime: str, *, source: str
+) -> Dict[str, List[str]]:
+    """Parse a cell's ``critics:`` per-arm block (previously documentation-only).
+    Validates strategy names, the sensitivity->observational requirement, and the
+    online availability constraint. Absent block -> {} (critics_for_arm defaults)."""
+    if block is None:
+        return {}
+    if not isinstance(block, dict):
+        raise ValueError(f"{source}: 'critics' must be a map of arms, got {block!r}.")
+    unknown_arms = set(block) - {"basic", "biased", "confounded"}
+    if unknown_arms:
+        raise ValueError(f"{source}: unknown critics arm(s) {sorted(unknown_arms)}.")
+    out: Dict[str, List[str]] = {}
+    for arm, names in block.items():
+        names = [str(n) for n in (names or [])]
+        if not names:
+            raise ValueError(f"{source}: critics.{arm} must be a non-empty list.")
+        bad = [n for n in names if n not in KNOWN_STRATEGIES]
+        if bad:
+            raise ValueError(
+                f"{source}: unknown critic strategy {bad}; known: {KNOWN_STRATEGIES}."
+            )
+        if data_regime == "online":
+            offline_only = [n for n in names if n not in ONLINE_STRATEGIES]
+            if offline_only:
+                raise ValueError(
+                    f"{source}: critics.{arm} declares {offline_only}, but only "
+                    f"{ONLINE_STRATEGIES} have an online algo variant "
+                    "(oracle_u/sensitivity are offline-only)."
+                )
+        if "sensitivity" in names and "observational" not in names:
+            raise ValueError(
+                f"{source}: critics.{arm} includes 'sensitivity', which requires "
+                "'observational' in the same set (its pessimism_cost baseline)."
+            )
+        out[arm] = names
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -309,22 +514,23 @@ def _write_run_metadata(
     beta: float,
     sigma: float,
     seed: int,
-    critics: List[str],
+    critics: List[str] | None = None,
+    mode: str = "critic_ablation",
 ) -> None:
     """Write the two run-dir artifacts the RUNNER does not write (main.py does):
     ``config.yaml`` + ``metadata.json``, so a leaf holds the same file set a live
     run dir holds. Parameters go in the CONTENT here too (the path already carries
     them); labels are still derived, never stored."""
     run_dir.mkdir(parents=True, exist_ok=True)
+    training: Dict = {"mode": mode, "algos": [algo]}
+    if critics is not None:
+        training["ablation"] = {"critics": list(critics)}
     snapshot = {
         "env": {"envs": [env], "seed": seed},
-        "training": {
-            "mode": "critic_ablation",
-            "algos": [algo],
-            "ablation": {"critics": list(critics)},
-        },
+        "training": training,
         "sweep": {
             "regime": spec.regime,
+            "simulation": spec.simulation,
             "beta": float(beta),
             "sigma": float(sigma),
             # arm is DERIVED, recorded for convenience but never a path segment.
@@ -380,9 +586,10 @@ def _run_point(
     from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 
     arm = arm_label(beta, sigma)
-    critics = critics_for_arm(arm)
+    critics = spec.critics_for(arm)
     bp, strength = arm_behavior(beta, sigma)
     recurrent = spec.observability == "pomdp"
+    name, actor_net, critic_net, algo_id = parse_algo_entry(algo, spec.observability)
 
     # Stage the ONE shared ablation run OUTSIDE the results tree, then explode it into
     # the per-critic leaves — so results/ holds only the parameter-addressed leaves
@@ -411,17 +618,21 @@ def _run_point(
         n_checkpoints=spec.budget("n_checkpoints", 2),
         deterministic=True,
         device=device or "cpu",
-        algorithm=algo,
+        algorithm=algo_id,
         aggregation="iqm",
-        critic_network=("lstm" if recurrent else "mlp"),
+        actor_network=actor_net,
+        critic_network=critic_net,
         offline_grad_steps=(int(_ogs) if _ogs is not None else None),
+        # videos land in the staging dir that is rmtree'd below — pure waste
+        # (an ffmpeg spawn + rollout_len frame encodes per checkpoint).
+        record_eval_video=False,
     )
-    _write_run_metadata(staging, spec, env, algo, beta, sigma, seed, critics)
+    _write_run_metadata(staging, spec, env, algo_id, beta, sigma, seed, critics)
     BenchmarkRunner(
         env_cfg,
         train_cfg,
         RunConfig(run_dir=str(staging), timestamp="sweep"),
-        registry.get(algo),
+        registry.get(name),
         critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
     ).run()
 
@@ -435,7 +646,7 @@ def _run_point(
     leaves: List[Path] = []
     for critic in critics:
         leaf = results_leaf(
-            results_root, spec.regime, beta, sigma, env, algo, critic, seed
+            results_root, spec.regime, beta, sigma, env, algo_id, critic, seed
         )
         leaf.mkdir(parents=True, exist_ok=True)
         for fn in shared_files:
@@ -452,6 +663,191 @@ def _run_point(
     return leaves
 
 
+def _run_point_classical(
+    spec: SweepSpec,
+    env: str,
+    algo: str,
+    seed: int,
+    beta: float,
+    sigma: float,
+    dataset_id: str | None,
+    results_root: str | Path,
+    device: str | None,
+) -> List[Path]:
+    """Run ONE classical (plain-benchmark) arm point: the algo trains on the
+    point's data — the shared-generator offline dataset, or the online arm
+    collection — with NO critic ablation. One leaf per (point, algo), written
+    directly (no staging/explode: there is no critic axis to slice)."""
+    from src.benchmarking.registry import registry
+    from src.benchmarking.runner import BenchmarkRunner
+    from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
+
+    bp, strength = arm_behavior(beta, sigma)
+    recurrent = spec.observability == "pomdp"
+    name, actor_net, critic_net, algo_id = parse_algo_entry(algo, spec.observability)
+    leaf = classical_results_leaf(
+        results_root, spec.regime, beta, sigma, env, algo_id, seed
+    )
+
+    env_cfg = EnvConfig(
+        env_id=env,
+        n_train_envs=spec.budget("n_train_envs", 2),
+        n_eval_envs=spec.budget("n_eval_envs", 2),
+        rollout_len=spec.budget("rollout_len", 2),
+        seed=seed,
+        offline_dataset=dataset_id,
+        behavior_policy=bp,
+        behavior_strength=strength,
+        pi_basic_epsilon=spec.pi_basic_epsilon,
+        confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+        mask_indices=(spec.mask_indices.get(env) if recurrent else None),
+    )
+    _ogs = spec.budgets.get("offline_grad_steps")
+    train_cfg = TrainingConfig(
+        n_episodes=spec.budget("n_episodes", 1),
+        n_checkpoints=spec.budget("n_checkpoints", 2),
+        deterministic=True,
+        device=device or "cpu",
+        algorithm=algo_id,
+        aggregation="iqm",
+        actor_network=actor_net,
+        critic_network=critic_net,
+        offline_grad_steps=(
+            int(_ogs) if (_ogs is not None and dataset_id is not None) else None
+        ),
+        record_eval_video=False,
+    )
+    _write_run_metadata(
+        leaf, spec, env, algo_id, beta, sigma, seed, critics=None, mode="benchmark"
+    )
+    BenchmarkRunner(
+        env_cfg,
+        train_cfg,
+        RunConfig(run_dir=str(leaf), timestamp="sweep"),
+        registry.get(name),
+    ).run()
+    return [leaf]
+
+
+def resolve_online_strategy_algo(base: str, strategy: str) -> str:
+    """Map (base online algo, id-strategy) -> the registered ALGO VARIANT that
+    embodies that strategy online. ``observational`` is the base learner itself;
+    other strategies resolve via the ``online_{base}_{strategy}`` /
+    ``{base}_{strategy}`` naming conventions (e.g. dqn+proximal ->
+    online_dqn_proximal, Gate B). Raises if no online variant exists — the online
+    ablation compares algo variants because the CriticAblationManager's strategy
+    path is offline-only by design (runner guard)."""
+    from src.benchmarking.registry import registry
+
+    if strategy == "observational":
+        return base
+    for cand in (f"online_{base}_{strategy}", f"{base}_{strategy}"):
+        try:
+            if registry.get(cand).data_regime == "online":
+                return cand
+        except KeyError:
+            continue
+    raise ValueError(
+        f"no online algo variant for base '{base}' + strategy '{strategy}' "
+        f"(looked for online_{base}_{strategy} / {base}_{strategy}); online "
+        f"critic sets are limited to {ONLINE_STRATEGIES}."
+    )
+
+
+def _run_point_online_ablation(
+    spec: SweepSpec,
+    env: str,
+    algo: str,
+    seed: int,
+    beta: float,
+    sigma: float,
+    results_root: str | Path,
+    device: str | None,
+) -> List[Path]:
+    """Run ONE online critic-ablation arm point: one TRAINING RUN PER STRATEGY
+    (dqn vs online_dqn_proximal, ...), each collecting its own arm stream —
+    the online analog of the offline shared-stream ablation (Gate B's
+    fixed-behavior construction lives inside the variant algo). Leaves reuse the
+    ablation path schema: .../{env}/{base_algo}/{critic}/{seed}."""
+    from src.benchmarking.registry import registry
+    from src.benchmarking.runner import BenchmarkRunner
+    from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
+
+    arm = arm_label(beta, sigma)
+    critics = spec.critics_for(arm)
+    bp, strength = arm_behavior(beta, sigma)
+    recurrent = spec.observability == "pomdp"
+    name, actor_net, critic_net, algo_id = parse_algo_entry(algo, spec.observability)
+
+    leaves: List[Path] = []
+    for critic in critics:
+        variant = resolve_online_strategy_algo(name, critic)
+        leaf = results_leaf(
+            results_root, spec.regime, beta, sigma, env, algo_id, critic, seed
+        )
+        env_cfg = EnvConfig(
+            env_id=env,
+            n_train_envs=spec.budget("n_train_envs", 2),
+            n_eval_envs=spec.budget("n_eval_envs", 2),
+            rollout_len=spec.budget("rollout_len", 2),
+            seed=seed,
+            behavior_policy=bp,
+            behavior_strength=strength,
+            pi_basic_epsilon=spec.pi_basic_epsilon,
+            confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+            mask_indices=(spec.mask_indices.get(env) if recurrent else None),
+        )
+        train_cfg = TrainingConfig(
+            n_episodes=spec.budget("n_episodes", 1),
+            n_checkpoints=spec.budget("n_checkpoints", 2),
+            deterministic=True,
+            device=device or "cpu",
+            algorithm=variant,
+            aggregation="iqm",
+            actor_network=actor_net,
+            critic_network=critic_net,
+            record_eval_video=False,
+        )
+        _write_run_metadata(
+            leaf, spec, env, algo_id, beta, sigma, seed, critics=critics
+        )
+        BenchmarkRunner(
+            env_cfg,
+            train_cfg,
+            RunConfig(run_dir=str(leaf), timestamp="sweep"),
+            registry.get(variant),
+        ).run()
+        leaves.append(leaf)
+    return leaves
+
+
+def _validate_algos_for_regime(spec: SweepSpec, algos: Sequence[str]) -> None:
+    """Refuse algorithms that are not DESIGNED for the cell's data regime — an
+    offline learner in an online cell (or vice versa) would either crash deep in
+    the runner or silently train on the wrong loop. The registry's
+    ``data_regime`` is the source of truth. (Trunk compatibility — e.g. an lstm
+    on a non-recurrent base — is enforced by the registry's builder guards with
+    their own precise message.)"""
+    from src.benchmarking.registry import registry
+
+    for entry in algos:
+        name, _, _, _ = parse_algo_entry(entry, spec.observability)
+        try:
+            algo_dr = registry.get(name).data_regime
+        except KeyError:
+            raise ValueError(
+                f"unknown algorithm '{name}' (algos entry {entry!r}) in regime "
+                f"'{spec.regime}'."
+            )
+        if algo_dr != spec.data_regime:
+            raise ValueError(
+                f"algorithm '{name}' (algos entry {entry!r}) is a "
+                f"{algo_dr}-data learner and does not belong in regime "
+                f"'{spec.regime}' (data_regime={spec.data_regime}); use only "
+                "algorithms designed for the cell's data regime."
+            )
+
+
 def run_cell(
     sweep_yaml: str | Path,
     *,
@@ -463,35 +859,47 @@ def run_cell(
     seeds: Sequence[int] | None = None,
     budget_overrides: Dict[str, int] | None = None,
 ) -> List[Path]:
-    """Run one cell (CHANGE 5). For each (env, seed): build ONE generator agent,
-    generate all 7 sweep-point datasets from it, REFUSE the cell if their hashes
-    differ (M1), then train each arm point into the parameter-addressed leaves. The
-    optional envs/algos/seeds override the spec (used to shrink a cell for tests).
-    Offline regimes only — online cells have no offline generator to share (their
-    behavior policy IS the learner); use the online path for those."""
+    """Run one cell (CHANGE 5), dispatching on (data_regime, simulation).
+
+    OFFLINE: for each (env, seed) build ONE generator agent, generate every
+    sweep-point dataset from it, REFUSE the cell if their hashes differ (M1),
+    then train each arm point into the parameter-addressed leaves —
+    per-{critic} leaves for the ``critic_ablation`` simulation, per-{algo}
+    ``classical/`` leaves for the ``classical`` one (same shared-generator
+    pairing either way).
+
+    ONLINE: no offline generator exists (the behavior policy is fixed per arm,
+    the learner trains on its own collection), so each arm point is an ordinary
+    online run: ``classical`` = one benchmark run per (point, algo);
+    ``critic_ablation`` = one run per (point, base algo, strategy VARIANT)
+    (dqn vs online_dqn_proximal — the runner's strategy-ablation manager is
+    offline-only, so online strategies are algo variants).
+
+    The optional envs/algos/seeds override the spec (used to shrink a cell)."""
     from src.benchmarking.registry import register_default_algorithms
     from src.config.seeding import set_seed
-    from src.envs.offline.generate import (
-        build_generator_agent,
-        generate_offline_dataset,
-    )
     from src.envs.registry import register_default_env_wrappers
 
     spec = load_sweep_spec(sweep_yaml)
     if budget_overrides:
         spec.budgets = {**spec.budgets, **budget_overrides}
-    if spec.data_regime != "offline":
-        raise NotImplementedError(
-            f"run_cell drives the OFFLINE path; regime '{spec.regime}' is online "
-            "(no offline generator to share). The online arms run through the "
-            "on-policy benchmark path — out of this driver's offline scope."
-        )
     register_default_algorithms()
     register_default_env_wrappers()
 
     run_envs = list(envs) if envs is not None else spec.envs
     run_algos = list(algos) if algos is not None else spec.algos
     run_seeds = [int(s) for s in (seeds if seeds is not None else spec.seeds)]
+    _validate_algos_for_regime(spec, run_algos)
+
+    if spec.data_regime != "offline":
+        return _run_online_regime(
+            spec, run_envs, run_algos, run_seeds, results_root, device
+        )
+
+    from src.envs.offline.generate import (
+        build_generator_agent,
+        generate_offline_dataset,
+    )
 
     written: List[Path] = []
     for env in run_envs:
@@ -499,10 +907,10 @@ def run_cell(
             agent, _hash = build_generator_agent(
                 env, spec.generator_algo, "random", seed=seed, device=device
             )
-            # 1) generate all 7 sweep points from the ONE shared agent
+            # 1) generate all sweep points from the ONE shared agent
             datasets: Dict[Tuple[float, float], str] = {}
             point_hashes: Dict[Tuple[float, float], str] = {}
-            for beta, sigma in sweep_points():
+            for beta, sigma in spec.points():
                 bp, strength = arm_behavior(beta, sigma)
                 did = _dataset_id(dataset_prefix, spec.regime, env, beta, sigma, seed)
                 try:
@@ -548,19 +956,68 @@ def run_cell(
             #    BEFORE spending any training on a non-identified taxonomy.
             assert_shared_generator(point_hashes)
             # 3) train each arm point into its parameter-addressed leaves
-            for beta, sigma in sweep_points():
+            for beta, sigma in spec.points():
                 for algo in run_algos:
-                    written += _run_point(
-                        spec,
-                        env,
-                        algo,
-                        seed,
-                        beta,
-                        sigma,
-                        datasets[(beta, sigma)],
-                        results_root,
-                        device,
-                    )
+                    if spec.simulation == "classical":
+                        written += _run_point_classical(
+                            spec,
+                            env,
+                            algo,
+                            seed,
+                            beta,
+                            sigma,
+                            datasets[(beta, sigma)],
+                            results_root,
+                            device,
+                        )
+                    else:
+                        written += _run_point(
+                            spec,
+                            env,
+                            algo,
+                            seed,
+                            beta,
+                            sigma,
+                            datasets[(beta, sigma)],
+                            results_root,
+                            device,
+                        )
+    return written
+
+
+def _run_online_regime(
+    spec: SweepSpec,
+    run_envs: Sequence[str],
+    run_algos: Sequence[str],
+    run_seeds: Sequence[int],
+    results_root: str | Path,
+    device: str | None,
+) -> List[Path]:
+    """The ONLINE cell driver: no generator, no datasets — each arm point runs the
+    online loop (the PR-3 arm policies collect during training; the online
+    intervened gate applies). Group iteration mirrors the offline driver
+    ((env, seed) outermost) so the supervisor's (env, seed) grain works verbatim."""
+    written: List[Path] = []
+    for env in run_envs:
+        for seed in run_seeds:
+            for beta, sigma in spec.points():
+                for algo in run_algos:
+                    if spec.simulation == "classical":
+                        written += _run_point_classical(
+                            spec,
+                            env,
+                            algo,
+                            seed,
+                            beta,
+                            sigma,
+                            None,
+                            results_root,
+                            device,
+                        )
+                    else:
+                        written += _run_point_online_ablation(
+                            spec, env, algo, seed, beta, sigma, results_root, device
+                        )
     return written
 
 
@@ -585,13 +1042,16 @@ def _main(argv: List[str] | None = None) -> int:
     from src.config.device import detect_device
 
     ap = argparse.ArgumentParser(
-        description="Run one (regime × L-sweep) cell: ONE generator checkpoint per "
-        "(env, seed), 7 paired sweep points, parameter-addressed results/ leaves. "
-        "Offline cells only — online cells raise NotImplementedError (their behavior "
-        "policy IS the learner, so there is no offline generator to share).",
+        description="Run one (regime × L-sweep) cell, offline or online, in either "
+        "simulation (the YAML's `simulation:` key): classical (algo x env benchmark, "
+        "{regime}/classical/ leaves) or critic_ablation (per-{critic} leaves). "
+        "Offline cells share ONE generator checkpoint per (env, seed); online cells "
+        "run the arm policies through the online loop (no generator).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    ap.add_argument("sweep_yaml", help="path to a cell's sweep.yaml")
+    ap.add_argument(
+        "sweep_yaml", help="path to a cell YAML (classical.yaml / critic_ablation.yaml)"
+    )
     ap.add_argument(
         "--results-root",
         default=None,

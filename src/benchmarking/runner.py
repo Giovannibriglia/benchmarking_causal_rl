@@ -356,7 +356,13 @@ class BenchmarkRunner:
             n_envs=env_cfg.n_eval_envs,
             device=self.device,
             seed=env_cfg.seed + env_cfg.n_train_envs,
-            render=_render_capable(env_cfg.env_id),
+            # render only matters for the eval video; skip render_mode entirely
+            # when recording is disabled (render is side-effect-only, never
+            # numerics — see _render_capable's docstring).
+            render=(
+                _render_capable(env_cfg.env_id)
+                and getattr(train_cfg, "record_eval_video", True)
+            ),
             record_video=False,
             env_wrapper=env_cfg.env_wrapper,
             env_entry_point=env_cfg.env_entry_point,
@@ -658,12 +664,17 @@ class BenchmarkRunner:
 
     def evaluate(self, episode: int) -> Dict[str, float]:
         env = self.eval_env
-        video_path = os.path.join(
-            self.run_dir,
-            "videos",
-            f"{self._env_tag}_{self.train_cfg.algorithm}_seed{self.env_cfg.seed}_ckpt{episode:04d}.mp4",
-        )
-        env.start_video(video_path)
+        # Video is side-effect-only (render never enters numerics) but costs an
+        # ffmpeg spawn + rollout_len frame encodes per checkpoint; gated so the
+        # sweep driver can turn it off (its leaves never keep videos).
+        record_video = getattr(self.train_cfg, "record_eval_video", True)
+        if record_video:
+            video_path = os.path.join(
+                self.run_dir,
+                "videos",
+                f"{self._env_tag}_{self.train_cfg.algorithm}_seed{self.env_cfg.seed}_ckpt{episode:04d}.mp4",
+            )
+            env.start_video(video_path)
         obs, _ = env.reset()
         total_rewards = torch.zeros(env.n_envs, device=self.device)
         # Eval-per-context (Cell 2): accumulate the PRE-mask values of the hidden
@@ -699,7 +710,8 @@ class BenchmarkRunner:
                 full_obs = env.last_unmasked_obs
                 z_sum += full_obs.index_select(-1, z_idx)
                 z_steps += 1
-        env.stop_video()
+        if record_video:
+            env.stop_video()
         if gate_open:
             self._write_eval_per_context(
                 episode, z_sum / max(z_steps, 1), total_rewards

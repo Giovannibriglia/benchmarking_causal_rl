@@ -44,21 +44,27 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from src.benchmarking.regime_sweep import (
     _safe,
     arm_label,
-    critics_for_arm,
+    classical_results_leaf,
     load_sweep_spec,
+    parse_algo_entry,
     results_leaf,
     run_cell,
-    sweep_points,
 )
 
 # Repo root: this file is <root>/src/benchmarking/sweep_supervisor.py, so parents[2]
 # is the root a ``python -m src.benchmarking.regime_sweep`` child must run from.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# The run-dir file set every leaf must hold to count as complete (mirrors the shared
-# files _run_point copies into each per-critic leaf). A dir missing any of these is a
-# half-written / truncated leaf and does NOT count toward the group's leaf total.
-_LEAF_MARKER_FILES = ("config.yaml", "critic_ablation_metrics.csv")
+
+def _leaf_marker_files(spec) -> Tuple[str, ...]:
+    """The run-dir file set every leaf must hold to count as complete. A dir
+    missing any of these is a half-written / truncated leaf and does NOT count
+    toward the group's leaf total. The OFFLINE critic ablation slices a
+    critic_ablation_metrics.csv into every leaf; classical and online-ablation
+    leaves are ordinary benchmark run dirs (eval_metrics.csv is their tail file)."""
+    if spec.simulation == "critic_ablation" and spec.data_regime == "offline":
+        return ("config.yaml", "critic_ablation_metrics.csv")
+    return ("config.yaml", "eval_metrics.csv")
 
 
 # --------------------------------------------------------------------------- #
@@ -104,25 +110,45 @@ class SweepResult:
 def _expected_leaves(
     spec, algos: Sequence[str], env: str, seed: int, results_root: str | Path
 ) -> List[Path]:
-    """The exact leaf paths a completed (env, seed) group must produce — one per
-    (sweep point x algo x that arm's critic). Critic sets vary by arm (biased runs
-    observational-only), so this is a SUM over points, not a flat product; that makes
-    it the authoritative expected count for the truncation check."""
+    """The exact leaf paths a completed (env, seed) group must produce.
+
+    critic_ablation: one per (sweep point x algo x that arm's critic) — critic
+    sets vary by arm (biased runs observational-only), so this is a SUM over
+    points, not a flat product. classical: one per (sweep point x algo), under
+    the ``{regime}/classical/`` subtree. Either way this is the authoritative
+    expected count for the truncation check."""
     out: List[Path] = []
-    for beta, sigma in sweep_points():
+    for beta, sigma in spec.points():
         arm = arm_label(beta, sigma)
         for algo in algos:
-            for critic in critics_for_arm(arm):
+            # the {algo} path segment is the entry's algo_id (verbatim for the
+            # explicit name__actor__critic form) — must match the drivers.
+            _, _, _, algo_id = parse_algo_entry(algo, spec.observability)
+            if spec.simulation == "classical":
                 out.append(
-                    results_leaf(
-                        results_root, spec.regime, beta, sigma, env, algo, critic, seed
+                    classical_results_leaf(
+                        results_root, spec.regime, beta, sigma, env, algo_id, seed
                     )
                 )
+            else:
+                for critic in spec.critics_for(arm):
+                    out.append(
+                        results_leaf(
+                            results_root,
+                            spec.regime,
+                            beta,
+                            sigma,
+                            env,
+                            algo_id,
+                            critic,
+                            seed,
+                        )
+                    )
     return out
 
 
-def _leaf_complete(leaf: Path) -> bool:
-    return leaf.is_dir() and all((leaf / f).exists() for f in _LEAF_MARKER_FILES)
+def _leaf_complete(leaf: Path, marker_files: Sequence[str]) -> bool:
+    return leaf.is_dir() and all((leaf / f).exists() for f in marker_files)
 
 
 # --------------------------------------------------------------------------- #
@@ -219,14 +245,6 @@ def run_sweep(
     tiny-budget parallel run.
     """
     spec = load_sweep_spec(sweep_yaml)
-    if spec.data_regime != "offline":
-        # run_cell would raise the same NotImplementedError; surface it early and with
-        # the same message so the online path is an explicit not-yet-here, not a crash.
-        raise NotImplementedError(
-            f"run_sweep drives the OFFLINE path; regime '{spec.regime}' is online. "
-            "The online driver will reuse _supervise with an empty Minari env hook."
-        )
-
     run_envs = list(envs) if envs is not None else spec.envs
     run_algos = list(algos) if algos is not None else spec.algos
     run_seeds = [int(s) for s in (seeds if seeds is not None else spec.seeds)]
@@ -244,6 +262,7 @@ def run_sweep(
             seeds=run_seeds,
             budget_overrides=budget_overrides,
         )
+        markers = _leaf_marker_files(spec)
         groups = []
         for e in run_envs:
             for s in run_seeds:
@@ -256,7 +275,7 @@ def run_sweep(
                         ok=True,
                         reason="",
                         log_path=None,
-                        leaves=[p for p in expected if _leaf_complete(p)],
+                        leaves=[p for p in expected if _leaf_complete(p, markers)],
                         expected_leaf_count=len(expected),
                     )
                 )
@@ -312,8 +331,11 @@ def run_sweep(
     def _prepare_group(
         group: object,
     ) -> Tuple[Dict[str, str], Callable[[], None]]:
-        # The ONLY offline-specific bit: a per-worker Minari store. The online driver
-        # supplies ({}, no-op) here instead.
+        # The ONLY offline-specific bit: a per-worker Minari store (kills the
+        # store-level namespace TOCTOU). Online cells have no Minari store, so
+        # their groups get no env override and a no-op cleanup.
+        if spec.data_regime != "offline":
+            return {}, (lambda: None)
         store = scratch / f"worker_{_group_tag(group)}"
         store.mkdir(parents=True, exist_ok=True)
 
@@ -327,7 +349,8 @@ def run_sweep(
     ) -> GroupResult:
         env, seed = group  # type: ignore[misc]
         expected = _expected_leaves(spec, run_algos, env, seed, results_root)
-        present = [p for p in expected if _leaf_complete(p)]
+        markers = _leaf_marker_files(spec)
+        present = [p for p in expected if _leaf_complete(p, markers)]
         if returncode != 0:
             ok, reason = False, f"subprocess exited {returncode}"
         elif len(present) != len(expected):

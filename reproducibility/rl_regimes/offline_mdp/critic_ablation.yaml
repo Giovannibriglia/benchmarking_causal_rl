@@ -1,0 +1,52 @@
+# offline_mdp / CRITIC ABLATION — the strategy-critic comparison over the L.
+#
+# simulation: critic_ablation = at every sweep point the arm's critic set
+# (identification strategies) is trained on ONE shared episode-grouped stream and
+# exploded into per-{critic} leaves:
+#   results/offline_mdp/beta_*_sigma_*/{env}/{algo}/{critic}/{seed}/
+# This is the historical sweep.yaml behavior (sweep.yaml remains a legacy alias).
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/critic_ablation.yaml
+# Report/figures:
+#   uv run python -m src.benchmarking.regime_report offline_mdp
+#   uv run python -m src.benchmarking.render_regime_report offline_mdp
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+
+# How many (env, seed) GROUPS the sweep supervisor runs concurrently. 1 = serial,
+# byte-identical to the pre-supervisor path; >=2 fans groups across subprocesses,
+# each in its own isolated Minari store. 4 is memory-safe on a 16 GB GPU.
+max_workers: 4
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5      # SHARED across all three arms
+confounder_c_r: 1.0        # action-dependent confounder magnitude (confounded arm)
+
+# envs / seeds / budgets are inherited from ../_base (override here if needed).
+
+# EXPLICIT algo selection (never inherited): the discrete OFFLINE bases the
+# strategy critics are built on (the ablation shares each algo's base class).
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+# The L (REAL config since the classical/ablation split; off-L declarations refused).
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
+
+# Critic set per arm (REAL config now — parsed and validated). basic is the
+# null-calibration run (full set); biased runs observational only (sigma=0 has no
+# backdoor path — its metric is coverage); confounded runs the full set.
+# `sensitivity` requires `observational` in the same set.
+critics:
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  biased:     [observational]
+  confounded: [observational, proximal, oracle_u, sensitivity]

@@ -389,28 +389,34 @@ def main():
         if isinstance(cfg_from_file, dict) and (
             "regime" in cfg_from_file or "sweep" in cfg_from_file
         ):
-            from src.benchmarking.regime_sweep import run_cell
+            # Route through the SUPERVISOR (not bare run_cell) so the cell's
+            # max_workers is honored from this path too: 1 = the byte-identical
+            # in-process run_cell; >=2 = the (env, seed)-group subprocess pool.
+            from src.benchmarking.sweep_supervisor import format_summary, run_sweep
 
             is_smoke = "smoke" in repro_path.stem
             results_root = "results_smoke" if is_smoke else "results"
             dataset_prefix = "smoke" if is_smoke else "sweep"
+            simulation = cfg_from_file.get("simulation", "critic_ablation")
             print(
-                f"[main] {repro_path} is a sweep-driver cell -> regime_sweep.run_cell "
+                f"[main] {repro_path} is a sweep-driver cell "
+                f"(simulation={simulation}) -> sweep_supervisor.run_sweep "
                 f"(results_root={results_root})"
             )
-            try:
-                leaves = run_cell(
-                    str(repro_path),
-                    results_root=results_root,
-                    dataset_prefix=dataset_prefix,
-                    device=str(detect_device()),
-                )
-            except NotImplementedError as e:
-                print(
-                    f"[main] this cell cannot be run by the offline sweep driver:\n  {e}"
-                )
-                return
-            print(f"[main] wrote {len(leaves)} run-dir leaves under {results_root}/")
+            result = run_sweep(
+                str(repro_path),
+                results_root=results_root,
+                dataset_prefix=dataset_prefix,
+                device=str(detect_device()),
+            )
+            print(format_summary(result))
+            print(
+                f"[main] wrote {len(result.leaves)} run-dir leaves under "
+                f"{results_root}/"
+            )
+            if not result.ok:
+                # A failing group must surface: non-zero exit, never a silent drop.
+                raise SystemExit(1)
             return
 
     env_cfg_src = (

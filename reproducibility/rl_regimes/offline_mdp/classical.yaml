@@ -1,0 +1,47 @@
+# offline_mdp / CLASSICAL — the plain benchmark over the L-shaped sweep.
+#
+# simulation: classical = every algo x every env at every sweep point, NO critic
+# axis. Leaves land under results/offline_mdp/classical/beta_*_sigma_*/{env}/{algo}/{seed}/
+# (the classical/ subtree keeps this simulation's path schema apart from the
+# critic-ablation tree). Same L, same shared-generator pairing (CHANGE 1): all 7
+# points of an (env, seed) group share ONE generator checkpoint, so cross-arm
+# return deltas are paired.
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/classical.yaml
+#   ( or: uv run python -m src.benchmarking.regime_sweep reproducibility/rl_regimes/offline_mdp/classical.yaml )
+# Report/figures:
+#   uv run python -m src.benchmarking.regime_report offline_mdp --simulation classical
+#   uv run python -m src.benchmarking.render_classical_report offline_mdp
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: classical
+
+# How many (env, seed) GROUPS the sweep supervisor runs concurrently. 1 = serial
+# (byte-identical ordering); >=2 fans groups across subprocesses, each with its own
+# isolated Minari store. 4 is memory-safe on a single 16 GB GPU (~200 MB/process);
+# speedup is sub-linear (workers share compute) but large. Override: --max-workers.
+max_workers: 4
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5      # SHARED across all three arms
+confounder_c_r: 1.0        # action-dependent confounder magnitude
+
+# envs / seeds / budgets are inherited from ../_base (override here if needed).
+
+# EXPLICIT algo selection (never inherited): the discrete OFFLINE learners —
+# every algo here is designed for this cell's data regime (offline, mlp trunks).
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+# The L (REAL config since the classical/ablation split: the driver parses these
+# arms; declarations off the L — a beta>0,sigma>0 cross-product — are refused).
+sweep:
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }

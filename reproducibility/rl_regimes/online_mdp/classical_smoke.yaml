@@ -1,0 +1,32 @@
+# online_mdp / CLASSICAL SMOKE — tiny-budget dry run of the online benchmark
+# (full L, 1 env / 1 algo / 1 seed). Run with:
+#   uv run python main.py --reproduce rl_regimes/online_mdp/classical_smoke.yaml
+regime: online_mdp
+observability: mdp
+data_regime: online
+discrete_only: true
+simulation: classical
+
+max_workers: 1
+
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+envs:
+  - CartPole-v1
+# TWO online discrete learners (see classical.yaml): the base + its
+# deconfounding variant.
+algos:
+  - dqn
+  - online_dqn_proximal
+seeds:
+  - 0
+budgets:
+  # Online loop: n_episodes x rollout_len x n_train_envs collection steps. The
+  # off-policy warmup is 1000 steps, so 20 x 64 x 2 = 2560 crosses it — the smoke
+  # exercises real gradient updates, not just collection.
+  n_episodes: 20
+  n_checkpoints: 2
+  n_train_envs: 2
+  n_eval_envs: 2
+  rollout_len: 64
