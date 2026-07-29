@@ -32,6 +32,7 @@ note on ``_supervise``.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -152,6 +153,109 @@ def _leaf_complete(leaf: Path, marker_files: Sequence[str]) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Live multi-bar mirror (interactive terminals only)                            #
+# --------------------------------------------------------------------------- #
+# A tqdm-rendered segment ("37%|###  | 18500/50000 [...]"). The children's own
+# tqdm output lands in their per-group log; the parent MIRRORS the latest such
+# segment per worker into a fixed terminal slot — multi-process tqdm is not a
+# thing (each worker is its own OS process; the terminal has one cursor), so
+# the parent is the single writer that multiplexes the bars.
+_BAR_SEG = re.compile(r"\d+%\|")
+
+
+def _last_bar_line(log_path: Path, tail_bytes: int = 8192) -> Optional[str]:
+    """The child's CURRENT progress line: last tqdm-looking segment in the log
+    tail (tqdm redraws with \\r, plain prints end with \\n — split on both and
+    take the last bar-shaped piece; fall back to the last non-empty line)."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            chunk = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    segs = [s.strip() for s in re.split(r"[\r\n]", chunk) if s.strip()]
+    for s in reversed(segs):
+        if _BAR_SEG.search(s):
+            return s
+    return segs[-1] if segs else None
+
+
+class _LiveBars:
+    """Fixed per-worker-slot terminal lines mirroring the children's own tqdm
+    bars. Active only on an interactive stdout; everywhere else (CI, piped,
+    tests) every method is a no-op and the plain launched/finished prints keep
+    the historical line-per-event behavior."""
+
+    def __init__(self, n_slots: int, enabled: bool) -> None:
+        self._bars: list = []
+        self._by_group: Dict[str, int] = {}  # group tag -> slot
+        self._free: List[int] = list(range(n_slots))
+        self._last_refresh = 0.0
+        self.enabled = enabled and sys.stdout.isatty()
+        if not self.enabled:
+            return
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            self.enabled = False
+            return
+        self._tqdm = tqdm
+        self._width = shutil.get_terminal_size().columns
+        self._bars = [
+            tqdm(
+                total=1,
+                position=i,
+                bar_format="{desc}",
+                leave=False,
+                dynamic_ncols=True,
+            )
+            for i in range(n_slots)
+        ]
+        for i, b in enumerate(self._bars):
+            b.set_description_str(f"[worker {i}] idle")
+
+    def print(self, msg: str) -> None:
+        """A persistent line that does not tear the bars."""
+        if self.enabled:
+            self._tqdm.write(msg)
+        else:
+            print(msg, flush=True)
+
+    def attach(self, tag: str) -> None:
+        if self.enabled and self._free:
+            self._by_group[tag] = self._free.pop(0)
+
+    def detach(self, tag: str) -> None:
+        if not self.enabled:
+            return
+        slot = self._by_group.pop(tag, None)
+        if slot is not None:
+            self._bars[slot].set_description_str(f"[worker {slot}] idle")
+            self._free.insert(0, slot)
+
+    def refresh(self, running_logs: Dict[str, Path], min_interval: float = 0.5):
+        if not self.enabled:
+            return
+        now = time.time()
+        if now - self._last_refresh < min_interval:
+            return
+        self._last_refresh = now
+        for tag, log_path in running_logs.items():
+            slot = self._by_group.get(tag)
+            if slot is None:
+                continue
+            line = _last_bar_line(log_path) or "starting..."
+            text = f"[{tag}] {line}"
+            self._bars[slot].set_description_str(text[: max(self._width - 2, 40)])
+
+    def close(self) -> None:
+        for b in self._bars:
+            b.close()
+
+
+# --------------------------------------------------------------------------- #
 # The generic pool (driver-agnostic)                                            #
 # --------------------------------------------------------------------------- #
 def _supervise(
@@ -174,6 +278,20 @@ def _supervise(
     The pool / refill / failure / per-worker-log machinery below is reused verbatim.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
+    total = len(groups)
+    # Surface the log dir UP FRONT: the workers' stdout/stderr (tqdm included)
+    # stream into per-group files there — without this line the only mention of
+    # a log path was in the FAILED summary, leaving a healthy multi-hour run
+    # with no visible progress at all.
+    print(
+        f"[sweep_supervisor] {total} group(s), {max_workers} worker(s); "
+        f"per-group logs: {log_dir}/group_*.log  "
+        f"— full detail with: tail -f {log_dir}/group_*.log",
+        flush=True,
+    )
+    # On an interactive terminal, MIRROR each worker's current progress line
+    # (its own tqdm bar, or the generation-phase print) into a fixed slot below.
+    bars = _LiveBars(max_workers, enabled=True)
     pending: List[object] = list(groups)
     # popen -> (group, log file handle, cleanup callable, log path)
     running: Dict[subprocess.Popen, Tuple[object, object, Callable[[], None], Path]] = (
@@ -185,7 +303,10 @@ def _supervise(
         env_overrides, cleanup = prepare_group(group)
         log_path = log_dir / f"group_{log_name(group)}.log"
         logf = open(log_path, "w")
-        env = {**os.environ, **env_overrides}
+        # PYTHONUNBUFFERED: a redirected child block-buffers stdout, so its log
+        # file stays EMPTY for minutes/hours; unbuffered makes the per-group log
+        # tail-able in real time (numerics untouched — output buffering only).
+        env = {**os.environ, **env_overrides, "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(
             build_command(group),
             stdout=logf,
@@ -194,22 +315,36 @@ def _supervise(
             cwd=str(_REPO_ROOT),
         )
         running[proc] = (group, logf, cleanup, log_path)
+        bars.attach(log_name(group))
+        bars.print(f"[sweep_supervisor] launched {log_name(group)}")
 
-    while pending or running:
-        while pending and len(running) < max_workers:
-            _launch(pending.pop(0))
-        done = [p for p in running if p.poll() is not None]
-        if not done:
-            time.sleep(poll_interval)
-            continue
-        for proc in done:
-            group, logf, cleanup, log_path = running.pop(proc)
-            logf.close()
-            try:
-                cleanup()  # tear the per-worker store down regardless of outcome
-            except Exception:
-                pass
-            results.append(verify_group(group, int(proc.returncode), log_path))
+    try:
+        while pending or running:
+            while pending and len(running) < max_workers:
+                _launch(pending.pop(0))
+            bars.refresh({log_name(g): lp for (g, _, _, lp) in running.values()})
+            done = [p for p in running if p.poll() is not None]
+            if not done:
+                time.sleep(poll_interval)
+                continue
+            for proc in done:
+                group, logf, cleanup, log_path = running.pop(proc)
+                logf.close()
+                try:
+                    cleanup()  # tear the per-worker store down regardless of outcome
+                except Exception:
+                    pass
+                res = verify_group(group, int(proc.returncode), log_path)
+                results.append(res)
+                bars.detach(log_name(group))
+                state = "ok" if res.ok else f"FAILED ({res.reason})"
+                bars.print(
+                    f"[sweep_supervisor] finished {log_name(group)}: {state} "
+                    f"[{len(res.leaves)}/{res.expected_leaf_count} leaves; "
+                    f"{len(results)}/{total} groups done]"
+                )
+    finally:
+        bars.close()
     return results
 
 

@@ -215,8 +215,13 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     # 'agent' and additive ConfoundedBehaviorPolicy have no such method -> None ->
     # those datasets stay byte-identical.
     _probs_fn = getattr(collection_policy, "action_probs", None)
+    from tqdm import tqdm
+
     buffers = []
-    for ep in range(n_episodes):
+    # Progress for the generation phase (display-only; the RL training loops
+    # carry their own tqdm) — without it a 3000-episode rollout is minutes of
+    # silence in the sweep-worker logs.
+    for ep in tqdm(range(n_episodes), desc="dataset generation", leave=False):
         obs, _ = env.reset(seed=seed + 1000 + ep)
         obs_list = [_to_np(obs)]
         acts, rews, terms, truncs = [], [], [], []

@@ -902,6 +902,7 @@ def run_cell(
     )
 
     written: List[Path] = []
+    points = spec.points()
     for env in run_envs:
         for seed in run_seeds:
             agent, _hash = build_generator_agent(
@@ -910,9 +911,18 @@ def run_cell(
             # 1) generate all sweep points from the ONE shared agent
             datasets: Dict[Tuple[float, float], str] = {}
             point_hashes: Dict[Tuple[float, float], str] = {}
-            for beta, sigma in spec.points():
+            for pi, (beta, sigma) in enumerate(points, start=1):
                 bp, strength = arm_behavior(beta, sigma)
                 did = _dataset_id(dataset_prefix, spec.regime, env, beta, sigma, seed)
+                # Phase print (display-only): makes the generation phase visible
+                # in the sweep-worker logs / supervisor mirror before training's
+                # own tqdm bars take over.
+                print(
+                    f"[regime_sweep] {env} seed{seed}: dataset generation "
+                    f"{pi}/{len(points)} — {param_dirname(beta, sigma)} "
+                    f"(rollout_episodes={spec.budget('rollout_episodes', 30)})",
+                    flush=True,
+                )
                 try:
                     import minari
 
@@ -956,7 +966,13 @@ def run_cell(
             #    BEFORE spending any training on a non-identified taxonomy.
             assert_shared_generator(point_hashes)
             # 3) train each arm point into its parameter-addressed leaves
-            for beta, sigma in spec.points():
+            for pi, (beta, sigma) in enumerate(points, start=1):
+                print(
+                    f"[regime_sweep] {env} seed{seed}: TRAINING point "
+                    f"{pi}/{len(points)} — {param_dirname(beta, sigma)} "
+                    f"({arm_label(beta, sigma)} arm, {len(run_algos)} algo(s))",
+                    flush=True,
+                )
                 for algo in run_algos:
                     if spec.simulation == "classical":
                         written += _run_point_classical(
@@ -998,9 +1014,16 @@ def _run_online_regime(
     intervened gate applies). Group iteration mirrors the offline driver
     ((env, seed) outermost) so the supervisor's (env, seed) grain works verbatim."""
     written: List[Path] = []
+    points = spec.points()
     for env in run_envs:
         for seed in run_seeds:
-            for beta, sigma in spec.points():
+            for pi, (beta, sigma) in enumerate(points, start=1):
+                print(
+                    f"[regime_sweep] {env} seed{seed}: TRAINING point "
+                    f"{pi}/{len(points)} — {param_dirname(beta, sigma)} "
+                    f"({arm_label(beta, sigma)} arm, {len(run_algos)} algo(s))",
+                    flush=True,
+                )
                 for algo in run_algos:
                     if spec.simulation == "classical":
                         written += _run_point_classical(
