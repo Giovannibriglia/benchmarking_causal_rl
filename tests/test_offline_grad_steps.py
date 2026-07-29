@@ -8,7 +8,7 @@ T3  a missing offline_grad_steps key WARNS and falls back (never silently the ol
     product).
 T4  offline checkpoints are evenly spaced across offline_grad_steps, n_checkpoints
     of them, last == offline_grad_steps.
-T5  both sweep_smoke.yaml resolve to a small rollout_episodes (and a small
+T5  both critic_ablation_smoke.yaml resolve to a small rollout_episodes (and a small
     offline_grad_steps); production resolves to (3000, 50_000).
 """
 
@@ -215,12 +215,20 @@ def test_t5_budget_resolution():
 
     for regime in ("offline_mdp", "offline_pomdp"):
         smoke = load_sweep_spec(
-            _REPO / "reproducibility" / "rl_regimes" / regime / "sweep_smoke.yaml"
+            _REPO
+            / "reproducibility"
+            / "rl_regimes"
+            / regime
+            / "critic_ablation_smoke.yaml"
         )
         assert smoke.budget("rollout_episodes", 0) == 40, regime
         assert smoke.budget("offline_grad_steps", 0) == 40, regime
     prod = load_sweep_spec(
-        _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "sweep.yaml"
+        _REPO
+        / "reproducibility"
+        / "rl_regimes"
+        / "offline_mdp"
+        / "critic_ablation.yaml"
     )
     assert prod.budget("rollout_episodes", 0) == 3000
     assert prod.budget("offline_grad_steps", 0) == 50_000

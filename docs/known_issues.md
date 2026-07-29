@@ -29,6 +29,18 @@ silently imported the stale code.
 Fixed 2026-06-05 by reinstalling editable (`pip install -e . --no-deps`).
 If the environment is ever rebuilt, install editable.
 
+## 1. [RESOLVED 2026-07-29] `comoreai26.yaml` referenced unregistered algorithms
+
+The original file listed `algos: a2c vanilla a2c_cc vanilla_cc`, but the
+`a2c_cc` / `vanilla_cc` ("causal critic") implementations belonged to a
+pre-repo codebase and were never registered here — the run completed the
+a2c/vanilla matrix and then crashed on the registry lookup. The Phase-0 gate
+(2026-06-05) downgraded the invariant to "YAML byte-untouched + the
+a2c/vanilla portion runs". Resolution: the YAML now pins exactly that
+reproducible portion (`algos: a2c vanilla`, history noted in-file), and
+`main.py` validates every algo against the registry BEFORE the run loop, so
+an unknown name fails in seconds instead of hours into the matrix.
+
 ## 2. Reproduce-YAML keys override CLI flags
 
 Precedence is `reproduce-YAML > CLI` for every key present in the YAML, e.g.

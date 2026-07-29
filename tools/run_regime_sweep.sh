@@ -22,10 +22,10 @@
 # For a ONE-LINER on a single cell (and a --smoke tiny-budget dry run first), call the
 # driver directly instead of this wrapper:
 #   uv run python -m src.benchmarking.regime_sweep \
-#     reproducibility/rl_regimes/offline_mdp/sweep.yaml --smoke \
+#     reproducibility/rl_regimes/offline_mdp/critic_ablation.yaml --smoke \
 #     --envs CartPole-v1 --algos cql --seeds 0          # smoke: ~1-2 min, results_smoke/
 #   uv run python -m src.benchmarking.regime_sweep \
-#     reproducibility/rl_regimes/offline_mdp/sweep.yaml --device cuda   # full
+#     reproducibility/rl_regimes/offline_mdp/critic_ablation.yaml --device cuda   # full
 #   ( uv run python -m src.benchmarking.regime_sweep --help  for all flags )
 #
 # Online cells (online_mdp / online_pomdp) have no offline generator to share — their
@@ -47,7 +47,7 @@ log() { echo "[$(date -Is)] $*" | tee -a "$MASTER_LOG"; }
 
 log "=== regime sweep started (cells: ${CELLS[*]}) ==="
 for cell in "${CELLS[@]}"; do
-  yaml="reproducibility/rl_regimes/${cell}/sweep.yaml"
+  yaml="reproducibility/rl_regimes/${cell}/critic_ablation.yaml"
   if [ ! -f "$yaml" ]; then
     log "!!! SKIP ${cell}: ${yaml} not found"
     continue

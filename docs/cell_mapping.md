@@ -1,7 +1,12 @@
 # Cell mapping: flat `cell_N` → `(regime, β, σ)` layout
 
-The legacy flat `cell_1 … cell_9` tree is **frozen** under
-`reproducibility/rl_regimes/_legacy/` (git-moved verbatim, read-only). New work uses
+> **Historical document.** The legacy flat `cell_1 … cell_9` YAMLs (and their
+> `tests/legacy/` tests) were REMOVED from the working tree on 2026-07-29 —
+> they are recoverable from git history (last present @34b021a). This mapping
+> is kept as the record of how the flat taxonomy translates into the regime
+> cells.
+
+New work uses
 the four `{offline,online}×{mdp,pomdp}` cells, each an **L-shaped sweep** of two 1-D
 arms sharing an origin:
 

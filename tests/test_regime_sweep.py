@@ -39,7 +39,9 @@ from src.envs.offline.generate import build_generator_agent, generate_offline_da
 warnings.filterwarnings("ignore")
 
 _REPO = Path(__file__).resolve().parent.parent
-_OFFLINE_MDP = _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "sweep.yaml"
+_OFFLINE_MDP = (
+    _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "critic_ablation.yaml"
+)
 _DEV = str(detect_device())
 _TINY = {
     "n_episodes": 1,
@@ -71,7 +73,7 @@ def _purge(prefix: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Layout: every cell's sweep.yaml declares the SAME canonical L + critic sets.  #
+# Layout: every cell's critic_ablation.yaml declares the canonical L + critic sets. #
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize(
     "regime", ["offline_mdp", "offline_pomdp", "online_mdp", "online_pomdp"]
@@ -79,7 +81,7 @@ def _purge(prefix: str) -> None:
 def test_sweep_yamls_declare_canonical_L(regime):
     import yaml as _yaml
 
-    p = _REPO / "reproducibility" / "rl_regimes" / regime / "sweep.yaml"
+    p = _REPO / "reproducibility" / "rl_regimes" / regime / "critic_ablation.yaml"
     assert p.exists(), p
     cfg = _yaml.safe_load(p.read_text())
     assert cfg["regime"] == regime
@@ -110,14 +112,18 @@ def test_sweep_yamls_declare_canonical_L(regime):
 
 # --------------------------------------------------------------------------- #
 # offline_pomdp must use a recurrent-capable base (accepts lstm), and each        #
-# runnable offline cell ships a tiny-budget sweep_smoke.yaml.                     #
+# runnable offline cell ships a tiny-budget critic_ablation_smoke.yaml.           #
 # --------------------------------------------------------------------------- #
 def test_offline_pomdp_uses_recurrent_capable_base():
     from src.benchmarking.registry import register_default_algorithms, registry
 
     register_default_algorithms()
     spec = load_sweep_spec(
-        _REPO / "reproducibility" / "rl_regimes" / "offline_pomdp" / "sweep.yaml"
+        _REPO
+        / "reproducibility"
+        / "rl_regimes"
+        / "offline_pomdp"
+        / "critic_ablation.yaml"
     )
     # the pomdp arm runs with critic_network=lstm; the base MUST accept that. Plain
     # offline_dqn carries the reject-guard, so the cell has to declare the recurrent
@@ -129,7 +135,7 @@ def test_offline_pomdp_uses_recurrent_capable_base():
 
 @pytest.mark.parametrize("regime", ["offline_mdp", "offline_pomdp"])
 def test_sweep_smoke_yaml_is_a_tiny_runnable_spec(regime):
-    p = _REPO / "reproducibility" / "rl_regimes" / regime / "sweep_smoke.yaml"
+    p = _REPO / "reproducibility" / "rl_regimes" / regime / "critic_ablation_smoke.yaml"
     assert p.exists(), p
     spec = load_sweep_spec(p)
     assert spec.regime == regime and spec.data_regime == "offline"

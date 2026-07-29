@@ -625,6 +625,22 @@ def main():
     # Normalize the algos list to {name, actor, critic, network_kwargs} dicts.
     normalized_algos = [_normalize_algo(a) for a in algos]
 
+    # Fail fast on UNKNOWN algorithms before any training: the registry lookup
+    # used to happen inside the run loop, so a stale/typo'd name (the historical
+    # comoreai26 `a2c_cc` case, docs/known_issues.md §1) crashed only after the
+    # preceding (env, algo) cells had trained — potentially hours in.
+    _unknown = []
+    for _spec in normalized_algos:
+        try:
+            registry.get(_spec["name"])
+        except KeyError:
+            _unknown.append(_spec["name"])
+    if _unknown:
+        raise ValueError(
+            f"Unknown algorithm(s) {_unknown}: not in the registry. Registered "
+            f"algorithms: {sorted(registry._algos)}."
+        )
+
     # Fail fast on structurally-incompatible (on-policy algo + action-bias-only
     # behavior_policy) combinations before building any run (registry is already
     # populated above via register_default_algorithms()).

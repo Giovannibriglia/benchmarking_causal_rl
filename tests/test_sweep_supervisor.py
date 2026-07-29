@@ -33,7 +33,9 @@ from src.config.device import detect_device
 warnings.filterwarnings("ignore")
 
 _REPO = Path(__file__).resolve().parent.parent
-_OFFLINE_MDP = _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "sweep.yaml"
+_OFFLINE_MDP = (
+    _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "critic_ablation.yaml"
+)
 _DEV = str(detect_device())
 # Mirrors regime_sweep._SMOKE_BUDGET (rollout_episodes=40 keeps the σ=1.0 gate stable).
 _TINY = {

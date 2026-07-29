@@ -7,7 +7,7 @@
 [![Code Style](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen.svg)](https://pre-commit.com/)
 
-A PyTorch reinforcement-learning benchmarking framework whose purpose is to vary the data-generating mechanism along five independent axes — algorithm, environment, data regime, dataset tier, and collection behavior policy — and measure what changes in the resulting learner. The same vectorized runner trains online, loads fixed offline datasets, or generates tiered offline datasets, while behavior policies and an optional unobserved confounder let you control the provenance of the data each algorithm sees. Outputs are CSVs with a frozen schema and bitwise-reproducible golden runs, so two executions of the same configuration produce byte-identical metrics.
+A PyTorch reinforcement-learning benchmarking framework whose purpose is to vary the data-generating mechanism along five independent axes — algorithm, environment, data regime, dataset tier, and collection behavior policy — and measure what changes in the resulting learner. The same vectorized runner trains online, loads fixed offline datasets, or generates tiered offline datasets, while behavior policies and an optional unobserved confounder let you control the provenance of the data each algorithm sees. On top sit four composable **experiment cells** (offline/online × MDP/POMDP), each sweeping behavior-policy bias and confounding strength in two simulation components — a *classical* algorithm benchmark and a *critic ablation* comparing value-identification strategies — with their own aggregation and figure pipelines. Outputs are CSVs with a frozen schema and bitwise-reproducible golden runs, so two executions of the same configuration produce byte-identical metrics.
 
 ---
 
@@ -68,39 +68,79 @@ uv run python main.py --envs CartPole-v1 --algos cql --offline-dataset cartpole/
 
 The first offline command builds a small local Minari dataset; the second trains CQL on it (you cannot `--offline-dataset` an id that does not exist locally or hosted yet).
 
-### Reproduce the full paper matrix
-The offline cells (3, 4, 7, 8) need the generated Minari datasets. Generate them
-first (resumable, one-time; ~30 min cold, near-instant once present):
-```bash
-# 1. Generate the offline datasets:
-bash tools/generate_all_datasets.sh
-```
-Then run the `(regime × L-sweep)` cells. One cell = one job; each builds ONE
-generator checkpoint per (env, seed) and runs its 7 paired sweep points from it,
-writing parameter-addressed leaves under `results/`:
-```bash
-# 2a. Smoke ONE cell first (one flag = tiny budget + results_smoke/ + 'smoke' prefix):
-uv run python -m src.benchmarking.regime_sweep \
-  reproducibility/rl_regimes/offline_mdp/sweep.yaml --smoke \
-  --envs CartPole-v1 --algos cql --seeds 0
+---
 
-# 2b. Full run of one cell (all envs/algos/seeds from the sweep.yaml):
-uv run python -m src.benchmarking.regime_sweep \
-  reproducibility/rl_regimes/offline_mdp/sweep.yaml --device cuda
+## Running experiments
 
-# or the multi-cell wrapper:  bash tools/run_regime_sweep.sh offline_mdp
+The paper experiments are organized as **four composable cells** under
+`reproducibility/rl_regimes/` — the cross of data regime × observability:
+`offline_mdp`, `offline_pomdp`, `online_mdp`, `online_pomdp`. Every cell sweeps
+the same **L** of data-generating conditions (a shared `basic` origin at
+β=0, σ=0; a `biased` arm varying the behavior-policy bias β; a `confounded` arm
+varying the action-dependent confounding strength σ — never the cross-product)
+and ships **two simulation components**, each with a production YAML and a
+tiny-budget smoke:
+
+| component | question | leaves |
+| --- | --- | --- |
+| `classical.yaml` | which **algorithm** wins where, and how does that change across the L? (≥2 designed-for-regime algos × envs, no critic axis) | `results/{regime}/classical/beta_*_sigma_*/{env}/{algo}/{seed}/` |
+| `critic_ablation.yaml` | which **value-estimation strategy** (observational / proximal / oracle_u / sensitivity critics) recovers the interventional value? | `results/{regime}/beta_*_sigma_*/{env}/{algo}/{critic}/{seed}/` |
+
+Everything is one command per cell; **always smoke first** (routed to
+`results_smoke/`, ~1–3 min):
+
+```bash
+# 1. smoke, then production — any cell, either simulation:
+uv run python main.py --reproduce rl_regimes/offline_mdp/classical_smoke.yaml
+uv run python main.py --reproduce rl_regimes/offline_mdp/classical.yaml
+uv run python main.py --reproduce rl_regimes/online_mdp/critic_ablation_smoke.yaml
+uv run python main.py --reproduce rl_regimes/online_mdp/critic_ablation.yaml
+
+# equivalent module form with extra knobs (--max-workers, --envs, --algos, --seeds, --device):
+uv run python -m src.benchmarking.regime_sweep \
+  reproducibility/rl_regimes/offline_mdp/critic_ablation.yaml --max-workers 4
+
+# multi-cell wrapper:
+bash tools/run_regime_sweep.sh offline_mdp offline_pomdp
 ```
-`main.py --reproduce` also dispatches a sweep cell — `--reproduce <cell>/sweep.yaml`
-runs it, `--reproduce <cell>/sweep_smoke.yaml` is the tiny-budget smoke (→ `results_smoke/`).
-`offline_mdp` and `offline_pomdp` run; online cells report cleanly that they need the
-on-policy path (no offline generator to share).
-Offline cells only (`--reproduce` on a sweep.yaml prints a signpost; online cells raise
-NotImplementedError — their behavior policy IS the learner, so there is no offline
-generator to share). Results land under
-`results/{regime}/beta_{bbb}_sigma_{sss}/{env}/{algo}/{critic}/{seed}/`;
-each leaf is an ordinary run dir. Plotting is a separate step (the reporting layer is
-being wired to read this tree). The legacy flat `cell_1…9` YAMLs are frozen under
-`reproducibility/rl_regimes/_legacy/` — see `docs/cell_mapping.md`.
+
+Offline cells first build ONE generator checkpoint per (env, seed) and generate
+all sweep-point datasets from it, so cross-arm deltas are paired (the driver
+refuses a cell whose arms carry different generator hashes). Online cells run
+the arm's fixed behavior policy through the online loop — there is no dataset;
+the online critic ablation compares algo variants (`dqn` vs
+`online_dqn_proximal`). Every leaf is an ordinary run dir (config + metric
+CSVs); parameters live in the path segments, arm labels are derived, never
+stored.
+
+**Parallelism.** `max_workers` (per-cell YAML key, or `--max-workers`) fans
+(env, seed) groups across subprocesses — one subprocess owns a group's whole L,
+so pairing invariants hold and offline workers get isolated Minari stores.
+`1` = serial (byte-identical ordering); the production YAMLs default to `4`
+(memory-safe on a 16 GB GPU).
+
+**Reports & figures.** Aggregation and plotting read the `results/` tree in a
+separate step:
+
+```bash
+# classical: per-(β,σ,env,algo) seed-aggregated table + per-algo figures
+uv run python -m src.benchmarking.regime_report offline_mdp --simulation classical
+uv run python -m src.benchmarking.render_classical_report offline_mdp
+
+# critic ablation: table + null-calibration gate + per-critic figures
+uv run python -m src.benchmarking.regime_report offline_mdp
+uv run python -m src.benchmarking.render_regime_report offline_mdp
+```
+
+Tables land in `results/_report/`, figures in `results/_report/figures/`
+(PNG + PDF, regime-prefixed stems). Pass `--results-root results_smoke` to
+report on a smoke run. Cell schema details (the `simulation:`, `sweep:`,
+`critics:`, `algos:` keys and their validation) are documented in
+[`reproducibility/rl_regimes/README.md`](reproducibility/rl_regimes/README.md).
+
+Standalone (non-cell) experiments use `main.py` directly — see the
+[CLI reference](#cli-reference) — and the pinned one-shot configs in
+`reproducibility/` (see [Reproducibility](#reproducibility)).
 
 ---
 
@@ -127,6 +167,14 @@ The `--algos` values are the keys registered in `src/benchmarking/registry.py`. 
 | `bcq_continuous` | `src/rl/offline/bcq_continuous.py`  | continuous   | offline | —              |
 
 `vanilla_ac` is an alias of `vanilla` (same builder). On-policy algorithms accept both discrete and continuous action spaces; the action type is derived from the environment and dispatched at runtime. `dqn` is discrete-only and `ddpg`/`sac` are continuous-only. The offline algorithms split discrete (`offline_dqn`, `bcq`, `cql`, `iql`) from continuous (`cql_continuous`, `iql_continuous`, `bcq_continuous`) by class, and the loader rejects a dataset whose action type does not match the chosen algorithm.
+
+Beyond the base learners, the registry carries **variants**:
+
+- **Recurrent**: `offline_dqn_recurrent` (lstm-capable offline base for the POMDP cells); online `dqn`/`sac` accept recurrent trunks via the networks map (`{name: dqn, networks: {actor: lstm, critic: lstm}}` in a YAML, or the `dqn__lstm__lstm` entry form in a cell YAML).
+- **Identification-strategy critics** (offline): `{offline_dqn,bcq,cql,iql}_{proximal,oracle_u,sensitivity}` (+ the `offline_dqn_recurrent_*` recurrent row and `offline_dqn_proximal_action`) — the same base learner with a deconfounding value-estimation strategy injected. `oracle_u` reads the true confounder (fenced reference, never a reported method); `sensitivity` takes its Γ via `networks: {gamma_sensitivity: ...}`.
+- **Online deconfounding**: `online_dqn_proximal` — the online (fixed-behavior) analog of the proximal strategy.
+
+Unknown `--algos` names fail fast against the registry before any training starts.
 
 ---
 
@@ -212,11 +260,19 @@ It skips datasets already present in the local Minari cache, so it's safe to Ctr
 | `--behavior-policy` | Mechanism                                                        | Strength (`--behavior-strength`) | Action spaces |
 | ------------------- | ---------------------------------------------------------------- | -------------------------------- | ------------- |
 | `agent`             | Delegates to the agent's own `act` (collection baseline)         | — (no knob)                      | both          |
+| `pi_basic`          | The FIXED shared ε-greedy base policy (the sweep arms' origin)   | — (`--pi-basic-epsilon`)         | discrete      |
+| `biased`            | Concentrates `pi_basic` toward its per-state greedy: prob. `β` take the mode, else sample `pi_basic` (coverage degrades monotonically in β) | β (beta) | discrete |
 | `anti_reward`       | Critic-pessimal: picks the lowest-`Q` action the agent values    | ε (epsilon)                      | both (off-policy) |
 | `bias_skew`         | With prob. `p` emits a fixed preferred action, else the agent's  | p                                | both          |
 | `bias_suboptimal`   | With prob. `β` uses the agent, else a uniform-random action      | β (beta)                         | both          |
 | `curiosity`         | Steers toward novel transitions via ensemble disagreement        | intensity                        | both (vector obs only) |
 | `bias_confounded`   | Per-episode latent `U` biases the action (and perturbs reward)   | σ (sigma)                        | both          |
+| `bias_confounded_action` | Action-DEPENDENT confounder: `r += c_r·U·1[a=a_bad]` (`--confounder-c-r`), `U` biases toward `a_bad` with strength σ | σ (sigma) | discrete |
+
+The arm policies (`pi_basic` / `biased` / `bias_confounded_action`) are what the
+regime cells use: all three share ONE `pi_basic` (declared via
+`--pi-basic-epsilon`, asserted identical across arms) so the sweep's (β=0, σ=0)
+origin is a single policy.
 
 `bias_confounded` injects unobserved confounding: a per-episode latent `U` biases the action and, paired with `ConfoundedCollectionWrapper` on the train env, also perturbs the reward, so action and reward share a common cause that is **absent from the observation**. It requires the confounded wrapper on the train env because the policy reads the current `U` from the wrapper (`env.current_u`) while `U` never enters the observation; the strength `σ` scales both the action bias and the reward perturbation. The confounding signature — non-zero marginal `Corr(A, R)` but near-zero partial `Corr(A, R | U)` — is enforced by the gate test at `tests/test_confounded_collection.py::test_confounding_signature_marginal_nonzero_partial_zero`.
 
@@ -274,8 +330,11 @@ Defaults are taken directly from `main.py` argparse.
 
 | Flag                  | Default | Description |
 | --------------------- | ------- | ----------- |
-| `--behavior-policy`   | `agent` | Collection policy: `agent`, `anti_reward`, `bias_skew`, `bias_suboptimal`, `curiosity`, `bias_confounded` |
+| `--behavior-policy`   | `agent` | Collection policy: `agent`, `pi_basic`, `biased`, `anti_reward`, `bias_skew`, `bias_suboptimal`, `curiosity`, `bias_confounded`, `bias_confounded_action` |
 | `--behavior-strength` | `None`  | Primary knob for the behavior policy; `None` keeps the policy default |
+| `--pi-basic-epsilon`  | `None`  | FIXED exploration ε of the shared base policy `pi_basic` (required for arm runs; keeps the basic/biased/confounded origin one policy) |
+| `--confounder-c-r`    | `None`  | Action-dependent confounder reward-shift magnitude `c_r` (`bias_confounded_action`) |
+| `--mask-indices`      | `None`  | Comma-separated obs indices to hide (POMDP axis): wraps the env online, projects loaded transitions offline |
 
 ### Auxiliary models
 
@@ -290,11 +349,22 @@ Defaults are taken directly from `main.py` argparse.
 | Flag                     | Default     | Description |
 | ------------------------ | ----------- | ----------- |
 | `--mode`                 | `benchmark` | `benchmark` or `critic_ablation` |
-| `--ablation`             | off         | Shortcut for `--mode critic_ablation` (on-policy only) |
-| `--ablation-critics`     | `standard_mlp` | Auxiliary critics to compare in ablation mode |
+| `--ablation`             | off         | Shortcut for `--mode critic_ablation` |
+| `--ablation-critics`     | `standard_mlp` | Critics to compare in ablation mode (see below) |
 | `--ablation-lr`          | `3e-4`      | Learning rate for auxiliary critics |
 | `--ablation-hidden-dims` | `64,64`     | Hidden sizes for auxiliary critics (`--ablation-hidded-dims` also accepted) |
 | `--ablation-bins`        | `32`        | Histogram bins for MI/KL/JS metrics |
+
+`--mode critic_ablation` has two disjoint kinds, selected by the critic names:
+**V-head** critics (`standard_mlp`, `residual_reward_model`) train frozen
+auxiliary value heads alongside an **on-policy** learner; **strategy** critics
+(`observational`, `proximal`, `oracle_u`, `sensitivity`) fit the
+identification-strategy triad on one shared episode-grouped stream of an
+**offline** base (`--ablation-critics observational proximal oracle_u`), scored
+estimation-vs-oracle into `critic_ablation_metrics.csv`. Mixing the two kinds
+is rejected. The regime cells' `critic_ablation.yaml` drives the strategy kind
+for you (online cells compare algo variants instead — the strategy manager is
+offline-only).
 
 ### Device
 
@@ -314,17 +384,34 @@ The device is auto-detected (CUDA if available, else CPU); there is no device fl
 
 ## Reproducibility
 
-Pinned configurations live in `reproducibility/<name>.yaml`. Values from a reproduce file take precedence over CLI flags; among environment sources the precedence is:
+Pinned configurations live under `reproducibility/`. `--reproduce` takes a path
+relative to that folder (extension optional); values from a reproduce file take
+precedence over CLI flags, and among environment sources the precedence is:
 
 ```
 --reproduce  >  --env-set  >  --envs
 ```
 
+What ships:
+
+| config | what it reproduces |
+| --- | --- |
+| `comoreai26.yaml` | the COMOREA'26 workshop-paper runs (`a2c` + `vanilla` over the MuJoCo set). The original file also listed pre-repo `a2c_cc`/`vanilla_cc` algorithms that were never registered here; it now pins exactly the reproducible portion (history noted in-file and in `docs/known_issues.md` §1) |
+| `quick_comparison.yaml` | one-shot cell-7-style strategy comparison (offline_dqn base + proximal/sensitivity/oracle_u variants on a σ=0.5 confounded CartPole dataset) |
+| `cell9_comparison.yaml` | the action-dependent-confounder headline (cql vs proximal_action vs sensitivity vs oracle_u at σ=1.0) |
+| `rl_regimes/<cell>/{classical,critic_ablation}[_smoke].yaml` | the four regime cells — see [Running experiments](#running-experiments) |
+
 ```bash
 uv run python main.py --reproduce comoreai26
+uv run python main.py --reproduce rl_regimes/offline_mdp/classical.yaml
 ```
 
-This loads `reproducibility/comoreai26.yaml`, applies it over the CLI defaults, and saves the effective configuration in the run folder.
+A flat config saves its effective configuration in the run folder; a cell YAML
+is dispatched to the sweep driver (its `simulation:`/`sweep:`/`critics:`/`algos:`
+keys are parsed and validated — unknown algorithms, off-L sweep declarations,
+and algorithms not designed for the cell's data regime are refused up front).
+The offline cells' datasets are (re)generated by the driver itself; the
+one-shot comparison configs need `bash tools/generate_all_datasets.sh` first.
 
 ---
 
@@ -347,6 +434,15 @@ runs/benchmark_<datetime>/
 ---
 
 ## Plotting
+
+Two reporting layers exist, one per results tree:
+
+- **`results/` (regime cells)** — `python -m src.benchmarking.regime_report`
+  aggregates a regime's parameter-addressed tree over seeds (+ the
+  null-calibration gate for the critic ablation), and
+  `render_regime_report` / `render_classical_report` draw the figures. See
+  [Running experiments](#running-experiments).
+- **`runs/` (standalone `main.py` runs)** — `plot.py`, below.
 
 `plot.py` renders plots and LaTeX tables from a run directory.
 
@@ -382,7 +478,7 @@ uv run pytest tests/
 These are not implemented:
 
 - **NeuralBayesianNetworks integration** — a causal critic / reward-model component (currently absent from the codebase).
-- **Generic POMDP / observation-masking wrapper** — partial observability beyond the existing image and confounded paths.
+- **Recurrent online proximal** — `online_dqn_proximal` has no lstm trunk, so the `online_pomdp` critic ablation is observational-only.
 - **Multi-agent (MARL) extension** — the `src/marl/` package is a placeholder.
 
 ---

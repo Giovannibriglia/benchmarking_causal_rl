@@ -37,7 +37,9 @@ from src.config.device import detect_device
 warnings.filterwarnings("ignore")
 
 _REPO = Path(__file__).resolve().parent.parent
-_OFFLINE_MDP = _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "sweep.yaml"
+_OFFLINE_MDP = (
+    _REPO / "reproducibility" / "rl_regimes" / "offline_mdp" / "critic_ablation.yaml"
+)
 _SEEDS = (0, 1, 2, 3, 4)
 
 

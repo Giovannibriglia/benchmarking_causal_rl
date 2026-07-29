@@ -1,3 +1,16 @@
+# COMOREAI'26 — pinned config for the PerCom/CoMoRea workshop-paper runs
+# (Briglia, Mariani, Zambonelli 2026). Run with:
+#   uv run python main.py --reproduce comoreai26
+#
+# HISTORY NOTE (2026-07-29): the original file also listed `a2c_cc vanilla_cc`
+# ("causal critic" variants) — those implementations belonged to a PRE-repo
+# codebase and were never registered here, so the run completed the a2c/vanilla
+# matrix and then crashed on the registry lookup (documented pre-existing
+# breakage, docs/known_issues.md §1; Phase-0 gate decision downgraded the
+# invariant to "the a2c/vanilla portion runs"). This file now pins exactly that
+# REPRODUCIBLE portion under the current pipeline; main.py additionally
+# validates every algo against the registry BEFORE training, so a stale name
+# fails in seconds, not hours into the matrix.
 env:
   env_set: mujoco
   n_train_envs: 12
@@ -8,4 +21,4 @@ training:
   n_episodes: 250
   n_checkpoints: 25
   deterministic: true
-  algos: a2c vanilla a2c_cc vanilla_cc
+  algos: a2c vanilla

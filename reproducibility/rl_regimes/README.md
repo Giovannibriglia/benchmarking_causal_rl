@@ -10,9 +10,6 @@ with a production YAML + a tiny-budget smoke:
 | `online_mdp`    | `classical.yaml` / `classical_smoke.yaml` | `critic_ablation.yaml` / `critic_ablation_smoke.yaml` |
 | `online_pomdp`  | `classical.yaml` / `classical_smoke.yaml` | `critic_ablation.yaml` / `critic_ablation_smoke.yaml` |
 
-(`sweep.yaml` / `sweep_smoke.yaml` are legacy aliases of the critic-ablation
-simulation and stay runnable.)
-
 ## Run
 
 ```bash
