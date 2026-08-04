@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
@@ -69,12 +70,17 @@ FULL_CRITICS: Tuple[str, ...] = ("observational", "proximal", "oracle_u", "sensi
 
 
 def sweep_points(
-    beta_arm: Sequence[float] = BETA_ARM, sigma_arm: Sequence[float] = SIGMA_ARM
+    beta_arm: Sequence[float] = BETA_ARM,
+    sigma_arm: Sequence[float] = SIGMA_ARM,
+    include_basic: bool = True,
 ) -> List[Tuple[float, float]]:
     """The (beta, sigma) points of the L: the shared origin, then the two arms.
     Defaults reproduce the canonical 7-point L; a cell's ``sweep:`` block may
-    declare different arm values (parsed by load_sweep_spec, same L shape)."""
-    pts = [(0.0, 0.0)]  # basic — ONE run, the shared reference for both arms
+    declare different arm values or disable arms with ``false`` (parsed by
+    load_sweep_spec, same L shape)."""
+    pts: List[Tuple[float, float]] = []
+    if include_basic:
+        pts.append((0.0, 0.0))  # basic — ONE run, the shared reference for both arms
     pts += [(float(b), 0.0) for b in beta_arm]  # biased arm (sigma held at 0)
     pts += [(0.0, float(s)) for s in sigma_arm]  # confounded arm (beta held at 0)
     return pts
@@ -266,16 +272,18 @@ class SweepSpec:
     # (previously documentation-only). Empty -> critics_for_arm defaults.
     critics: Dict[str, List[str]] = field(default_factory=dict)
     # The L's arm values parsed from the cell's ``sweep:`` block (previously
-    # documentation-only). Defaults = the canonical 7-point L.
+    # documentation-only). Defaults = the canonical 7-point L. An arm set to
+    # ``false`` in the block is excluded (empty arm / include_basic False).
     beta_arm: Tuple[float, ...] = BETA_ARM
     sigma_arm: Tuple[float, ...] = SIGMA_ARM
+    include_basic: bool = True
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
 
     def points(self) -> List[Tuple[float, float]]:
         """This cell's sweep points (the declared L; canonical 7 by default)."""
-        return sweep_points(self.beta_arm, self.sigma_arm)
+        return sweep_points(self.beta_arm, self.sigma_arm, self.include_basic)
 
     def critics_for(self, arm: str) -> List[str]:
         """This cell's critic set for an arm: the ``critics:`` block when
@@ -310,7 +318,9 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
             f"{p}: unknown simulation '{simulation}'; must be one of {SIMULATIONS}."
         )
     data_regime = str(pick("data_regime", "offline"))
-    beta_arm, sigma_arm = _parse_sweep_block(cfg.get("sweep"), source=str(p))
+    beta_arm, sigma_arm, include_basic = _parse_sweep_block(
+        cfg.get("sweep"), source=str(p)
+    )
     critics = _parse_critics_block(cfg.get("critics"), data_regime, source=str(p))
 
     return SweepSpec(
@@ -333,6 +343,7 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         critics=critics,
         beta_arm=beta_arm,
         sigma_arm=sigma_arm,
+        include_basic=include_basic,
     )
 
 
@@ -342,15 +353,36 @@ def _as_float_list(val) -> List[float]:
     return [float(val)]
 
 
+def _arm_entry(block: dict, arm: str, default: dict, *, source: str):
+    """One arm of the ``sweep:`` block. Absent or ``true`` -> the canonical
+    default (backward compatible: commenting an arm OUT never shrinks the L);
+    ``false`` -> None (the arm is EXCLUDED — the only way to drop one);
+    a map -> itself (validated by the caller)."""
+    val = block.get(arm, default)
+    if val is True:
+        return default
+    if val is False:
+        return None
+    if not isinstance(val, dict):
+        raise ValueError(
+            f"{source}: sweep.{arm} must be a map (or false to exclude the arm), "
+            f"got {val!r}."
+        )
+    return val
+
+
 def _parse_sweep_block(
     block, *, source: str
-) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
-    """Parse a cell's ``sweep:`` block into (beta_arm, sigma_arm), REFUSING any
-    declaration off the L (the basic origin must be (0,0); each arm varies exactly
-    one axis). Absent block -> the canonical arms. This makes the block REAL
-    config — before, it was documentation the driver silently ignored."""
+) -> Tuple[Tuple[float, ...], Tuple[float, ...], bool]:
+    """Parse a cell's ``sweep:`` block into (beta_arm, sigma_arm, include_basic),
+    REFUSING any declaration off the L (the basic origin must be (0,0); each arm
+    varies exactly one axis). Absent block -> the canonical arms; an ABSENT arm
+    key also falls back to its canonical default (never a removal — this is what
+    keeps legacy YAMLs byte-identical), so excluding an arm takes an EXPLICIT
+    ``false``. ``basic: false`` drops the null-calibration anchor and warns:
+    fine for a shrunk test run, wrong for a production/paper run."""
     if block is None:
-        return BETA_ARM, SIGMA_ARM
+        return BETA_ARM, SIGMA_ARM, True
     if not isinstance(block, dict):
         raise ValueError(f"{source}: 'sweep' must be a map of arms, got {block!r}.")
     unknown = set(block) - {"basic", "biased", "confounded"}
@@ -359,26 +391,51 @@ def _parse_sweep_block(
             f"{source}: unknown sweep arm(s) {sorted(unknown)}; the L has exactly "
             "basic/biased/confounded."
         )
-    basic = block.get("basic", {"beta": 0.0, "sigma": 0.0})
-    if _as_float_list(basic.get("beta", 0.0)) != [0.0] or _as_float_list(
-        basic.get("sigma", 0.0)
-    ) != [0.0]:
-        raise ValueError(
-            f"{source}: sweep.basic must sit at the shared origin (beta=0, sigma=0)."
+    basic = _arm_entry(block, "basic", {"beta": 0.0, "sigma": 0.0}, source=source)
+    include_basic = basic is not None
+    if include_basic:
+        if _as_float_list(basic.get("beta", 0.0)) != [0.0] or _as_float_list(
+            basic.get("sigma", 0.0)
+        ) != [0.0]:
+            raise ValueError(
+                f"{source}: sweep.basic must sit at the shared origin "
+                "(beta=0, sigma=0), or be false to exclude it."
+            )
+    else:
+        warnings.warn(
+            f"{source}: sweep.basic is false — the basic origin is the "
+            "null-calibration anchor; without it the cell cannot be "
+            "null-calibrated. Fine for a shrunk test run, WRONG for a "
+            "production/paper run.",
+            stacklevel=2,
         )
-    biased = block.get("biased", {"beta": list(BETA_ARM), "sigma": 0.0})
-    if _as_float_list(biased.get("sigma", 0.0)) != [0.0]:
-        raise ValueError(f"{source}: sweep.biased must hold sigma at 0 (the L).")
-    beta_arm = tuple(_as_float_list(biased.get("beta", list(BETA_ARM))))
-    confounded = block.get("confounded", {"beta": 0.0, "sigma": list(SIGMA_ARM)})
-    if _as_float_list(confounded.get("beta", 0.0)) != [0.0]:
-        raise ValueError(f"{source}: sweep.confounded must hold beta at 0 (the L).")
-    sigma_arm = tuple(_as_float_list(confounded.get("sigma", list(SIGMA_ARM))))
+    biased = _arm_entry(
+        block, "biased", {"beta": list(BETA_ARM), "sigma": 0.0}, source=source
+    )
+    if biased is None:
+        beta_arm: Tuple[float, ...] = ()
+    else:
+        if _as_float_list(biased.get("sigma", 0.0)) != [0.0]:
+            raise ValueError(f"{source}: sweep.biased must hold sigma at 0 (the L).")
+        beta_arm = tuple(_as_float_list(biased.get("beta", list(BETA_ARM))))
+    confounded = _arm_entry(
+        block, "confounded", {"beta": 0.0, "sigma": list(SIGMA_ARM)}, source=source
+    )
+    if confounded is None:
+        sigma_arm: Tuple[float, ...] = ()
+    else:
+        if _as_float_list(confounded.get("beta", 0.0)) != [0.0]:
+            raise ValueError(f"{source}: sweep.confounded must hold beta at 0 (the L).")
+        sigma_arm = tuple(_as_float_list(confounded.get("sigma", list(SIGMA_ARM))))
     if any(b <= 0.0 for b in beta_arm) or any(s <= 0.0 for s in sigma_arm):
         raise ValueError(
             f"{source}: arm values must be > 0 (the origin is declared by basic)."
         )
-    return beta_arm, sigma_arm
+    if not include_basic and not beta_arm and not sigma_arm:
+        raise ValueError(
+            f"{source}: every sweep arm is false — the cell has no points to run."
+        )
+    return beta_arm, sigma_arm, include_basic
 
 
 def _parse_critics_block(
@@ -858,6 +915,8 @@ def run_cell(
     algos: Sequence[str] | None = None,
     seeds: Sequence[int] | None = None,
     budget_overrides: Dict[str, int] | None = None,
+    phase: str = "all",
+    points: Sequence[str] | None = None,
 ) -> List[Path]:
     """Run one cell (CHANGE 5), dispatching on (data_regime, simulation).
 
@@ -875,10 +934,24 @@ def run_cell(
     (dqn vs online_dqn_proximal — the runner's strategy-ablation manager is
     offline-only, so online strategies are algo variants).
 
-    The optional envs/algos/seeds override the spec (used to shrink a cell)."""
+    The optional envs/algos/seeds override the spec (used to shrink a cell).
+
+    ``phase``/``points`` are the supervisor's POINT-GRAIN seam (offline only):
+    ``phase="generate"`` builds the shared generator, generates EVERY sweep-point
+    dataset and runs the M1 hash gate, but trains nothing (writes no leaves);
+    ``phase="train"`` assumes those datasets already sit in the ACTIVE Minari
+    store (same ``MINARI_DATASETS_PATH``) and trains only the ``points`` given as
+    ``param_dirname`` strings (e.g. ``b0.000_s0.500``). The shared-generator
+    invariant is untouched: generation + M1 always happen whole-group in ONE
+    process, and training is self-seeding (``BenchmarkRunner.run`` re-seeds, each
+    point's rollout re-seeds), so the split is numerics-identical to a monolithic
+    run. Defaults (``"all"``/None) are the historical byte-identical path."""
     from src.benchmarking.registry import register_default_algorithms
     from src.config.seeding import set_seed
     from src.envs.registry import register_default_env_wrappers
+
+    if phase not in ("all", "generate", "train"):
+        raise ValueError(f"unknown phase {phase!r} (expected all/generate/train)")
 
     spec = load_sweep_spec(sweep_yaml)
     if budget_overrides:
@@ -892,6 +965,8 @@ def run_cell(
     _validate_algos_for_regime(spec, run_algos)
 
     if spec.data_regime != "offline":
+        if phase != "all" or points is not None:
+            raise ValueError("phase/points are offline-only (online has no datasets)")
         return _run_online_regime(
             spec, run_envs, run_algos, run_seeds, results_root, device
         )
@@ -902,16 +977,38 @@ def run_cell(
     )
 
     written: List[Path] = []
-    points = spec.points()
+    all_points = spec.points()
+    train_points = _select_points(points, all_points)
     for env in run_envs:
         for seed in run_seeds:
+            if phase == "train":
+                # Datasets were generated (and M1-gated) by a prior "generate"
+                # phase into the SAME store — reconstruct their ids only.
+                datasets = {
+                    (beta, sigma): _dataset_id(
+                        dataset_prefix, spec.regime, env, beta, sigma, seed
+                    )
+                    for beta, sigma in all_points
+                }
+                _train_points(
+                    spec,
+                    env,
+                    seed,
+                    train_points,
+                    run_algos,
+                    datasets,
+                    results_root,
+                    device,
+                    written,
+                )
+                continue
             agent, _hash = build_generator_agent(
                 env, spec.generator_algo, "random", seed=seed, device=device
             )
             # 1) generate all sweep points from the ONE shared agent
             datasets: Dict[Tuple[float, float], str] = {}
             point_hashes: Dict[Tuple[float, float], str] = {}
-            for pi, (beta, sigma) in enumerate(points, start=1):
+            for pi, (beta, sigma) in enumerate(all_points, start=1):
                 bp, strength = arm_behavior(beta, sigma)
                 did = _dataset_id(dataset_prefix, spec.regime, env, beta, sigma, seed)
                 # Phase print (display-only): makes the generation phase visible
@@ -919,7 +1016,7 @@ def run_cell(
                 # own tqdm bars take over.
                 print(
                     f"[regime_sweep] {env} seed{seed}: dataset generation "
-                    f"{pi}/{len(points)} — {param_dirname(beta, sigma)} "
+                    f"{pi}/{len(all_points)} — {param_dirname(beta, sigma)} "
                     f"(rollout_episodes={spec.budget('rollout_episodes', 30)})",
                     flush=True,
                 )
@@ -965,40 +1062,84 @@ def run_cell(
             # 2) M1: refuse a cell whose arms carry different generator hashes,
             #    BEFORE spending any training on a non-identified taxonomy.
             assert_shared_generator(point_hashes)
+            if phase == "generate":
+                continue
             # 3) train each arm point into its parameter-addressed leaves
-            for pi, (beta, sigma) in enumerate(points, start=1):
-                print(
-                    f"[regime_sweep] {env} seed{seed}: TRAINING point "
-                    f"{pi}/{len(points)} — {param_dirname(beta, sigma)} "
-                    f"({arm_label(beta, sigma)} arm, {len(run_algos)} algo(s))",
-                    flush=True,
-                )
-                for algo in run_algos:
-                    if spec.simulation == "classical":
-                        written += _run_point_classical(
-                            spec,
-                            env,
-                            algo,
-                            seed,
-                            beta,
-                            sigma,
-                            datasets[(beta, sigma)],
-                            results_root,
-                            device,
-                        )
-                    else:
-                        written += _run_point(
-                            spec,
-                            env,
-                            algo,
-                            seed,
-                            beta,
-                            sigma,
-                            datasets[(beta, sigma)],
-                            results_root,
-                            device,
-                        )
+            _train_points(
+                spec,
+                env,
+                seed,
+                train_points,
+                run_algos,
+                datasets,
+                results_root,
+                device,
+                written,
+            )
     return written
+
+
+def _select_points(
+    names: Sequence[str] | None, all_points: Sequence[Tuple[float, float]]
+) -> List[Tuple[float, float]]:
+    """Resolve ``--points`` param-dirnames to (beta, sigma) pairs; None = all.
+    Unknown names refuse loudly — a typo must never silently train nothing."""
+    if names is None:
+        return list(all_points)
+    by_name = {param_dirname(b, s): (b, s) for (b, s) in all_points}
+    unknown = [n for n in names if n not in by_name]
+    if unknown:
+        raise ValueError(
+            f"unknown sweep point(s) {unknown}; this cell has {sorted(by_name)}"
+        )
+    return [by_name[n] for n in names]
+
+
+def _train_points(
+    spec: SweepSpec,
+    env: str,
+    seed: int,
+    train_points: Sequence[Tuple[float, float]],
+    run_algos: Sequence[str],
+    datasets: Dict[Tuple[float, float], str],
+    results_root: str | Path,
+    device: str | None,
+    written: List[Path],
+) -> None:
+    """The training inner loop of one offline (env, seed) group, over
+    ``train_points`` (the full L, or a supervisor-assigned subset)."""
+    for pi, (beta, sigma) in enumerate(train_points, start=1):
+        print(
+            f"[regime_sweep] {env} seed{seed}: TRAINING point "
+            f"{pi}/{len(train_points)} — {param_dirname(beta, sigma)} "
+            f"({arm_label(beta, sigma)} arm, {len(run_algos)} algo(s))",
+            flush=True,
+        )
+        for algo in run_algos:
+            if spec.simulation == "classical":
+                written += _run_point_classical(
+                    spec,
+                    env,
+                    algo,
+                    seed,
+                    beta,
+                    sigma,
+                    datasets[(beta, sigma)],
+                    results_root,
+                    device,
+                )
+            else:
+                written += _run_point(
+                    spec,
+                    env,
+                    algo,
+                    seed,
+                    beta,
+                    sigma,
+                    datasets[(beta, sigma)],
+                    results_root,
+                    device,
+                )
 
 
 def _run_online_regime(
@@ -1113,9 +1254,24 @@ def _main(argv: List[str] | None = None) -> int:
         "--max-workers",
         type=int,
         default=None,
-        help="how many (env, seed) GROUPS to run concurrently (overrides the cell's "
+        help="how many sweep tasks to run concurrently (overrides the cell's "
         "max_workers; default from _base/parallel.yaml = 1 = serial). 1 keeps the "
-        "byte-identical in-process path; >=2 fans groups across subprocesses.",
+        "byte-identical in-process path; >=2 fans tasks across subprocesses.",
+    )
+    ap.add_argument(
+        "--phase",
+        choices=["all", "generate", "train"],
+        default="all",
+        help="offline only: 'generate' builds the shared generator + every point "
+        "dataset + the M1 gate (no training); 'train' trains on datasets already "
+        "in the active Minari store. The supervisor's point-grain seam.",
+    )
+    ap.add_argument(
+        "--points",
+        nargs="+",
+        default=None,
+        help="restrict TRAINING to these sweep points (param dirnames, e.g. "
+        "b0.000_s0.500); offline only, typically with --phase train",
     )
     args = ap.parse_args(argv)
 
@@ -1133,6 +1289,12 @@ def _main(argv: List[str] | None = None) -> int:
     eff_workers = int(
         args.max_workers if args.max_workers is not None else spec.max_workers
     )
+
+    # A --phase/--points invocation IS a single supervisor work unit — it must
+    # never re-enter the pool (the supervisor's children rely on this staying
+    # serial via --max-workers 1; a human passing --phase gets the same).
+    if args.phase != "all" or args.points is not None:
+        eff_workers = 1
 
     if eff_workers >= 2:
         from src.benchmarking.sweep_supervisor import format_summary, run_sweep
@@ -1161,6 +1323,8 @@ def _main(argv: List[str] | None = None) -> int:
         algos=args.algos,
         seeds=args.seeds,
         budget_overrides=budget_overrides,
+        phase=args.phase,
+        points=args.points,
     )
     print(
         f"[regime_sweep] wrote {len(leaves)} run-dir leaves under {results_root}/ "

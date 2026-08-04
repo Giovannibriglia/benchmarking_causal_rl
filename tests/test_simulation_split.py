@@ -110,11 +110,43 @@ def test_sweep_block_is_real_config(tmp_path):
         {"biased": {"beta": [0.5], "sigma": 0.5}},  # biased arm varies sigma
         {"confounded": {"beta": 0.5, "sigma": [0.5]}},  # confounded varies beta
         {"diagonal": {"beta": [0.5], "sigma": [0.5]}},  # unknown arm
+        {"basic": False, "biased": False, "confounded": False},  # nothing left
+        {"biased": "off"},  # an arm is a map or false, never a string
     ],
 )
 def test_off_L_sweep_blocks_refused(tmp_path, bad_sweep):
     with pytest.raises(ValueError):
         load_sweep_spec(_write_cell_yaml(tmp_path, sweep=bad_sweep))
+
+
+def test_sweep_arm_false_excludes_the_arm(tmp_path):
+    # ONLY explicit false shrinks the L; an ABSENT arm key falls back to the
+    # canonical default (backward compatible — commenting out never removes).
+    with pytest.warns(UserWarning, match="null-calibration anchor"):
+        spec = load_sweep_spec(
+            _write_cell_yaml(
+                tmp_path,
+                sweep={
+                    "basic": False,
+                    "biased": False,
+                    "confounded": {"beta": 0.0, "sigma": [0.5]},
+                },
+            )
+        )
+    assert spec.points() == [(0.0, 0.5)]
+    # absent biased -> canonical beta arm; basic true == absent == canonical.
+    spec = load_sweep_spec(
+        _write_cell_yaml(
+            tmp_path, sweep={"basic": True, "confounded": {"sigma": [0.5]}}
+        )
+    )
+    assert spec.points() == [
+        (0.0, 0.0),
+        (0.25, 0.0),
+        (0.5, 0.0),
+        (0.75, 0.0),
+        (0.0, 0.5),
+    ]
 
 
 def test_critics_block_is_real_config(tmp_path):

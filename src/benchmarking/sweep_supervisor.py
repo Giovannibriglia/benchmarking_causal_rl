@@ -1,24 +1,30 @@
 """Subprocess supervisor for the (regime × L-sweep) driver.
 
-The parallel grain is the (env, seed) GROUP, never a single sweep point. One
-subprocess owns ONE group's full L (all 7 points + training) start-to-finish, so
-the shared-generator invariant (run_cell's ``for env: for seed:`` iteration) lives
-entirely inside a group and different groups share nothing. There are ``E*S`` such
-groups for ``max_workers`` slots to churn.
+The parallel grain (offline) is the (env, seed, sweep-point) TASK: per (env, seed)
+group one ``generate`` task builds the shared generator, every point dataset and
+the M1 hash gate in ONE process (the shared-generator invariant is untouched — it
+never spans processes), then one ``train`` task per sweep point trains that point's
+algos/critics, gated on its group's ``generate``. Training is numerics-identical
+to the monolithic child because both ends re-seed (``BenchmarkRunner.run`` and the
+per-point rollout seeding). The finer grain load-balances the pool: a cheap env's
+group no longer strands its worker while an expensive one grinds, and there are
+``E*S*(1+P)`` tasks instead of ``E*S`` groups for ``max_workers`` slots to churn.
+ONLINE cells keep the whole-group task (no datasets, nothing to phase-split).
 
 ``max_workers == 1`` is the serial path: the supervisor calls ``run_cell`` IN-PROCESS
 (no subprocess, no env-var, no log machinery) so it is BYTE-IDENTICAL to the
 pre-supervisor behaviour — same leaves, same order. The subprocess pool engages only
 at ``max_workers >= 2``.
 
-Isolation (offline): each worker gets its OWN Minari store via
-``MINARI_DATASETS_PATH=<scratch>/worker_<env>_<seed>``, deleted when the group
-finishes. This kills the store-level namespace-metadata TOCTOU (all groups of a
-regime share the id-namespace ``sweep/{regime}``, whose ``namespace_metadata.json``
-would otherwise be a concurrent write) AND the full-store ``list_local_datasets``
-scan the load path runs. Dataset content is unchanged (ids are identical; only the
-store root differs), so the datasets a worker writes are read back by that same
-worker's training step through the same env var.
+Isolation (offline): each GROUP gets its OWN Minari store via
+``MINARI_DATASETS_PATH=<scratch>/worker_<env>_<seed>``, written only by the group's
+single ``generate`` task, read by its ``train`` tasks (concurrent readers of a
+static store — no writer left, so no race), and deleted when the group's LAST task
+finishes (refcounted). This kills the store-level namespace-metadata TOCTOU (all
+groups of a regime share the id-namespace ``sweep/{regime}``, whose
+``namespace_metadata.json`` would otherwise be a concurrent write) AND the
+full-store ``list_local_datasets`` scan the load path runs. Dataset content is
+unchanged (ids are identical; only the store root differs).
 
 Driver-agnostic: ``_supervise`` knows only (a) an opaque list of groups, (b) a
 per-group ``build_command`` -> argv, (c) a per-group ``prepare_group`` -> (env
@@ -47,6 +53,7 @@ from src.benchmarking.regime_sweep import (
     arm_label,
     classical_results_leaf,
     load_sweep_spec,
+    param_dirname,
     parse_algo_entry,
     results_leaf,
     run_cell,
@@ -71,9 +78,24 @@ def _leaf_marker_files(spec) -> Tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 # Result types                                                                  #
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class _Task:
+    """One schedulable unit: a whole group (online), or a group's ``generate`` /
+    per-point ``train`` slice (offline)."""
+
+    env: str
+    seed: int
+    kind: str  # "group" | "generate" | "train"
+    point: Optional[str] = None  # param dirname, kind == "train" only
+
+    @property
+    def group(self) -> Tuple[str, int]:
+        return (self.env, self.seed)
+
+
 @dataclass
 class GroupResult:
-    """The outcome of one (env, seed) group."""
+    """The outcome of one (env, seed) group (or, internally, one task of it)."""
 
     env: str
     seed: int
@@ -83,6 +105,7 @@ class GroupResult:
     log_path: Optional[Path]
     leaves: List[Path] = field(default_factory=list)
     expected_leaf_count: int = 0
+    label: str = ""  # task tag ("gen" / point dirname) on internal task results
 
     @property
     def group(self) -> Tuple[str, int]:
@@ -109,9 +132,16 @@ class SweepResult:
 # Leaf accounting (the truncation check)                                        #
 # --------------------------------------------------------------------------- #
 def _expected_leaves(
-    spec, algos: Sequence[str], env: str, seed: int, results_root: str | Path
+    spec,
+    algos: Sequence[str],
+    env: str,
+    seed: int,
+    results_root: str | Path,
+    *,
+    point: Optional[str] = None,
 ) -> List[Path]:
-    """The exact leaf paths a completed (env, seed) group must produce.
+    """The exact leaf paths a completed (env, seed) group must produce —
+    restricted to one sweep point when ``point`` (a param dirname) is given.
 
     critic_ablation: one per (sweep point x algo x that arm's critic) — critic
     sets vary by arm (biased runs observational-only), so this is a SUM over
@@ -120,6 +150,8 @@ def _expected_leaves(
     expected count for the truncation check."""
     out: List[Path] = []
     for beta, sigma in spec.points():
+        if point is not None and param_dirname(beta, sigma) != point:
+            continue
         arm = arm_label(beta, sigma)
         for algo in algos:
             # the {algo} path segment is the entry's algo_id (verbatim for the
@@ -268,80 +300,142 @@ def _supervise(
     log_name: Callable[[object], str],
     max_workers: int,
     poll_interval: float = 0.1,
+    dependencies: Optional[Callable[[object], Sequence[object]]] = None,
+    skip_group: Optional[Callable[[object, GroupResult], GroupResult]] = None,
 ) -> List[GroupResult]:
     """Keep ``max_workers`` subprocesses alive, refilling as they finish.
 
-    ONLINE PLUG-IN: this function is intentionally offline-agnostic. The future online
-    driver calls it with the SAME shape — its own ``build_command`` (an online
-    single-group entry point), an empty-env ``prepare_group`` (online has no Minari
-    store, so env overrides = {} and cleanup = no-op), and its own ``verify_group``.
-    The pool / refill / failure / per-worker-log machinery below is reused verbatim.
+    ``dependencies(task)`` (optional) returns the tasks that must finish OK before
+    ``task`` may launch (matched by object identity). A task whose dependency
+    FAILED is never launched: it is resolved through ``skip_group(task,
+    failed_dep_result)`` so the driver can synthesize its failure result AND run
+    its bookkeeping (store refcounts). With no ``dependencies`` this is the
+    historical FIFO pool.
+
+    ONLINE PLUG-IN: this function is intentionally offline-agnostic. The online
+    driver calls it with the SAME shape — its own ``build_command``, an empty-env
+    ``prepare_group`` (online has no Minari store), and its own ``verify_group``.
     """
     log_dir.mkdir(parents=True, exist_ok=True)
     total = len(groups)
     # Surface the log dir UP FRONT: the workers' stdout/stderr (tqdm included)
-    # stream into per-group files there — without this line the only mention of
+    # stream into per-task files there — without this line the only mention of
     # a log path was in the FAILED summary, leaving a healthy multi-hour run
     # with no visible progress at all.
     print(
-        f"[sweep_supervisor] {total} group(s), {max_workers} worker(s); "
-        f"per-group logs: {log_dir}/group_*.log  "
+        f"[sweep_supervisor] {total} task(s), {max_workers} worker(s); "
+        f"per-task logs: {log_dir}/group_*.log  "
         f"— full detail with: tail -f {log_dir}/group_*.log",
         flush=True,
     )
+    # Cap each child's intra-op threads: N children each defaulting to ALL cores
+    # oversubscribes the CPU max_workers-fold (context-switch thrash, slower
+    # per-worker throughput). An explicit user export still wins (we only fill
+    # vars absent from the parent environment). GPU numerics untouched.
+    thread_vars = (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    )
+    threads_per_worker = str(max(1, (os.cpu_count() or max_workers) // max_workers))
+    thread_env = {v: threads_per_worker for v in thread_vars if v not in os.environ}
     # On an interactive terminal, MIRROR each worker's current progress line
     # (its own tqdm bar, or the generation-phase print) into a fixed slot below.
     bars = _LiveBars(max_workers, enabled=True)
     pending: List[object] = list(groups)
-    # popen -> (group, log file handle, cleanup callable, log path)
+    # popen -> (task, log file handle, cleanup callable, log path)
     running: Dict[subprocess.Popen, Tuple[object, object, Callable[[], None], Path]] = (
         {}
     )
     results: List[GroupResult] = []
+    finished: Dict[int, GroupResult] = {}  # id(task) -> its result
 
-    def _launch(group: object) -> None:
-        env_overrides, cleanup = prepare_group(group)
-        log_path = log_dir / f"group_{log_name(group)}.log"
+    def _dep_block(task: object) -> Optional[GroupResult] | str:
+        """None = ready; "wait" = a dep still pending/running; a GroupResult =
+        that dep FAILED (the task must be skipped)."""
+        if dependencies is None:
+            return None
+        for dep in dependencies(task):
+            res = finished.get(id(dep))
+            if res is None:
+                return "wait"
+            if not res.ok:
+                return res
+        return None
+
+    def _launch(task: object) -> None:
+        env_overrides, cleanup = prepare_group(task)
+        log_path = log_dir / f"group_{log_name(task)}.log"
         logf = open(log_path, "w")
         # PYTHONUNBUFFERED: a redirected child block-buffers stdout, so its log
-        # file stays EMPTY for minutes/hours; unbuffered makes the per-group log
+        # file stays EMPTY for minutes/hours; unbuffered makes the per-task log
         # tail-able in real time (numerics untouched — output buffering only).
-        env = {**os.environ, **env_overrides, "PYTHONUNBUFFERED": "1"}
+        env = {**os.environ, **thread_env, **env_overrides, "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(
-            build_command(group),
+            build_command(task),
             stdout=logf,
             stderr=subprocess.STDOUT,
             env=env,
             cwd=str(_REPO_ROOT),
         )
-        running[proc] = (group, logf, cleanup, log_path)
-        bars.attach(log_name(group))
-        bars.print(f"[sweep_supervisor] launched {log_name(group)}")
+        running[proc] = (task, logf, cleanup, log_path)
+        bars.attach(log_name(task))
+        bars.print(f"[sweep_supervisor] launched {log_name(task)}")
+
+    def _schedule() -> None:
+        """Drop dep-failed tasks, then fill free slots with ready tasks (FIFO
+        among ready). Loops until a full pass changes nothing."""
+        progressed = True
+        while progressed:
+            progressed = False
+            for task in list(pending):
+                block = _dep_block(task)
+                if isinstance(block, GroupResult):
+                    pending.remove(task)
+                    res = (
+                        skip_group(task, block)
+                        if skip_group
+                        else verify_group(task, -1, block.log_path)
+                    )
+                    finished[id(task)] = res
+                    results.append(res)
+                    bars.print(
+                        f"[sweep_supervisor] skipped {log_name(task)}: {res.reason} "
+                        f"[{len(results)}/{total} tasks done]"
+                    )
+                    progressed = True
+                elif block is None and len(running) < max_workers:
+                    pending.remove(task)
+                    _launch(task)
+                    progressed = True
+                    if len(running) >= max_workers:
+                        break
 
     try:
         while pending or running:
-            while pending and len(running) < max_workers:
-                _launch(pending.pop(0))
+            _schedule()
             bars.refresh({log_name(g): lp for (g, _, _, lp) in running.values()})
             done = [p for p in running if p.poll() is not None]
             if not done:
                 time.sleep(poll_interval)
                 continue
             for proc in done:
-                group, logf, cleanup, log_path = running.pop(proc)
+                task, logf, cleanup, log_path = running.pop(proc)
                 logf.close()
                 try:
-                    cleanup()  # tear the per-worker store down regardless of outcome
+                    cleanup()  # per-task bookkeeping regardless of outcome
                 except Exception:
                     pass
-                res = verify_group(group, int(proc.returncode), log_path)
+                res = verify_group(task, int(proc.returncode), log_path)
+                finished[id(task)] = res
                 results.append(res)
-                bars.detach(log_name(group))
+                bars.detach(log_name(task))
                 state = "ok" if res.ok else f"FAILED ({res.reason})"
                 bars.print(
-                    f"[sweep_supervisor] finished {log_name(group)}: {state} "
+                    f"[sweep_supervisor] finished {log_name(task)}: {state} "
                     f"[{len(res.leaves)}/{res.expected_leaf_count} leaves; "
-                    f"{len(results)}/{total} groups done]"
+                    f"{len(results)}/{total} tasks done]"
                 )
     finally:
         bars.close()
@@ -371,8 +465,11 @@ def run_sweep(
     ``max_workers``: None -> read from the spec (``_base/parallel.yaml``, default 1);
     an int overrides it (the CLI ``--max-workers`` path). ``max_workers == 1`` runs
     ``run_cell`` in-process (byte-identical to the pre-supervisor serial path).
-    ``>= 2`` fans the groups across subprocesses, each an isolated single-group
-    ``run_cell`` (``--envs <env> --seeds <seed> --max-workers 1``).
+    ``>= 2`` fans TASKS across subprocesses: offline, one ``--phase generate``
+    child per (env, seed) group then one ``--phase train --points <p>`` child per
+    sweep point (dependency-gated on its group's generate); online, one
+    whole-group child. Every child is a serial ``run_cell``
+    (``--envs <env> --seeds <seed> --max-workers 1``).
 
     ``budget_overrides`` applies to the in-process (max_workers==1) path. Under the
     subprocess path, budgets ride the child's YAML + ``smoke`` flag (arbitrary
@@ -425,33 +522,84 @@ def run_sweep(
     scratch.mkdir(parents=True, exist_ok=True)
     logs = Path(log_dir) if log_dir else Path(tempfile.mkdtemp(prefix="sweep_logs_"))
 
-    groups: List[Tuple[str, int]] = [(e, s) for e in run_envs for s in run_seeds]
+    # Task graph. Offline: per group ONE "generate" (shared generator + all
+    # datasets + M1, single process) then one "train" per sweep point, gated on
+    # the group's generate. All generates are queued FIRST so the pool fills with
+    # dataset builds up front and train tasks stream in behind them. Online: one
+    # whole-group task, no deps (no datasets to phase-split).
+    point_names = [param_dirname(b, s) for (b, s) in spec.points()]
+    group_keys: List[Tuple[str, int]] = [
+        (e, int(s)) for e in run_envs for s in run_seeds
+    ]
+    tasks: List[_Task] = []
+    task_deps: Dict[int, List[_Task]] = {}
+    group_tasks: Dict[Tuple[str, int], List[_Task]] = {g: [] for g in group_keys}
+    if spec.data_regime == "offline":
+        gens = {g: _Task(g[0], g[1], "generate") for g in group_keys}
+        tasks.extend(gens.values())
+        for g in group_keys:
+            group_tasks[g].append(gens[g])
+        for g in group_keys:
+            for p in point_names:
+                t = _Task(g[0], g[1], "train", p)
+                task_deps[id(t)] = [gens[g]]
+                tasks.append(t)
+                group_tasks[g].append(t)
+    else:
+        for g in group_keys:
+            t = _Task(g[0], g[1], "group")
+            tasks.append(t)
+            group_tasks[g].append(t)
 
-    def _group_tag(group: object) -> str:
-        env, seed = group  # type: ignore[misc]
-        return f"{_safe(env)}_seed{seed}"
+    def _task_tag(task: object) -> str:
+        t: _Task = task  # type: ignore[assignment]
+        base = f"{_safe(t.env)}_seed{t.seed}"
+        if t.kind == "generate":
+            return f"{base}_gen"
+        if t.kind == "train":
+            return f"{base}_{t.point}"
+        return base
 
-    def _build_command(group: object) -> List[str]:
-        env, seed = group  # type: ignore[misc]
+    # Per-group store lifecycle: the store outlives the generate task (its train
+    # tasks read it), so teardown is REFCOUNTED — every task of the group, run or
+    # skipped, releases once; the last release removes the store.
+    remaining: Dict[Tuple[str, int], int] = {
+        g: len(ts) for g, ts in group_tasks.items()
+    }
+
+    def _store_path(group: Tuple[str, int]) -> Path:
+        return scratch / f"worker_{_safe(group[0])}_seed{group[1]}"
+
+    def _release(group: Tuple[str, int]) -> None:
+        remaining[group] -= 1
+        if remaining[group] <= 0:
+            shutil.rmtree(_store_path(group), ignore_errors=True)
+
+    def _build_command(task: object) -> List[str]:
+        t: _Task = task  # type: ignore[assignment]
         cmd = [
             sys.executable,
             "-m",
             "src.benchmarking.regime_sweep",
             str(sweep_yaml),
             "--envs",
-            env,
+            t.env,
             "--seeds",
-            str(seed),
+            str(t.seed),
             "--results-root",
             str(results_root),
             "--dataset-prefix",
             str(dataset_prefix),
             # Force the child onto the serial in-process run_cell path for its ONE
-            # group — without this it would re-read max_workers>=2 from the YAML and
+            # task — without this it would re-read max_workers>=2 from the YAML and
             # recursively spawn a pool.
             "--max-workers",
             "1",
         ]
+        if t.kind == "generate":
+            cmd += ["--phase", "generate"]
+        elif t.kind == "train":
+            cmd += ["--phase", "train", "--points", str(t.point)]
         if run_algos:
             cmd += ["--algos", *run_algos]
         if device:
@@ -464,26 +612,35 @@ def run_sweep(
         return cmd
 
     def _prepare_group(
-        group: object,
+        task: object,
     ) -> Tuple[Dict[str, str], Callable[[], None]]:
-        # The ONLY offline-specific bit: a per-worker Minari store (kills the
-        # store-level namespace TOCTOU). Online cells have no Minari store, so
-        # their groups get no env override and a no-op cleanup.
+        t: _Task = task  # type: ignore[assignment]
+        # The ONLY offline-specific bit: a per-group Minari store (kills the
+        # store-level namespace TOCTOU). generate writes it; train tasks read it
+        # (static by then — the single writer has exited). Online cells have no
+        # Minari store, so no env override; the release keeps refcounts symmetric
+        # (rmtree of a never-created path is a no-op).
         if spec.data_regime != "offline":
-            return {}, (lambda: None)
-        store = scratch / f"worker_{_group_tag(group)}"
+            return {}, (lambda: _release(t.group))
+        store = _store_path(t.group)
         store.mkdir(parents=True, exist_ok=True)
+        return {"MINARI_DATASETS_PATH": str(store)}, (lambda: _release(t.group))
 
-        def _cleanup() -> None:
-            shutil.rmtree(store, ignore_errors=True)
+    def _task_label(t: _Task) -> str:
+        return "gen" if t.kind == "generate" else (t.point or "group")
 
-        return {"MINARI_DATASETS_PATH": str(store)}, _cleanup
-
-    def _verify_group(
-        group: object, returncode: int, log_path: Optional[Path]
+    def _verify_task(
+        task: object, returncode: int, log_path: Optional[Path]
     ) -> GroupResult:
-        env, seed = group  # type: ignore[misc]
-        expected = _expected_leaves(spec, run_algos, env, seed, results_root)
+        t: _Task = task  # type: ignore[assignment]
+        # generate produces datasets (in the worker store), not leaves — its
+        # expected leaf set is empty and its verdict is the exit code alone.
+        if t.kind == "generate":
+            expected: List[Path] = []
+        else:
+            expected = _expected_leaves(
+                spec, run_algos, t.env, t.seed, results_root, point=t.point
+            )
         markers = _leaf_marker_files(spec)
         present = [p for p in expected if _leaf_complete(p, markers)]
         if returncode != 0:
@@ -498,25 +655,72 @@ def run_sweep(
         else:
             ok, reason = True, ""
         return GroupResult(
-            env=env,
-            seed=seed,
+            env=t.env,
+            seed=t.seed,
             returncode=returncode,
             ok=ok,
             reason=reason,
             log_path=log_path,
             leaves=present,
             expected_leaf_count=len(expected),
+            label=_task_label(t),
         )
 
-    group_results = _supervise(
-        groups,
+    def _skip_task(task: object, dep_result: GroupResult) -> GroupResult:
+        t: _Task = task  # type: ignore[assignment]
+        _release(t.group)  # never launched -> its cleanup never runs; release here
+        expected = _expected_leaves(
+            spec, run_algos, t.env, t.seed, results_root, point=t.point
+        )
+        return GroupResult(
+            env=t.env,
+            seed=t.seed,
+            returncode=dep_result.returncode,
+            ok=False,
+            reason=f"skipped: group generate failed ({dep_result.reason})",
+            log_path=dep_result.log_path,
+            leaves=[],
+            expected_leaf_count=len(expected),
+            label=_task_label(t),
+        )
+
+    task_results = _supervise(
+        tasks,
         build_command=_build_command,
         prepare_group=_prepare_group,
-        verify_group=_verify_group,
+        verify_group=_verify_task,
         log_dir=logs,
-        log_name=_group_tag,
+        log_name=_task_tag,
         max_workers=eff_workers,
+        dependencies=(lambda t: task_deps.get(id(t), ())),
+        skip_group=_skip_task,
     )
+
+    # Aggregate task results back to the public per-(env, seed) GroupResult —
+    # the reporting contract (format_summary, callers) is group-level.
+    group_results: List[GroupResult] = []
+    for g in group_keys:
+        rs = [r for r in task_results if (r.env, r.seed) == g]
+        failed = [r for r in rs if not r.ok]
+        first_fail = failed[0] if failed else None
+        group_results.append(
+            GroupResult(
+                env=g[0],
+                seed=g[1],
+                returncode=(first_fail.returncode if first_fail else 0),
+                ok=not failed,
+                reason=(
+                    f"[{first_fail.label}] {first_fail.reason}" if first_fail else ""
+                ),
+                log_path=(
+                    first_fail.log_path
+                    if first_fail
+                    else (rs[-1].log_path if rs else None)
+                ),
+                leaves=[leaf for r in rs for leaf in r.leaves],
+                expected_leaf_count=sum(r.expected_leaf_count for r in rs),
+            )
+        )
     # Deterministic order (env, then seed) regardless of finish order.
     group_results.sort(key=lambda g: (g.env, g.seed))
     all_leaves = [leaf for g in group_results if g.ok for leaf in g.leaves]

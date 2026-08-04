@@ -6,15 +6,18 @@ S1  max_workers==1 is the SERIAL in-process path: its leaf set is byte-identical
     direct run_cell (same 19 leaves at the same parameter paths). The parallel
     machinery must not engage at 1.
 S2  max_workers==2 on a 2-group cell (1 env × 2 seeds) runs both groups to completion
-    with per-worker Minari stores that are created, used, and cleaned up — and no
-    namespace crash (the whole reason for the per-worker store). The default ~/.minari
-    store is never touched (isolation), and the failure summary is empty.
-S3  a deliberately failing group (a bogus env id, which fails per-group at generator
-    build) is recorded in failed_groups while the OTHER group still completes — a
-    non-zero overall exit, never a silent drop.
+    with per-group Minari stores that are created, used, and cleaned up — and no
+    namespace crash (the whole reason for the per-group store). The default ~/.minari
+    store is never touched (isolation), and the failure summary is empty. Offline
+    groups are point-grain: one `generate` task + one `train` task per sweep point,
+    each with its own log.
+S3  a deliberately failing group (a bogus env id, which fails at the generate task's
+    generator build; its train tasks are dep-skipped) is recorded in failed_groups
+    while the OTHER group still completes — a non-zero overall exit, never a silent
+    drop.
 
-The parallel tests are minutes-scale (each subprocess runs a full 7-point smoke) so
-they carry the `slow` marker. They run on the detected device (``_DEV``) — the same
+The parallel tests are minutes-scale (each group runs a full 7-point smoke across
+its task set) so they carry the `slow` marker. They run on the detected device (``_DEV``) — the same
 device the proven M2 smoke uses; the σ-arm confounding gate is device-sensitive at
 the tiny budget, so matching that configuration keeps them stable.
 """
@@ -143,11 +146,14 @@ def test_s2_parallel_two_groups_isolated_and_clean(tmp_path):
         assert len(g.leaves) == _LEAVES_PER_GROUP
     assert len(result.leaves) == 2 * _LEAVES_PER_GROUP
 
-    # Per-worker logs kept separate, one file per worker.
-    assert (logs / "group_CartPole-v1_seed0.log").exists()
-    assert (logs / "group_CartPole-v1_seed1.log").exists()
+    # Per-task logs kept separate: one generate log + one per-point train log
+    # per group (offline_mdp has 7 sweep points).
+    for seed in (0, 1):
+        assert (logs / f"group_CartPole-v1_seed{seed}_gen.log").exists()
+        point_logs = list(logs.glob(f"group_CartPole-v1_seed{seed}_b*.log"))
+        assert len(point_logs) == 7, sorted(p.name for p in point_logs)
 
-    # Per-worker stores were created + CLEANED (no leftover worker_ dirs under scratch).
+    # Per-group stores were created + CLEANED (no leftover worker_ dirs under scratch).
     leftover = [p.name for p in stores.iterdir() if p.name.startswith("worker_")]
     assert leftover == [], leftover
 
@@ -171,7 +177,8 @@ def test_s3_failing_group_recorded_other_survives(tmp_path):
         _OFFLINE_MDP,
         results_root=str(root),
         dataset_prefix="s3par",
-        # one real env (succeeds) + one bogus env (fails per-group at generator build).
+        # one real env (succeeds) + one bogus env (its generate task fails at
+        # generator build; its per-point train tasks are dependency-skipped).
         envs=["CartPole-v1", "NotARealEnvXYZ-v0"],
         algos=["cql"],
         seeds=[0],

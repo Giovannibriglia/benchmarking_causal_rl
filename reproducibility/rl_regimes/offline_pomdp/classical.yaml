@@ -12,7 +12,9 @@ data_regime: offline
 discrete_only: true
 simulation: classical
 
-# (env, seed) groups run concurrently; 4 is memory-safe on a 16 GB GPU.
+# Concurrent tasks: per (env, seed) group one dataset-generation task, then one
+# training task per sweep point (dep-gated on the group's generation).
+# 4 is memory-safe on a 16 GB GPU.
 max_workers: 4
 
 generator_algo: dqn
