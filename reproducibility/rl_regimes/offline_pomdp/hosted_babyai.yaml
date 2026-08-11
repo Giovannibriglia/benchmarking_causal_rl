@@ -1,0 +1,32 @@
+# offline_pomdp / HOSTED — BabyAI GoToRedBallNoDists, PARTIAL-obs dataset.
+#
+# The hosted analog of the masked-obs POMDP cell: the dataset records the 7x7
+# EGOCENTRIC symbolic view (partial by construction — no mask_indices involved),
+# with the SAME near-optimal behavior policy as the *-fullobs twin
+# (hosted_babyai_fullobs.yaml), so the observability axis is provided as a
+# dataset pair with behavior held fixed. Standard POMDP baseline pair: does
+# memory help on the same partially observed stream? (recurrent vs memoryless
+# offline DQN). Dict-obs adapter fill + minigrid_symbolic eval wrapper, as in
+# the hosted MiniGrid MDP configs. No causal arms.
+#
+# Run (no pinned seed; replicate with --seed 0 / 1 / 2):
+#   uv run python main.py --reproduce rl_regimes/offline_pomdp/hosted_babyai.yaml --seed 0
+envs:
+  - BabyAI-GoToRedBallNoDists-v0
+env_wrapper: minigrid_symbolic
+offline_dataset:
+  BabyAI-GoToRedBallNoDists-v0: minigrid/BabyAI-GoToRedBallNoDists/optimal-v0
+algos:
+  # Memory row (episode-grouped fill). The explicit networks block is REQUIRED
+  # on the flat config path: a plain string defaults every component to mlp,
+  # which the recurrent builder rejects.
+  - {name: offline_dqn_recurrent, networks: {critic: lstm}}
+  - offline_dqn               # memoryless baseline on the same partial stream
+offline_grad_steps: 20000     # matches the offline_pomdp classical budget
+n_checkpoints: 10
+n_episodes: 10
+rollout_len: 512
+n_train_envs: 2
+n_eval_envs: 16
+aggregation: iqm
+deterministic: true

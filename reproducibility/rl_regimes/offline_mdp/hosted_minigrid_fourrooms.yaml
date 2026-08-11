@@ -1,0 +1,35 @@
+# offline_mdp / HOSTED — Farama-hosted Minari dataset, MiniGrid FourRooms, near-expert tier.
+#
+# A hosted-data companion to classical.yaml (docs/minari_adoption_report.md §2.1):
+# the discrete offline learners on D4RL/minigrid/fourrooms-v0 (590 episodes /
+# 10,010 steps, behavior return ~0.85). NO generation phase: the dataset is
+# downloaded from the HF remote on first use (a few MB; needs the [hf] extra).
+# The behavior policy is whatever was recorded — no beta/sigma arms, no
+# confounding signature, no causal simulations; the behavior-quality axis is the
+# hosted TIER (this file vs hosted_minigrid_fourrooms_random.yaml).
+#
+# Obs contract: the dataset records the SYMBOLIC Dict obs (7x7x3 egocentric
+# view), so eval must use env_wrapper minigrid_symbolic (flattened 147-dim
+# symbolic vector) — NOT the auto MiniGrid path (84x84 RGB render). The Dict-obs
+# adapter fill (src/envs/offline/hosted_dict_obs.py) engages automatically.
+#
+# Run (this file pins no seed; replicate with --seed 0 / 1 / 2):
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/hosted_minigrid_fourrooms.yaml --seed 0
+envs:
+  - MiniGrid-FourRooms-v0
+env_wrapper: minigrid_symbolic
+offline_dataset:
+  MiniGrid-FourRooms-v0: D4RL/minigrid/fourrooms-v0
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+offline_grad_steps: 50000     # calibrated offline budget (_base); checkpoints spread over it
+n_checkpoints: 25
+n_episodes: 25                # unused by the explicit-step offline loop; >= n_checkpoints
+rollout_len: 512
+n_train_envs: 2               # offline: train envs are built but never rolled
+n_eval_envs: 16
+aggregation: iqm
+deterministic: true

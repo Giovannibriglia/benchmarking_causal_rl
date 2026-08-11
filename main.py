@@ -543,6 +543,15 @@ def main():
         n_checkpoints = 2
     if n_checkpoints > n_episodes:
         n_checkpoints = n_episodes
+    # Explicit offline gradient-step budget (the runner's CHANGE-1/3 loop; the
+    # sweep driver already honors it via _base). None -> the legacy
+    # n_episodes*rollout_len offline fallback, byte-identical for every
+    # existing config that doesn't set the key.
+    offline_grad_steps = train_cfg_src.get(
+        "offline_grad_steps", cfg_from_file.get("offline_grad_steps", None)
+    )
+    if offline_grad_steps is not None:
+        offline_grad_steps = int(offline_grad_steps)
     deterministic = train_cfg_src.get(
         "deterministic", cfg_from_file.get("deterministic", args.deterministic)
     )
@@ -683,6 +692,13 @@ def main():
             "mode": mode,
             "algos": algos,
             "n_episodes": n_episodes,
+            # Key added only when set, so snapshots of existing configs stay
+            # byte-identical.
+            **(
+                {"offline_grad_steps": offline_grad_steps}
+                if offline_grad_steps is not None
+                else {}
+            ),
             "n_checkpoints": n_checkpoints,
             "deterministic": deterministic,
             "aggregation": aggregation,
@@ -749,6 +765,7 @@ def main():
                 actor_network=algo_spec_norm["actor"],
                 critic_network=algo_spec_norm["critic"],
                 network_kwargs=algo_spec_norm["network_kwargs"],
+                offline_grad_steps=offline_grad_steps,
             )
             critic_ablation_cfg = None
             if mode == "critic_ablation":

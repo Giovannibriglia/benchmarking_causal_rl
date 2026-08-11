@@ -58,6 +58,7 @@ class GymnasiumEnv(BaseEnv):
         record_video: bool = False,
         video_path: Optional[str] = None,
         numpy_actions: bool = False,
+        env_fn: Optional[Callable[[str, Optional[str]], gym.Env]] = None,
     ) -> None:
         self.env_id = env_id
         self.n_envs = n_envs
@@ -67,12 +68,19 @@ class GymnasiumEnv(BaseEnv):
         self.video_path = video_path
         self.numpy_actions = numpy_actions
         self.base_seed = seed
+        # env_fn: explicit single-env factory override (env_id, render_mode) ->
+        # env, used by named wrapper specs (e.g. 'minigrid_symbolic') that need a
+        # build the env_id prefix dispatch below wouldn't pick. Default None =
+        # the prefix dispatch, unchanged.
+        self.env_fn = env_fn
 
         def make_env(rank: int) -> Callable[[], gym.Env]:
             def _thunk():
                 _maybe_import_robotics(self.env_id)
                 render_mode = "rgb_array" if self.render else None
-                if self.env_id.startswith("ALE/"):
+                if self.env_fn is not None:
+                    env = self.env_fn(self.env_id, render_mode)
+                elif self.env_id.startswith("ALE/"):
                     # Shared single source of the Atari preprocessing chain
                     # (also used by the offline fixture generator) so offline
                     # frames can't drift from the online representation.

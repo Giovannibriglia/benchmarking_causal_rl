@@ -49,3 +49,39 @@ def make_minigrid_env(env_id: str, render_mode: str | None = None) -> "gym.Env":
         env, lambda obs: np.transpose(obs, (2, 0, 1)), chw_space
     )
     return env
+
+
+def make_minigrid_symbolic_env(
+    env_id: str, render_mode: str | None = None, full_obs: bool = False
+) -> "gym.Env":
+    """Build a MiniGrid/BabyAI env delivering the FLATTENED SYMBOLIC grid obs.
+
+    The eval-side twin of the hosted-Minari Dict-obs loader
+    (``src.envs.offline.hosted_dict_obs``): hosted MiniGrid/BabyAI datasets record
+    the native symbolic observation (``Dict(direction, image (V,V,3) uint8,
+    mission)``), NOT the 84x84 RGB render ``make_minigrid_env`` produces — so a
+    run trained on hosted data must also EVALUATE on the symbolic encoding or the
+    train/eval obs distributions diverge. Chain:
+
+      [``FullyObsWrapper``]      -> only when ``full_obs`` (the hosted
+                                    ``*-fullobs`` dataset twins record the whole
+                                    grid instead of the 7x7 egocentric view)
+      ``ImgObsWrapper``          -> drop the Dict, keep the symbolic image
+      ``FlattenObservation``     -> rank-1 (V*V*3,) uint8
+
+    Rank-1 obs take GymnasiumEnv's VECTOR path (flatten + float32 cast) — the
+    symbolic object/color/state indices are consumed raw by an MLP trunk, with no
+    /255 normalization (which is meaningless on indices; see the docstring above).
+    The loader flattens the dataset's ``image`` the same way, so offline
+    transitions and eval observations agree elementwise.
+    """
+    from minigrid.wrappers import (  # noqa: F401  (import also registers the ids)
+        FullyObsWrapper,
+        ImgObsWrapper,
+    )
+
+    env = gym.make(env_id, render_mode=render_mode)
+    if full_obs:
+        env = FullyObsWrapper(env)
+    env = ImgObsWrapper(env)
+    return gym.wrappers.FlattenObservation(env)

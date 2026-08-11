@@ -1301,6 +1301,40 @@ class BenchmarkRunner:
                 # (B,T) grouped batch -> coverage + the online intervened gate.
                 self._log_arm_diagnostics(ep, last_batch)
 
+    @staticmethod
+    def _is_dict_obs_dataset(dataset) -> bool:
+        """True for hosted MiniGrid/BabyAI-family datasets whose observation
+        space is a ``gymnasium.spaces.Dict`` — they take the adapter fill
+        (``hosted_dict_obs``); Box-obs datasets keep the frozen fills."""
+        from gymnasium.spaces import Dict as DictSpace
+
+        return isinstance(getattr(dataset, "observation_space", None), DictSpace)
+
+    def _assert_dict_obs_supported(
+        self, dataset_id: str, load_u: bool | None = None
+    ) -> None:
+        """Reject axes the Dict-obs adapter cannot serve, BEFORE filling.
+
+        Hosted datasets carry no confounder U (``load_u`` would silently train an
+        oracle on garbage) and the masked-obs axis is defined on our generated
+        vector envs, not on flattened symbolic grids.
+        """
+        needs_u = self._requires_confounder_u if load_u is None else load_u
+        if needs_u:
+            raise ValueError(
+                f"Dataset '{dataset_id}' is a Dict-obs hosted dataset with no "
+                "infos['confounder_u']; *_oracle_u variants (and oracle_u "
+                "strategy critics) require a generated confounded dataset."
+            )
+        if getattr(self.env_cfg, "mask_indices", None):
+            raise ValueError(
+                f"mask_indices is not supported with Dict-obs hosted dataset "
+                f"'{dataset_id}': the masked-obs axis is defined on generated "
+                "vector observations. Use the partial-view dataset variant "
+                "instead (hosted MiniGrid/BabyAI data is partially observable "
+                "by construction)."
+            )
+
     def _train_offline(
         self,
         train_logger: CSVLogger,
@@ -1363,15 +1397,28 @@ class BenchmarkRunner:
         # from the dataset's obs/next_obs at load time — the eval env is masked
         # above, so the agent (built for the reduced dim) matches both. The
         # dataset on disk is unchanged; the projection is in-memory only.
-        n_added = fill_replay_buffer_from_minari(
-            dataset_id,
-            self.replay_buffer,
-            self.device,
-            mask_indices=getattr(self.env_cfg, "mask_indices", None),
-            # Oracle-U ceiling: load the per-transition latent U so the
-            # U-conditioned critic can read batch["confounder_u"].
-            load_u=self._requires_confounder_u,
-        )
+        if self._is_dict_obs_dataset(dataset):
+            # Hosted MiniGrid/BabyAI family: Dict(symbolic image, ...) obs need
+            # the adapter fill (pair with env_wrapper: minigrid_symbolic so eval
+            # sees the same encoding). Frozen Box-obs fill below is untouched.
+            self._assert_dict_obs_supported(dataset_id)
+            from src.envs.offline.hosted_dict_obs import (
+                fill_replay_buffer_from_minari_dict,
+            )
+
+            n_added = fill_replay_buffer_from_minari_dict(
+                dataset_id, self.replay_buffer, self.device
+            )
+        else:
+            n_added = fill_replay_buffer_from_minari(
+                dataset_id,
+                self.replay_buffer,
+                self.device,
+                mask_indices=getattr(self.env_cfg, "mask_indices", None),
+                # Oracle-U ceiling: load the per-transition latent U so the
+                # U-conditioned critic can read batch["confounder_u"].
+                load_u=self._requires_confounder_u,
+            )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
 
@@ -1556,13 +1603,25 @@ class BenchmarkRunner:
         load_u = self._requires_confounder_u or (
             strategy_ablation and self.critic_ablation.needs_u()
         )
-        n_added = fill_sequence_buffer_from_minari(
-            dataset_id,
-            self.replay_buffer,
-            self.device,
-            mask_indices=getattr(self.env_cfg, "mask_indices", None),
-            load_u=load_u,
-        )
+        if self._is_dict_obs_dataset(dataset):
+            # Hosted MiniGrid/BabyAI family — same adapter dispatch as the flat
+            # path (_train_offline); the frozen Box-obs fill below is untouched.
+            self._assert_dict_obs_supported(dataset_id, load_u=load_u)
+            from src.envs.offline.hosted_dict_obs import (
+                fill_sequence_buffer_from_minari_dict,
+            )
+
+            n_added = fill_sequence_buffer_from_minari_dict(
+                dataset_id, self.replay_buffer, self.device
+            )
+        else:
+            n_added = fill_sequence_buffer_from_minari(
+                dataset_id,
+                self.replay_buffer,
+                self.device,
+                mask_indices=getattr(self.env_cfg, "mask_indices", None),
+                load_u=load_u,
+            )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
 

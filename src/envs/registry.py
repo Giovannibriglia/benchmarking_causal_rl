@@ -129,6 +129,39 @@ def register_default_env_wrappers() -> None:
         )
     )
 
+    def build_minigrid_symbolic(**kwargs) -> BaseEnv:
+        # Flattened SYMBOLIC MiniGrid/BabyAI obs — the eval-side twin of the
+        # hosted-Minari Dict-obs loader (hosted datasets record the symbolic
+        # grid, not the 84x84 RGB render the auto path builds). ``match=None``
+        # -> never auto-selected; reachable only via an explicit
+        # ``env_wrapper: minigrid_symbolic``. env_kwargs['full_obs'] selects the
+        # whole-grid encoding matching the hosted ``*-fullobs`` dataset twins.
+        from .wrappers.minigrid import make_minigrid_symbolic_env
+
+        env_kwargs = kwargs.get("env_kwargs") or {}
+        full_obs = bool(env_kwargs.get("full_obs", False))
+        return GymnasiumEnv(
+            env_id=kwargs["env_id"],
+            n_envs=kwargs["n_envs"],
+            device=kwargs["device"],
+            seed=kwargs["seed"],
+            render=kwargs.get("render", False),
+            record_video=kwargs.get("record_video", False),
+            video_path=kwargs.get("video_path"),
+            env_fn=lambda env_id, render_mode: make_minigrid_symbolic_env(
+                env_id, render_mode, full_obs=full_obs
+            ),
+        )
+
+    registry.register(
+        EnvWrapperSpec(
+            name="minigrid_symbolic",
+            builder=build_minigrid_symbolic,
+            match=None,
+            requires_entry_point=False,
+        )
+    )
+
     _DEFAULTS_REGISTERED = True
 
 

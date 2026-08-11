@@ -1,0 +1,24 @@
+# offline_mdp / HOSTED — MiniGrid FourRooms, RANDOM tier (the low end of the
+# hosted behavior-quality axis; pair with hosted_minigrid_fourrooms.yaml).
+# See that file's header for the full contract (symbolic obs, no causal arms).
+#
+# Run (no pinned seed; replicate with --seed 0 / 1 / 2):
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/hosted_minigrid_fourrooms_random.yaml --seed 0
+envs:
+  - MiniGrid-FourRooms-v0
+env_wrapper: minigrid_symbolic
+offline_dataset:
+  MiniGrid-FourRooms-v0: D4RL/minigrid/fourrooms-random-v0
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+offline_grad_steps: 50000
+n_checkpoints: 25
+n_episodes: 25
+rollout_len: 512
+n_train_envs: 2
+n_eval_envs: 16
+aggregation: iqm
+deterministic: true
