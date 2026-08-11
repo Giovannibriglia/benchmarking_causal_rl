@@ -187,6 +187,22 @@ never helps" — suspicious enough to audit end-to-end. Verdict:
   steps). A conservative memoryless reference row (cql) makes the family
   readable; recurrent-CQL remains the deferred workstream it always was.
 
+**Post-fix rerun (same day, + KeyCorridorS3R1 pair added):**
+
+- GoToRedBall-partial recurrent flipped from "worse than memoryless" to
+  **7.45 ± 10.5 final / 15.5 best vs memoryless 1.13 / 2.87** — but seed-split:
+  seed 1 is near-competent (22.3 final / 37.6 best window-sum) while seeds 0/2
+  peak early and degrade to 0 — the recurrent-DQN instability is real and
+  cross-seed variance is the story, not the mean.
+- KeyCorridorS3R1 (the memory-demanding pair): **all-zero for the whole DQN
+  family on both arms** — the capability floor, as the audit predicted. The
+  clean observability wedge exists one algo away: manual CQL scores **0.942 /
+  100% on fullobs (= behavior) vs 0.000 on partial** — carrying-state is
+  unobservable in the egocentric view, so memoryless is structurally capped and
+  only memory can close it. This is the concrete motivation for the deferred
+  recurrent-CQL workstream; adding plain `cql` to the family's algos would put
+  the wedge itself into the sweep's report.
+
 #### Integration checklist — DONE 2026-08-11 (hosted cells are live, as SWEEPS)
 
 All items landed. Hosted data runs as **behavior-policy sweeps** — one family
