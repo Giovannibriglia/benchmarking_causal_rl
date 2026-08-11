@@ -11,9 +11,7 @@ data_regime: offline
 discrete_only: true
 simulation: critic_ablation
 
-# Concurrent tasks: per (env, seed) group one dataset-generation task, then one
-# training task per sweep point (dep-gated on the group's generation).
-# 4 is memory-safe on a 16 GB GPU.
+# (env, seed) groups run concurrently; 4 is memory-safe on a 8 GB GPU.
 max_workers: 4
 
 generator_algo: dqn
@@ -25,13 +23,10 @@ mask_indices:
   CartPole-v1: [1, 3]
   Acrobot-v1: [4, 5]
 
-# An arm set to `false` is EXCLUDED. Commenting an arm out does NOT exclude it —
-# an absent key falls back to the canonical default arm. `basic: false` drops the
-# null-calibration anchor (warns): fine for a shrunk test, wrong for a paper run.
 sweep:
-  basic:      false  # { beta: 0.0,                sigma: 0.0 }
-  biased:     false  # { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
-  confounded: { beta: 0.0,                sigma: 0.5 }
+  basic:      { beta: 0.0,                sigma: 0.0 }
+  biased:     { beta: [0.25, 0.50, 0.75], sigma: 0.0 }
+  confounded: { beta: 0.0,                sigma: [0.25, 0.50, 1.00] }
 
 # The recurrent strategy triad is DQN-base only (Cell 8): offline_dqn_recurrent
 # accepts the lstm critic_network the pomdp arm forces.
@@ -39,18 +34,6 @@ algos:
   - offline_dqn_recurrent
 
 critics:
-  #basic:      [observational, proximal, oracle_u, sensitivity]
-  #biased:     [observational]
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  biased:     [observational]
   confounded: [observational, proximal, oracle_u, sensitivity]
-
-seeds:
-  - 0
-
-budgets:
-  n_episodes: 250
-  n_checkpoints: 25
-  n_train_envs: 16
-  n_eval_envs: 16
-  rollout_len: 128
-  rollout_episodes: 300
-  offline_grad_steps: 5000
