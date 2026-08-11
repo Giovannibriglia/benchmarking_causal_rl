@@ -1,15 +1,26 @@
-# offline_pomdp / HOSTED SWEEP — BabyAI GoToRedBallNoDists, OBSERVABILITY axis.
+# offline_pomdp / HOSTED SWEEP — BabyAI, OBSERVABILITY axis (partial vs fullobs).
 #
 # The hosted analog of the masked-obs POMDP cell as a sweep: the arms are the
-# dataset pair the remote provides with the SAME near-optimal behavior policy —
+# dataset pairs the remote provides with the SAME near-optimal behavior policy —
 # `partial` records the 7x7 egocentric view (147-dim), `fullobs` the whole grid
-# (8x8, 192-dim; per-arm env_kwargs switch the eval env encoding to match).
-# Full 2x2: BOTH algos (recurrent memory row + memoryless baseline) run on BOTH
-# arms — fullobs-recurrent is the control that memory only helps when
-# observability is missing. Leaves:
+# (per-arm env_kwargs switch the eval env encoding to match). Full 2x2: BOTH
+# algos (recurrent memory row + memoryless baseline) run on BOTH arms —
+# fullobs-recurrent is the control that memory only helps when observability is
+# missing. Two envs on the task-memory axis:
+#   * GoToRedBallNoDists — near-Markovian under the egocentric view (fixed
+#     mission, no distractors): memory has ~nothing to win; kept as the
+#     no-memory-needed control.
+#   * KeyCorridorS3R1 — key -> locked door -> ball sequencing (18-step optimal
+#     episodes): the egocentric view forces remembering what was seen; the
+#     smallest genuinely memory-demanding hosted pair.
+# Leaves:
 #   results/offline_pomdp/hosted_babyai/{arm}/{env}/{algo}/{seed}/  (resumable)
 # No mask_indices involved (partial observability comes from the dataset), no
-# causal arms.
+# causal arms. CAVEAT (see docs/minari_adoption_report.md, BabyAI audit): the
+# algo rows are the DQN family (the only base with a recurrent variant) and
+# naive DQN collapses on narrow near-expert data — read the memory question
+# WITHIN the family (recurrent vs memoryless DQN), not as absolute returns;
+# recurrent-cql remains a deferred workstream.
 #
 # Run:
 #   uv run python main.py --reproduce rl_regimes/offline_pomdp/hosted_babyai.yaml
@@ -23,9 +34,11 @@ datasets:
   partial:
     offline_dataset:
       BabyAI-GoToRedBallNoDists-v0: minigrid/BabyAI-GoToRedBallNoDists/optimal-v0
+      BabyAI-KeyCorridorS3R1-v0: minigrid/BabyAI-KeyCorridorS3R1/optimal-v0
   fullobs:
     offline_dataset:
       BabyAI-GoToRedBallNoDists-v0: minigrid/BabyAI-GoToRedBallNoDists/optimal-fullobs-v0
+      BabyAI-KeyCorridorS3R1-v0: minigrid/BabyAI-KeyCorridorS3R1/optimal-fullobs-v0
     env_kwargs:
       full_obs: true
 
