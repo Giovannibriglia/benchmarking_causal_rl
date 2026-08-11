@@ -552,6 +552,15 @@ def main():
     )
     if offline_grad_steps is not None:
         offline_grad_steps = int(offline_grad_steps)
+    # Terminal-reward-counting eval (sparse-reward envs; see TrainingConfig).
+    # Default False = the legacy accumulation, byte-identical for every existing
+    # config that doesn't set the key.
+    eval_count_terminal_reward = bool(
+        train_cfg_src.get(
+            "eval_count_terminal_reward",
+            cfg_from_file.get("eval_count_terminal_reward", False),
+        )
+    )
     deterministic = train_cfg_src.get(
         "deterministic", cfg_from_file.get("deterministic", args.deterministic)
     )
@@ -699,6 +708,11 @@ def main():
                 if offline_grad_steps is not None
                 else {}
             ),
+            **(
+                {"eval_count_terminal_reward": True}
+                if eval_count_terminal_reward
+                else {}
+            ),
             "n_checkpoints": n_checkpoints,
             "deterministic": deterministic,
             "aggregation": aggregation,
@@ -766,6 +780,7 @@ def main():
                 critic_network=algo_spec_norm["critic"],
                 network_kwargs=algo_spec_norm["network_kwargs"],
                 offline_grad_steps=offline_grad_steps,
+                eval_count_terminal_reward=eval_count_terminal_reward,
             )
             critic_ablation_cfg = None
             if mode == "critic_ablation":

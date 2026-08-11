@@ -78,6 +78,13 @@ class TrainingConfig:
     # => the runner warns and falls back to the legacy product (keeps existing offline
     # goldens byte-identical). Production sets it in _base/budgets.yaml.
     offline_grad_steps: Optional[int] = None
+    # Eval return accumulation: True counts the terminal step's reward (correct
+    # under gymnasium NEXT_STEP autoreset; REQUIRED on sparse-reward envs like
+    # MiniGrid/BabyAI whose only reward is terminal). False = the legacy
+    # `reward * (~done)` accumulation that drops it — kept as default solely
+    # because existing goldens are frozen on it (invisible off-by-one on
+    # dense-reward envs). Hosted cells set it in their YAMLs.
+    eval_count_terminal_reward: bool = False
     # Eval .mp4 recording. Rendering is side-effect-only (never changes numerics —
     # see runner._render_capable), but it spawns an ffmpeg writer and encodes
     # rollout_len frames at EVERY checkpoint. Default True keeps single runs

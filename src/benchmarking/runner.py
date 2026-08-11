@@ -703,7 +703,19 @@ class BenchmarkRunner:
                         action, _ = self.policy.act(obs)
             obs, reward, terminated, truncated, _ = env.step(action)
             done = torch.logical_or(terminated, truncated)
-            total_rewards += reward * (~done)
+            # Legacy accumulation DROPS the terminal step's reward (`* (~done)`)
+            # — a negligible off-by-one on dense-reward envs (CartPole/Acrobot
+            # pay every step) but fatal on sparse envs whose ONLY reward is the
+            # terminal one (MiniGrid/BabyAI success: eval reads 0.0 for a policy
+            # that reaches the goal). Under gymnasium's NEXT_STEP autoreset the
+            # done step carries the genuine terminal reward and the subsequent
+            # reset step pays 0, so counting it is correct; the legacy branch is
+            # kept as the DEFAULT solely because existing goldens are frozen on
+            # it. Hosted sparse-reward cells set eval_count_terminal_reward.
+            if getattr(self.train_cfg, "eval_count_terminal_reward", False):
+                total_rewards += reward
+            else:
+                total_rewards += reward * (~done)
             if gate_open:
                 # env.last_unmasked_obs is the full obs vector (the mask wrapper
                 # exposes it); pick out the hidden components the agent can't see.

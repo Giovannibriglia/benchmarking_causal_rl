@@ -237,3 +237,61 @@ def test_runner_rejects_oracle_u_with_dict_dataset(tmp_path, monkeypatch):
     _make_dict_dataset(tmp_path, monkeypatch, "hosted_test/oracle-v0")
     with pytest.raises(ValueError, match="no\\s+infos\\['confounder_u'\\]"):
         _run(tmp_path, "hosted_test/oracle-v0", "offline_dqn_oracle_u")
+
+
+# --------------------------------------------------------------------------
+# eval_count_terminal_reward (the sparse-reward eval fix the hosted cells need)
+# --------------------------------------------------------------------------
+def test_eval_count_terminal_reward_recovers_done_step_reward(tmp_path, monkeypatch):
+    """The legacy eval accumulation drops the done-step reward (`* (~done)`) —
+    invisible on dense CartPole, fatal on sparse MiniGrid (return reads 0.0 for
+    a goal-reaching policy). Two identical runners (same seeds, same net init,
+    greedy eval => identical trajectories) must differ by exactly the recovered
+    terminal +1s: flag-on strictly greater."""
+    monkeypatch.setenv("MINARI_DATASETS_PATH", str(tmp_path / "minari"))
+    from tools.make_cartpole_offline import make_cartpole_dataset
+
+    make_cartpole_dataset(dataset_id="hosted_test/evalflag-v0", n_episodes=2, seed=0)
+
+    from src.benchmarking.registry import register_default_algorithms, registry
+    from src.benchmarking.runner import BenchmarkRunner
+    from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
+    from src.envs.registry import register_default_env_wrappers
+
+    register_default_algorithms()
+    register_default_env_wrappers()
+
+    def eval_return(count_terminal: bool) -> float:
+        torch.manual_seed(0)
+        env_cfg = EnvConfig(
+            env_id="CartPole-v1",
+            n_train_envs=2,
+            n_eval_envs=4,
+            rollout_len=64,
+            seed=0,
+            offline_dataset="hosted_test/evalflag-v0",
+        )
+        train_cfg = TrainingConfig(
+            n_episodes=2,
+            n_checkpoints=2,
+            device="cpu",
+            algorithm="offline_dqn",
+            aggregation="mean",
+            record_eval_video=False,
+            eval_count_terminal_reward=count_terminal,
+        )
+        run_dir = tmp_path / f"evalflag_{count_terminal}"
+        run_dir.mkdir()
+        runner = BenchmarkRunner(
+            env_cfg,
+            train_cfg,
+            RunConfig(run_dir=str(run_dir), timestamp="t"),
+            registry.get("offline_dqn"),
+        )
+        return float(runner.evaluate(0)["eval_return_mean"])
+
+    r_legacy = eval_return(False)
+    r_fixed = eval_return(True)
+    # Untrained greedy policy fails CartPole well inside the 64-step window, so
+    # at least one termination per env: the fixed path must recover >= +1/env.
+    assert r_fixed > r_legacy

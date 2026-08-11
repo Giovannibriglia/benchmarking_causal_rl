@@ -18,5 +18,9 @@ n_episodes: 25
 rollout_len: 512
 n_train_envs: 2
 n_eval_envs: 16
+# Sparse terminal reward (MiniGrid success / MuJoCo terminal step): count the
+# done-step reward at eval (the legacy default drops it, reading 0.0 forever
+# on MiniGrid-family envs regardless of policy quality).
+eval_count_terminal_reward: true
 aggregation: iqm
 deterministic: true
