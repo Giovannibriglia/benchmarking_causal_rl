@@ -1,0 +1,43 @@
+# offline_mdp / HOSTED SWEEP — MiniGrid FourRooms, behavior-policy axis.
+#
+# The hosted analog of the classical L-sweep: the swept axis is the RECORDED
+# behavior policy (`datasets:` arms — near-expert vs random tier of the same
+# env), not beta/sigma. One command runs every (arm x algo x seed) leaf into
+#   results/offline_mdp/hosted_minigrid/{arm}/{env}/{algo}/{seed}/
+# (resumable — complete leaves are skipped). No generation phase, no
+# confounding gate, no causal simulations: hosted data has no confounder U.
+# Seeds are TRAINING seeds over the one fixed dataset per arm (the hosted
+# protocol) — dataset variance is NOT in the cross-seed bands.
+#
+# Obs contract: the datasets record the SYMBOLIC Dict obs (7x7x3 egocentric
+# view) -> minigrid_symbolic eval wrapper + the Dict-obs adapter fill.
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/hosted_minigrid.yaml
+# Report/figures:
+#   uv run python -m src.benchmarking.render_hosted_report offline_mdp --simulation hosted_minigrid
+regime: offline_mdp
+simulation: hosted_minigrid
+env_wrapper: minigrid_symbolic
+
+datasets:
+  random:      { MiniGrid-FourRooms-v0: D4RL/minigrid/fourrooms-random-v0 }
+  near_expert: { MiniGrid-FourRooms-v0: D4RL/minigrid/fourrooms-v0 }
+
+algos:
+  - offline_dqn
+  - bcq
+  - cql
+  - iql
+
+seeds: [0, 1, 2]
+
+offline_grad_steps: 50000
+n_checkpoints: 25
+n_train_envs: 2
+n_eval_envs: 16
+rollout_len: 512
+aggregation: iqm
+# Sparse terminal reward: count the done-step reward at eval (the legacy
+# default drops it, reading 0.0 forever on MiniGrid regardless of policy).
+eval_count_terminal_reward: true

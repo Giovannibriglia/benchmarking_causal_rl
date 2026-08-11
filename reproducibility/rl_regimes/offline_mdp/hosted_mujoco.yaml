@@ -1,0 +1,44 @@
+# offline_mdp / HOSTED SWEEP — MuJoCo locomotion, behavior-quality (tier) axis.
+#
+# The hosted analog of the classical L-sweep with the SB3-SAC tier ladder
+# simple -> medium -> expert as the swept behavior-policy axis (unpaired tiers
+# from independent training runs, unlike our shared-generator beta arms — see
+# docs/minari_adoption_report.md §2.1). Continuous offline learners; env
+# versions pinned to the datasets' own env_spec (Hopper-v5 / HalfCheetah-v5).
+# ~1M steps per dataset: sizeable first download + fill. Leaves:
+#   results/offline_mdp/hosted_mujoco/{arm}/{env}/{algo}/{seed}/  (resumable)
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/hosted_mujoco.yaml
+# Report/figures:
+#   uv run python -m src.benchmarking.render_hosted_report offline_mdp --simulation hosted_mujoco
+regime: offline_mdp
+simulation: hosted_mujoco
+
+datasets:
+  simple:
+    Hopper-v5: mujoco/hopper/simple-v0
+    HalfCheetah-v5: mujoco/halfcheetah/simple-v0
+  medium:
+    Hopper-v5: mujoco/hopper/medium-v0
+    HalfCheetah-v5: mujoco/halfcheetah/medium-v0
+  expert:
+    Hopper-v5: mujoco/hopper/expert-v0
+    HalfCheetah-v5: mujoco/halfcheetah/expert-v0
+
+algos:
+  - cql_continuous
+  - iql_continuous
+  - bcq_continuous
+
+seeds: [0, 1, 2]
+
+offline_grad_steps: 50000
+n_checkpoints: 25
+n_train_envs: 2
+n_eval_envs: 16
+rollout_len: 512
+aggregation: iqm
+# Correct terminal-step accounting (Hopper pays on the done step too; the
+# legacy default drops it).
+eval_count_terminal_reward: true

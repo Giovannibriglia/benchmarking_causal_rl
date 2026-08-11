@@ -386,6 +386,16 @@ def main():
         # unhelpful "no algorithms" error. A ``*_smoke.yaml`` carries a tiny budget
         # in-file, so `--reproduce <cell>/sweep_smoke.yaml` is a one-command smoke
         # (routed to results_smoke/ so it never mixes with a full run's results/).
+        # Hosted-dataset behavior-policy sweep: a `datasets:` arm map routes to
+        # the hosted driver. Checked BEFORE the regime/sweep dispatch — family
+        # files carry a `regime:` key for the results path but must never reach
+        # the generation sweep (their datasets are fixed hosted inputs).
+        if isinstance(cfg_from_file, dict) and "datasets" in cfg_from_file:
+            from src.benchmarking.hosted_sweep import run_hosted_sweep
+
+            print(f"[main] {repro_path} is a hosted-dataset sweep -> hosted_sweep")
+            print(run_hosted_sweep(str(repro_path), device=str(detect_device())))
+            return
         if isinstance(cfg_from_file, dict) and (
             "regime" in cfg_from_file or "sweep" in cfg_from_file
         ):

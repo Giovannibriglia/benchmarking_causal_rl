@@ -162,19 +162,27 @@ absolute `MINARI_DATASETS_PATH`; downloads ~a few MB from the HF remote). Findin
   cell should evaluate on a symbolic-obs env build (flattened `ImgObsWrapper`),
   not the RGB pipeline, so train and eval distributions match.
 
-#### Integration checklist — DONE 2026-08-11 (hosted cells are live)
+#### Integration checklist — DONE 2026-08-11 (hosted cells are live, as SWEEPS)
 
-All items landed; hosted configs now sit inside the cell directories (flat
-reproduce configs — content-based dispatch keeps them off the sweep driver):
+All items landed. Hosted data runs as **behavior-policy sweeps** — one family
+config whose `datasets:` block names the arms (the hosted analog of the
+classical L-sweep's arm axis), run by the dedicated `hosted_sweep` driver
+(`main.py --reproduce` dispatches on the `datasets:` key, before the
+regime/sweep dispatch). Leaves mirror the classical tree
+(`results/{regime}/{simulation}/{arm}/{env}/{algo}/{seed}/`, resumable), and
+`render_hosted_report` produces the cross-arm comparison (grouped bars per env:
+arm axis × algo, mean ± sd over seeds, plus aggregate/summary CSVs).
 
-| Config | Family / axis |
+| Family config | Arms (the swept axis) |
 |---|---|
-| `offline_mdp/hosted_minigrid_fourrooms[.yaml/_random.yaml]` | FourRooms, near-expert vs random tier |
-| `offline_mdp/hosted_mujoco_{expert,medium,simple}.yaml` | Hopper-v5 + HalfCheetah-v5, tier axis, continuous algos |
-| `offline_pomdp/hosted_babyai[.yaml/_fullobs.yaml]` | GoToRedBallNoDists, partial (recurrent+memoryless pair) vs full-obs twin |
+| `offline_mdp/hosted_minigrid.yaml` | FourRooms: `random` → `near_expert` tier |
+| `offline_mdp/hosted_mujoco.yaml` | Hopper-v5 + HalfCheetah-v5: `simple` → `medium` → `expert` (continuous algos) |
+| `offline_pomdp/hosted_babyai.yaml` | GoToRedBallNoDists: `partial` vs `fullobs` (observability axis; full 2×2 with recurrent + memoryless on both arms, per-arm `env_kwargs` switch the eval encoding) |
 
-Run: `uv run python main.py --reproduce rl_regimes/<cell>/<file> --seed 0` (no
-pinned seed in-file; replicate with `--seed 0/1/2`). Implementation pieces:
+Run: `uv run python main.py --reproduce rl_regimes/<cell>/<family>.yaml`
+(seeds come from the file — training seeds over the fixed dataset per arm).
+Report: `uv run python -m src.benchmarking.render_hosted_report <regime>
+--simulation <family>`. Implementation pieces:
 
 - **Gate**: no carve-out needed (classical runs never call it — see spike).
 - **Dict-obs adapter**: `src/envs/offline/hosted_dict_obs.py` (flat + sequence
