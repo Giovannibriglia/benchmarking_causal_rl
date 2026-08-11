@@ -162,6 +162,31 @@ absolute `MINARI_DATASETS_PATH`; downloads ~a few MB from the HF remote). Findin
   cell should evaluate on a symbolic-obs env build (flattened `ImgObsWrapper`),
   not the RGB pipeline, so train and eval distributions match.
 
+#### BabyAI sweep investigation (2026-08-11): pipeline correct, two real findings
+
+The first hosted_babyai sweep read "fullobs much worse than partial, memory
+never helps" — suspicious enough to audit end-to-end. Verdict:
+
+- **Data/encoding/adapter all correct.** Both arms' behavior policies are
+  statistically identical (return 0.929 vs 0.930, 100% success, ~5-step
+  episodes); the fullobs grid encoding matches today's `FullyObsWrapper`
+  channel-for-channel (agent marker included); and CQL trained manually on the
+  adapter-filled buffers **nearly matches the behavior policy on BOTH arms**
+  (partial 0.921/98%, fullobs 0.889/96%) — fullobs is not intrinsically harder.
+- **Real bug (ours): recurrent eval amnesia.** `runner.evaluate` never threaded
+  the hidden state — `act(obs, state=None)` re-zeroed the LSTM every step, so
+  every recurrent row in the repo was evaluated memorylessly (~20% relative
+  return penalty measured at a competent BabyAI checkpoint: 0.346 vs 0.283).
+  Value-estimation gates were unaffected (they never used eval return). FIXED:
+  state now threads across eval steps and zeroes at episode boundaries;
+  non-recurrent paths byte-identical.
+- **Not a bug: the sweep's low numbers are the naive-DQN collapse.** The BabyAI
+  algo rows are the DQN family (the only base with a recurrent variant); on
+  narrow near-expert data naive DQN collapses (same as FourRooms), and the
+  recurrent variant additionally DEGRADES with training (best @2k of 20k
+  steps). A conservative memoryless reference row (cql) makes the family
+  readable; recurrent-CQL remains the deferred workstream it always was.
+
 #### Integration checklist — DONE 2026-08-11 (hosted cells are live, as SWEEPS)
 
 All items landed. Hosted data runs as **behavior-policy sweeps** — one family

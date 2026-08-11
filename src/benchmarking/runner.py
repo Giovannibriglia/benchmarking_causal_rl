@@ -677,6 +677,17 @@ class BenchmarkRunner:
             env.start_video(video_path)
         obs, _ = env.reset()
         total_rewards = torch.zeros(env.n_envs, device=self.device)
+        # Recurrent eval state: thread the hidden state across steps and zero it
+        # at episode boundaries. Without this every act() call ran the trunk
+        # from a zero state — the recurrent policy was evaluated with per-step
+        # AMNESIA (measured ~20% relative return penalty on BabyAI; see
+        # docs/minari_adoption_report.md). None for non-recurrent agents keeps
+        # their act() call byte-identical below.
+        rec_state = (
+            self.agent.initial_state(env.n_envs, self.device)
+            if getattr(self.agent, "is_recurrent", False)
+            else None
+        )
         # Eval-per-context (Cell 2): accumulate the PRE-mask values of the hidden
         # Z components over the rollout, per env. Gated; zero work when no mask.
         gate_open = bool(self._mask_indices)
@@ -693,7 +704,11 @@ class BenchmarkRunner:
             with torch.no_grad():
                 if self.algo_spec.kind == "off_policy":
                     if self.action_type == "discrete":
-                        action = self.agent.act(obs, epsilon=0.0).action  # type: ignore[arg-type]
+                        if rec_state is not None:
+                            out = self.agent.act(obs, rec_state, epsilon=0.0)  # type: ignore[arg-type]
+                            action, rec_state = out.action, out.state
+                        else:
+                            action = self.agent.act(obs, epsilon=0.0).action  # type: ignore[arg-type]
                     else:
                         action = self.agent.act(obs, noise=False).action  # type: ignore[arg-type]
                 else:
@@ -703,6 +718,10 @@ class BenchmarkRunner:
                         action, _ = self.policy.act(obs)
             obs, reward, terminated, truncated, _ = env.step(action)
             done = torch.logical_or(terminated, truncated)
+            if rec_state is not None and bool(done.any()):
+                # Episode boundary: the next obs is a reset obs — zero that
+                # env's hidden state so history never leaks across episodes.
+                rec_state = self.agent.reset_state_where(rec_state, done)
             # Legacy accumulation DROPS the terminal step's reward (`* (~done)`)
             # — a negligible off-by-one on dense-reward envs (CartPole/Acrobot
             # pay every step) but fatal on sparse envs whose ONLY reward is the

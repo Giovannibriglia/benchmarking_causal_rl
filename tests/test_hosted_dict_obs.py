@@ -295,3 +295,62 @@ def test_eval_count_terminal_reward_recovers_done_step_reward(tmp_path, monkeypa
     # Untrained greedy policy fails CartPole well inside the 64-step window, so
     # at least one termination per env: the fixed path must recover >= +1/env.
     assert r_fixed > r_legacy
+
+
+def test_eval_threads_recurrent_state(tmp_path, monkeypatch):
+    """evaluate() must carry the recurrent hidden state across steps (the
+    amnesia bug: act(obs, state=None) re-zeroed the LSTM every step, evaluating
+    recurrent agents memorylessly). Spy on act: from the second call on, the
+    state argument must be the advanced state from the previous call — i.e.
+    non-None and not all-zeros."""
+    _make_dict_dataset(
+        tmp_path, monkeypatch, "hosted_test/state-v0", n_episodes=3, ep_len=12
+    )
+    from src.benchmarking.registry import register_default_algorithms, registry
+    from src.benchmarking.runner import BenchmarkRunner
+    from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
+    from src.envs.registry import register_default_env_wrappers
+
+    register_default_algorithms()
+    register_default_env_wrappers()
+    env_cfg = EnvConfig(
+        env_id="MiniGrid-Empty-5x5-v0",
+        n_train_envs=2,
+        n_eval_envs=2,
+        rollout_len=6,
+        seed=0,
+        env_wrapper="minigrid_symbolic",
+        offline_dataset="hosted_test/state-v0",
+    )
+    train_cfg = TrainingConfig(
+        n_episodes=2,
+        n_checkpoints=2,
+        device="cpu",
+        algorithm="offline_dqn_recurrent",
+        aggregation="mean",
+        offline_grad_steps=4,
+        critic_network="lstm",
+        record_eval_video=False,
+    )
+    run_dir = tmp_path / "state_run"
+    run_dir.mkdir()
+    runner = BenchmarkRunner(
+        env_cfg,
+        train_cfg,
+        RunConfig(run_dir=str(run_dir), timestamp="t"),
+        registry.get("offline_dqn_recurrent"),
+    )
+    seen_states = []
+    real_act = runner.agent.act
+
+    def spy_act(obs, state=None, **kw):
+        seen_states.append(state)
+        return real_act(obs, state, **kw)
+
+    runner.agent.act = spy_act
+    runner.evaluate(0)
+    assert len(seen_states) >= 2
+    assert all(s is not None for s in seen_states), "recurrent eval got a None state"
+    later = seen_states[1]
+    h = later[0] if isinstance(later, tuple) else later
+    assert torch.abs(h).sum() > 0, "state was re-zeroed between eval steps (amnesia)"
