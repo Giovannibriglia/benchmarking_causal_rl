@@ -30,3 +30,15 @@ budgets:
   rollout_len: 2
   rollout_episodes: 40
   offline_grad_steps: 40
+
+# Smoke exercises the recurrent grace arms end-to-end (tiny latent/EM budgets).
+critics:
+  basic:      [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
+  biased:     [observational, grace]
+  confounded: [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
+grace:
+  em_iters: 3
+  pomdp_em_iters: 4
+  n_latent: 6
+  ensemble_k: 2
+  n_bins: 3

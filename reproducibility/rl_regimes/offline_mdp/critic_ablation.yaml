@@ -46,7 +46,13 @@ sweep:
 # null-calibration run (full set); biased runs observational only (sigma=0 has no
 # backdoor path — its metric is coverage); confounded runs the full set.
 # `sensitivity` requires `observational` in the same set.
+#
+# grace (feat/grace-critic): the router-served regime-adaptive arm — on ALL
+# THREE arms (its router verdict is scored against the arm label, gate G4, so
+# the biased arm hosts it too); grace_no_router (always-causal ablation
+# switch) rides only where a causal gap exists to close (basic for the no-harm
+# contrast, confounded for the headline).
 critics:
-  basic:      [observational, proximal, oracle_u, sensitivity]
-  biased:     [observational]
-  confounded: [observational, proximal, oracle_u, sensitivity]
+  basic:      [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
+  biased:     [observational, grace]
+  confounded: [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]

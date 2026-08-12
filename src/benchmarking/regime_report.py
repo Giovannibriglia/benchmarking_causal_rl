@@ -33,7 +33,12 @@ import yaml
 from src.benchmarking.regime_sweep import arm_label, parse_param_dir
 
 _PARAM_RE = re.compile(r"beta_\d{3}_sigma_\d{3}")
-ADAPTIVE_CRITICS = ("observational", "proximal", "oracle_u")
+# Adaptive critics = the arms JUDGED by the null-calibration gate (they claim
+# to detect/adapt, so a basic-point deviation is miscalibration). grace joined
+# on feat/grace-critic (its router has a sigma=0 null verdict). grace_no_router
+# is deliberately ABSENT: always-causal, non-adaptive by construction — its
+# origin deviation is a reported result, exempt like sensitivity.
+ADAPTIVE_CRITICS = ("observational", "proximal", "oracle_u", "grace")
 
 # Null-calibration factor (PR 6 follow-up 2, feat/null-cal-fixed-denominator).
 # null_calibrated = gap < k * noise_ref, where noise_ref is the CORRECT pipeline's
@@ -475,6 +480,35 @@ def compute_null_calibration(
                 "n_seeds": max(n_obs, n_prox),
             }
         )
+        # GRACE row (feat/grace-critic, gate G1): the SAME fixed-denominator
+        # gate, gap = |mean(MSE_obs) - mean(MSE_grace)| < k * noise_ref.
+        # Emitted ONLY when grace leaves exist, so legacy trees produce
+        # byte-identical output. The extra "critic" key marks the judged arm.
+        grace_vals = list(by_critic.get("grace", {}).values())
+        if grace_vals:
+            g_mean, _, n_g = _mean_sd(grace_vals)
+            gap_g = abs(obs_mean - g_mean) if (n_obs and n_g) else float("nan")
+            if noise_ref is None or noise_ref <= 0 or math.isnan(gap_g):
+                ratio_g: Optional[float] = None
+                calibrated_g: Optional[bool] = None
+            else:
+                ratio_g = gap_g / noise_ref
+                calibrated_g = bool(gap_g < k * noise_ref)
+            out.append(
+                {
+                    "regime": regime,
+                    "env": env,
+                    "algo": algo,
+                    "critic": "grace",
+                    "k": k,
+                    "gap": gap_g,
+                    "noise_ref": noise_ref,
+                    "cell_noise": cell_noise,
+                    "ratio": ratio_g,
+                    "null_calibrated": calibrated_g,
+                    "n_seeds": max(n_obs, n_g),
+                }
+            )
     return out
 
 
@@ -493,6 +527,17 @@ _REPORT_METRICS = (
     "eval_return_mean",
     "train_return_mean",
     "action_coverage",
+    # MC-anchored value accuracy + GRACE telemetry (feat/grace-critic,
+    # additive; blank -> NaN for critics that do not emit them).
+    "value_mse_to_mc",
+    "value_mse_to_mc_u0",
+    "mc_rtg_mean",
+    "mc_rtg_u0_mean",
+    "router_delta_a",
+    "router_delta_r",
+    "router_coverage",
+    "ensemble_width",
+    "grace_separability",
 )
 
 

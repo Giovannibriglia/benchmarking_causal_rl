@@ -56,8 +56,18 @@ KNOWN_STRATEGIES: Tuple[str, ...] = (
     "proximal",
     "oracle_u",
     "sensitivity",
+    # GRACE (feat/grace-critic): the router-served regime-adaptive arm and its
+    # always-causal ablation switch (router off). Declared per-cell in the
+    # ``critics:`` blocks; NOT added to the FULL_CRITICS defaults (adding an
+    # arm to every legacy default set silently would change cells that never
+    # opted in).
+    "grace",
+    "grace_no_router",
 )
-ONLINE_STRATEGIES: Tuple[str, ...] = ("observational", "proximal")
+# grace resolves online via the registered online_dqn_grace variant (the same
+# algo-variant convention as proximal/Gate B); grace_no_router stays offline-
+# only (the always-causal switch is an ablation arm, not an online method).
+ONLINE_STRATEGIES: Tuple[str, ...] = ("observational", "proximal", "grace")
 
 # The critic sets per arm (CHANGE 4). ``basic`` and ``confounded`` run the FULL
 # strategy set (basic is the null-calibration run — it is what makes the gate
@@ -293,6 +303,11 @@ class SweepSpec:
     beta_arm: Tuple[float, ...] = BETA_ARM
     sigma_arm: Tuple[float, ...] = SIGMA_ARM
     include_basic: bool = True
+    # The cell's optional ``grace:`` options block (feat/grace-critic) —
+    # u_card / rho / ensemble_k / n_bins / ... — threaded into the ablation's
+    # grace arms. The router/interval/deploy ARM-DEFINING switches live on the
+    # CriticSpec and always win over this block.
+    grace_options: Dict = field(default_factory=dict)
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
@@ -338,6 +353,11 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         cfg.get("sweep"), source=str(p)
     )
     critics = _parse_critics_block(cfg.get("critics"), data_regime, source=str(p))
+    grace_options = cfg.get("grace") or {}
+    if not isinstance(grace_options, dict):
+        raise ValueError(
+            f"{p}: 'grace' must be a map of options, got {grace_options!r}."
+        )
 
     return SweepSpec(
         regime=cfg["regime"],
@@ -364,6 +384,7 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         beta_arm=beta_arm,
         sigma_arm=sigma_arm,
         include_basic=include_basic,
+        grace_options=dict(grace_options),
     )
 
 
@@ -710,7 +731,10 @@ def _run_point(
         train_cfg,
         RunConfig(run_dir=str(staging), timestamp="sweep"),
         registry.get(name),
-        critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
+        critic_ablation_cfg=CriticAblationConfig(
+            critics=list(critics),
+            grace=(dict(spec.grace_options) or None),
+        ),
     ).run()
 
     shared_files = (

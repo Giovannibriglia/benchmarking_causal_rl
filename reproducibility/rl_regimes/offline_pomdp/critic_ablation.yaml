@@ -33,7 +33,9 @@ sweep:
 algos:
   - offline_dqn_recurrent
 
+# grace on all three arms (router verdict scored per arm, G4); grace_no_router
+# where a causal gap exists. Recurrent grace = DQN base (like the triad).
 critics:
-  basic:      [observational, proximal, oracle_u, sensitivity]
-  biased:     [observational]
-  confounded: [observational, proximal, oracle_u, sensitivity]
+  basic:      [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
+  biased:     [observational, grace]
+  confounded: [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
