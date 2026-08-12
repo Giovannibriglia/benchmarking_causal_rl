@@ -1,4 +1,12 @@
-# Pinning `k` for the null-calibration gate — fixed-denominator gate, k = 2.4
+# Pinning `k` for the null-calibration gate — fixed-denominator gate
+
+> **SUPERSEDED VALUE.** This document records the original derivation, which pinned
+> `k = 2.4` at the old (256k-step) budget. `k` is budget-dependent and was
+> **re-pinned to 1.5 on 2026-07-21** (feat/repin-k-v3) for the current 50k-step /
+> RE=3000 budget, where the binding CQL endpoints are (0.72, 2.95) and
+> `sqrt(0.72 × 2.95) ≈ 1.46 → 1.5`. The authoritative value is
+> `NULL_CALIBRATION_K = 1.5` in `src/benchmarking/regime_report.py`; the
+> derivation *method* below is unchanged. Every `2.4` below is historical.
 
 > The initial `gap/(cell-noise)` attempt STOPPED (the finding below); it was RESOLVED by
 > switching to a fixed reference denominator — see "Resolution" at the end.
