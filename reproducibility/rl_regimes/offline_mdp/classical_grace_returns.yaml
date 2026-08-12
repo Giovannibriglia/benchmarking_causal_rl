@@ -32,6 +32,11 @@ confounder_c_r: 1.0
 algos:
   - cql
   - iql
+  # The plain DQN floor: the PAIRED CONTRAST for the return-bearing
+  # offline_dqn_grace supplement (R-N1.2 — without it the supplement has no
+  # same-base baseline; iql_grace is the return-leg base-parity CONTROL, its
+  # return must equal the iql floor's within seed noise).
+  - offline_dqn
   - cql_grace
   - iql_grace
   - offline_dqn_grace
