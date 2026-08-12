@@ -983,8 +983,11 @@ class CriticAblationManager:
                         )
                         row["mc_rtg_u0_mean"] = float(g_t[m0].mean().item())
             # GRACE telemetry (router verdict + A3 components + interval
-            # width + inference health); blank for the other critics.
-            machinery = getattr(critic.agent, "_grace_machinery", None)
+            # width + inference health); blank for the other critics (and for
+            # test stubs that carry no agent).
+            machinery = getattr(
+                getattr(critic, "agent", None), "_grace_machinery", None
+            )
             if machinery is not None and machinery.ready:
                 for key, val in machinery.diagnostics().items():
                     if key in row:

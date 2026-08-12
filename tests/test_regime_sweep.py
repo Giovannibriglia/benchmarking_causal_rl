@@ -93,21 +93,42 @@ def test_sweep_yamls_declare_canonical_L(regime):
     declared |= {(0.0, float(s)) for s in sw["confounded"]["sigma"]}
     assert declared == set(sweep_points())
     assert float(sw["basic"]["beta"]) == 0.0 and float(sw["basic"]["sigma"]) == 0.0
-    # if critic sets are declared, they must match the canonical per-arm sets
+    # if critic sets are declared, they must contain the canonical per-arm sets
     # for the cell's data regime (online sets exclude the offline-only
     # oracle_u/sensitivity strategies — no online algo variant exists).
     # EXCEPTION online_pomdp: observational only (online_dqn_proximal has no
     # recurrent trunk; an mlp-proximal-vs-lstm-observational comparison would
     # confound the encoder axis).
+    #
+    # feat/grace-critic (INTENTIONAL pin update): the cells now ALSO declare
+    # the opt-in grace arms — grace on every arm (its router verdict is scored
+    # against the arm label, gate G4) and grace_no_router on basic/confounded
+    # in offline cells (the always-causal ablation switch; offline-only, and
+    # only where a causal gap exists to close). The canonical CORE sets are
+    # still asserted as an ordered prefix, so a dropped/reordered core critic
+    # still fails loudly; the grace tail is asserted exactly.
     if "critics" in cfg:
         data_regime = cfg.get("data_regime", "offline")
         for arm in ("basic", "biased", "confounded"):
-            expected = (
+            core = (
                 ["observational"]
                 if regime == "online_pomdp"
                 else critics_for_arm(arm, data_regime)
             )
-            assert cfg["critics"][arm] == expected, (regime, arm)
+            declared_critics = cfg["critics"][arm]
+            assert declared_critics[: len(core)] == core, (regime, arm)
+            tail = declared_critics[len(core) :]
+            if regime == "online_pomdp":
+                expected_tail: list[str] = []  # no recurrent online grace
+            elif arm == "biased":
+                expected_tail = ["grace"]
+            elif data_regime == "online":
+                # ONLINE_STRATEGIES already contains grace -> it is in the
+                # core; grace_no_router is offline-only.
+                expected_tail = []
+            else:
+                expected_tail = ["grace", "grace_no_router"]
+            assert tail == expected_tail, (regime, arm, tail)
 
 
 # --------------------------------------------------------------------------- #
@@ -229,8 +250,11 @@ def test_m2_offline_mdp_cell_end_to_end(tmp_path):
         "beta_050_sigma_000",
         "beta_075_sigma_000",
     ]
-    # 19 leaves = basic(4) + biased(1×3) + confounded(4×3); each a full run dir.
-    assert len(written) == 19
+    # 30 leaves = basic(6) + biased(2×3) + confounded(6×3); each a full run
+    # dir. (INTENTIONAL pin update, feat/grace-critic: the cell YAML now
+    # declares the grace arms — grace on every arm, grace_no_router on
+    # basic/confounded — so the end-to-end cell exercises them too.)
+    assert len(written) == 30
     for leaf in written:
         assert _LEAF_FILES <= {f.name for f in Path(leaf).iterdir()}, leaf
     _purge("m2test/")
@@ -296,8 +320,11 @@ def test_m4_basic_runs_full_critic_set_and_emits_raw_signal(tmp_path):
         device=_DEV,
     )
     basic = root / "offline_mdp" / "beta_000_sigma_000" / "CartPole-v1" / "cql"
-    # the full set actually ran -> all four per-critic leaves exist.
+    # the full set actually ran -> all six per-critic leaves exist
+    # (feat/grace-critic: + the two grace arms, intentional pin update).
     assert sorted(p.name for p in basic.iterdir()) == [
+        "grace",
+        "grace_no_router",
         "observational",
         "oracle_u",
         "proximal",
