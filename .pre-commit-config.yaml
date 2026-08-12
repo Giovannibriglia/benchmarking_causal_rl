@@ -1,3 +1,6 @@
+# nbn/ is a pinned vendored snapshot (see nbn/NOTICE.md) — formatters/linters
+# must not touch it or the tree stops being byte-diffable against upstream.
+exclude: ^nbn/
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
