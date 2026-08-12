@@ -744,7 +744,6 @@ class TemplateCBN:
             CategoricalTableMechanism,
             DiscreteVariable,
             NeuralBayesianNetwork,
-            TensorVariableElimination,
         )
 
         p = self.params
@@ -765,9 +764,13 @@ class TemplateCBN:
         net_mut = NeuralBayesianNetwork(mut_edges, variables, device=str(self.device))
 
         def _mech(probs: torch.Tensor, parent_cards, n_classes: int):
+            # The same private-field population pattern as
+            # NeuralBayesianNetwork.from_bif (network.py) — incl. _n_classes,
+            # which tabulate()/VE need.
             m = CategoricalTableMechanism()
             flat = probs.reshape(-1, n_classes).clamp_min(_EPS)
             m._logits = torch.log(flat).to(self.device)
+            m._n_classes = int(n_classes)
             m._parent_cards = list(parent_cards)
             strides: list[int] = []
             acc = 1
@@ -841,8 +844,26 @@ class TemplateCBN:
         self._nbn_obs, self._nbn_mut = net_obs, net_mut
         # A7: the VE plan/factor caches key on id(model) — every (re)build MUST
         # invalidate, or a stale mutilation answers the next query.
-        TensorVariableElimination.invalidate_cache()
+        self.invalidate_nbn_cache()
         return net_obs, net_mut
+
+    def invalidate_nbn_cache(self) -> None:
+        """A7: nbn's VE caches are INSTANCE-level dicts keyed by ``id(model)``
+        (``tensor_ve.py``), and each model lazily holds its own engine. After
+        any in-place CPT change or a rebuild, drop the caches on any LIVE
+        engine (HybridRouter wraps its VE as ``_ve``) and null the lazy engine
+        slot so the next query rebuilds clean — the same invalidation
+        ``NeuralBayesianNetwork.to()`` performs."""
+        for net in (self._nbn_obs, self._nbn_mut):
+            if net is None:
+                continue
+            eng = getattr(net, "_engine", None)
+            ve = getattr(eng, "_ve", None)
+            if ve is None and hasattr(eng, "_factor_cache"):
+                ve = eng
+            if ve is not None:
+                ve.invalidate_cache(net)
+            net._engine = None
 
     # --------------------------------------------------------------- ensemble
     def bootstrap_q_do(
