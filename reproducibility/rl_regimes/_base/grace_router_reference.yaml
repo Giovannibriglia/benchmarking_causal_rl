@@ -1,0 +1,17 @@
+# GRACE router null-calibration reference (E0, feat/grace-critic).
+# Per-env thresholds = RegimeRouter.calibrate over basic-arm (sigma=0)
+# null runs generated INDEPENDENTLY of the judged cells (own seeds &
+# dataset prefix), k = NULL_CALIBRATION_K. Missing env -> the router
+# is UNCALIBRATED and serves Q_obs (never a silent causal route).
+# Tool: tools/calibrate_grace_router.py (seeds [100, 101, 102, 103, 104]).
+reference:
+  Acrobot-v1:
+    coverage_thr: 0.09001074067947107
+    delta_a_thr: 4.28192064626929e-05
+    delta_r_thr: 0.5259953911453406
+    width_thr: 0.2997111957282163
+  CartPole-v1:
+    coverage_thr: 0.1549548114731527
+    delta_a_thr: -0.0013863262251499887
+    delta_r_thr: 0.48918870405347864
+    width_thr: 0.34890811171096525
