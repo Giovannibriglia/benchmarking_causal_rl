@@ -4,6 +4,12 @@
 # dataset prefix), k = NULL_CALIBRATION_K. Missing env -> the router
 # is UNCALIBRATED and serves Q_obs (never a silent causal route).
 # Tool: tools/calibrate_grace_router.py (seeds [100, 101, 102, 103, 104]).
+# Raw per-seed null components: grace_router_reference_components.csv
+# (deterministic CPU recomputation on the stored null datasets; the three
+# CUDA-run originals that survived the E0 log match to 4-5 decimals —
+# scatter-add accumulation-order noise only). Paper-grade A3 validation:
+# delta_a in [-0.0055, +0.0001] on ALL 10 null runs while delta_r fires
+# (0.11-0.46, the basic arm's action-independent c_r*U reward noise).
 reference:
   Acrobot-v1:
     coverage_thr: 0.09001074067947107
