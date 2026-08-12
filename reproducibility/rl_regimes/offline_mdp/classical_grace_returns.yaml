@@ -1,0 +1,46 @@
+# offline_mdp / CLASSICAL — the E2 return-level comparison (feat/grace-critic,
+# gate G2's return leg; amendment A2's algo set + one supplementary arm).
+#
+# The strategy-critic ablation shares ONE baseline actor, so return cannot
+# differ by critic there — return-level comparisons run through the classical
+# simulation with each identification strategy as an ALGO VARIANT deploying
+# its own policy. Points: the basic origin (no-harm leg) + the strongest
+# confounded point (sigma = 1.0), per the approved Night-1 scope.
+#
+# Arms (A2): cql, iql floors; cql_grace, iql_grace (grace's u0-stratum deploy);
+# offline_dqn_proximal_action (the wired action-dependent proximal headline);
+# offline_dqn_sensitivity (the MSM bound). SUPPLEMENTARY (flagged, additive):
+# offline_dqn_grace — a DQN-family grace return readout, because iql_grace's
+# return is STRUCTURALLY inert (IQL acts via its AWR policy_net, which trains
+# on q_obs advantages; the routed head never enters IQL's act path — reported
+# as such, not hidden). cql acts via q_network -> the routed policy deploys.
+#
+# Run:
+#   uv run python main.py --reproduce rl_regimes/offline_mdp/classical_grace_returns.yaml
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: classical
+
+max_workers: 4
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+
+algos:
+  - cql
+  - iql
+  - cql_grace
+  - iql_grace
+  - offline_dqn_grace
+  - offline_dqn_proximal_action
+  - offline_dqn_sensitivity
+
+# basic origin + the strongest confounded point only (biased arm off — the
+# return gate lives on the confounded axis; explicit-off syntax).
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [1.00] }
