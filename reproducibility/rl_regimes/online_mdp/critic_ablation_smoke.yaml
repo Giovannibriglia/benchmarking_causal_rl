@@ -19,9 +19,9 @@ algos:
 seeds:
   - 0
 critics:
-  basic:      [observational, proximal, grace]
-  biased:     [observational, grace]
-  confounded: [observational, proximal, grace]
+  basic:      [observational, proximal]
+  biased:     [observational]
+  confounded: [observational, proximal]
 budgets:
   # 20 x 64 x 2 = 2560 collection steps crosses the 1000-step off-policy warmup.
   n_episodes: 20

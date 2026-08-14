@@ -53,10 +53,7 @@ _TINY = {
 }
 # 19 leaves per (env, seed) group for offline_mdp with ONE algo:
 #   basic(4) + biased(1×3) + confounded(4×3).
-# 30 = basic(6) + biased(2x3) + confounded(6x3) — the offline_mdp cell's
-# critic sets incl. the grace arms (feat/grace-critic, intentional pin update;
-# was 19 before the two grace arms joined).
-_LEAVES_PER_GROUP = 30
+_LEAVES_PER_GROUP = 19
 
 
 def _purge(prefix: str) -> None:

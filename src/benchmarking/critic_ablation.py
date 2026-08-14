@@ -75,7 +75,7 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # byte-identity. σ=0 = pure cost; σ>0 = the same shrinkage buying deconfounding
     # robustness. A REPORTED RESULT; blank only for the non-sensitivity critics.
     "pessimism_cost",
-    # --- ADDITIVE columns (feat/grace-critic; decisions D3 + GRACE telemetry).
+    # --- ADDITIVE columns: MC-anchored value accuracy.
     # MC-anchored value accuracy (D3): Q(s, a_data) scored against the ABSOLUTE
     # Monte-Carlo return-to-go G_t computed from the dataset episodes (the
     # budget-independent anchor ported from tools/probe_offline_budget_v2.py;
@@ -83,23 +83,12 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # set). ``_u0`` restricts to U=0 episodes — the clean-world deployment-
     # stratum reference for the confounded arms (its continuation is pi_b|U=0,
     # NOT the target policy — a data-consistent reference, not an
-    # interventional oracle; docs/grace.md). Evaluation-side use of the LOGGED
+    # interventional oracle). Evaluation-side use of the LOGGED
     # U only; blank when the buffer carries no U.
     "value_mse_to_mc",
     "value_mse_to_mc_u0",
     "mc_rtg_mean",
     "mc_rtg_u0_mean",
-    # GRACE router/telemetry (blank for non-grace critics): the A3 channel-
-    # split detection components, the router's verdict + served head, the
-    # bootstrap-interval width, and inference-health telemetry.
-    "router_verdict",
-    "router_serve",
-    "router_delta_a",
-    "router_delta_r",
-    "router_coverage",
-    "ensemble_width",
-    "grace_separability",
-    "grace_belief_entropy",
 ]
 
 _EPS = 1e-8
@@ -113,9 +102,7 @@ _GAP_NOISE_FLOOR_MSE = 1e-2
 # observational denominator). Was proximal-only; grace joined on
 # feat/grace-critic (same semantics: adaptive deconfounders judged on how much
 # of the observational->oracle gap they close).
-_GAP_CLOSED_CRITICS: frozenset[str] = frozenset(
-    {"proximal", "grace", "grace_no_router"}
-)
+_GAP_CLOSED_CRITICS: frozenset[str] = frozenset({"proximal"})
 
 # --ablation-critics base-algo name -> proximal/oracle_u builder suffix. The
 # recurrent base (offline_dqn_recurrent, the Cell-8 POMDP floor) resolves to the
@@ -276,8 +263,6 @@ class CriticAblationConfig:
             "hidden_dims": list(self.hidden_dims),
             "bins": int(self.bins),
         }
-        if self.grace:
-            out["grace"] = dict(self.grace)
         return out
 
 
@@ -352,8 +337,6 @@ def _build_strategy_critic(
     device: torch.device,
     encoder: str = "mlp",
     gamma: float = 1.0,
-    grace_options: dict | None = None,
-    env_id: str | None = None,
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
     (no estimator reimplementation). ``builder`` selects the identification arm
@@ -508,35 +491,6 @@ def _build_strategy_critic(
             "iql": build_sensitivity_iql,
         }[suffix]
         return fn(gamma_sensitivity=gamma, **kwargs)
-    if builder == "grace":
-        # SHARES THE BASE ALGO'S CLASS (the base-parity requirement): the base
-        # floor builder + the Grace strategy + the routed serving wrapper.
-        # ``grace_options`` = spec defaults merged under the cell's ``grace:``
-        # block; ``_env_id`` resolves the router's per-env null-calibrated
-        # thresholds (missing reference -> uncalibrated -> serves Q_obs).
-        gopts = {**(grace_options or {})}
-        if env_id is not None:
-            gopts["_env_id"] = env_id
-        if recurrent:
-            from src.rl.offline.grace import build_grace_dqn_recurrent
-
-            return build_grace_dqn_recurrent(
-                critic_network=encoder, grace_options=gopts, **kwargs
-            )
-        from src.rl.offline.grace import (
-            build_grace_bcq,
-            build_grace_cql,
-            build_grace_dqn,
-            build_grace_iql,
-        )
-
-        fn = {
-            "dqn": build_grace_dqn,
-            "bcq": build_grace_bcq,
-            "cql": build_grace_cql,
-            "iql": build_grace_iql,
-        }[suffix]
-        return fn(grace_options=gopts, **kwargs)
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 
@@ -568,8 +522,6 @@ class StrategyCritic:
         action_dim: int,
         device: torch.device,
         encoder: str = "mlp",
-        grace_config: dict | None = None,
-        env_id: str | None = None,
     ) -> None:
         self.name = name
         self.spec = spec
@@ -578,11 +530,6 @@ class StrategyCritic:
         # Γ (MSM bound) read from THIS critic's spec — a method parameter threaded
         # into the sensitivity builder, inert for the other strategy critics.
         self.gamma = float(spec.gamma)
-        # GRACE options: spec defaults (the router/interval/deploy switches
-        # that DEFINE the arm) override the cell-level block — so a cell's
-        # ``grace:`` block tunes u_card/bins/K etc. without silently turning
-        # grace_no_router back into grace.
-        grace_options = {**(grace_config or {}), **dict(spec.grace)}
         _net, agent = _build_strategy_critic(
             spec.builder,
             base_algo,
@@ -591,8 +538,6 @@ class StrategyCritic:
             device,
             encoder,
             self.gamma,
-            grace_options=grace_options if spec.builder == "grace" else None,
-            env_id=env_id,
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
@@ -641,7 +586,6 @@ class CriticAblationManager:
         base_algo: str | None = None,
         action_dim: int | None = None,
         encoder: str = "mlp",
-        env_id: str | None = None,
     ) -> None:
         self.config = config
         self.gamma = gamma
@@ -690,8 +634,6 @@ class CriticAblationManager:
                     action_dim,
                     device,
                     self.encoder,
-                    grace_config=config.grace,
-                    env_id=env_id,
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")
@@ -982,16 +924,6 @@ class CriticAblationManager:
                             torch.mean((q_c[m0] - g_t[m0]) ** 2).item()
                         )
                         row["mc_rtg_u0_mean"] = float(g_t[m0].mean().item())
-            # GRACE telemetry (router verdict + A3 components + interval
-            # width + inference health); blank for the other critics (and for
-            # test stubs that carry no agent).
-            machinery = getattr(
-                getattr(critic, "agent", None), "_grace_machinery", None
-            )
-            if machinery is not None and machinery.ready:
-                for key, val in machinery.diagnostics().items():
-                    if key in row:
-                        row[key] = val
             rows.append(row)
         return rows
 

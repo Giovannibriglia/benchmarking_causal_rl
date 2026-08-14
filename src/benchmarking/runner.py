@@ -411,10 +411,6 @@ class BenchmarkRunner:
             device=self.device,
             action_space=act_space,
             obs_shape=self.obs_shape,
-            # The env id, for builders whose serving depends on per-env
-            # calibration references (grace's router). Every registered
-            # builder takes **kwargs; the others ignore it.
-            env_id=self.env_cfg.env_id,
             # Per-component network selection (on-policy ActorCritic). Off-policy
             # builders take **kwargs and ignore these. network_kwargs carries
             # optional hidden_dim/num_layers for recurrent trunks.
@@ -512,9 +508,6 @@ class BenchmarkRunner:
                     base_algo=self.train_cfg.algorithm,
                     action_dim=self.action_dim,
                     encoder=getattr(self.train_cfg, "critic_network", "mlp") or "mlp",
-                    # grace's router resolves its per-env null-calibrated
-                    # thresholds by env id (missing entry -> uncalibrated).
-                    env_id=self.env_cfg.env_id,
                 )
             else:
                 # V-head ablation (standard_mlp/residual): the frozen on-policy path.

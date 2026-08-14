@@ -324,14 +324,8 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
 
     # null-calibration verdict computed at the cell level on the FIXED reference
     # denominator (loaded from null_cal_reference.yaml for CartPole-v1/cql).
-    # feat/grace-critic (INTENTIONAL pin update): the cell now hosts the grace
-    # arms, so an ADDITIVE grace row (same fixed denominator, gate G1) joins
-    # the proximal one — 2 rows, the grace row carrying critic="grace".
-    assert len(nc) == 2
-    grace_rows = [r for r in nc if r.get("critic") == "grace"]
-    assert len(grace_rows) == 1
-    assert grace_rows[0]["noise_ref"] == 132.26
-    row = next(r for r in nc if "critic" not in r)
+    assert len(nc) == 1
+    row = nc[0]
     assert row["env"] == "CartPole-v1" and row["algo"] == "cql"
     assert row["n_seeds"] == 5
     for col in ("gap", "noise_ref", "cell_noise", "ratio", "null_calibrated"):

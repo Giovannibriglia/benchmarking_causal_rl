@@ -1,54 +1,32 @@
-"""GRACE — General Regime-Adaptive Causal Estimator (feat/grace-critic).
+"""GRACE v2 — the diagram-assumption critic.
 
-Tabular-first slice: a declared-graph template CBN (``cell_graph``/``cbn``)
-with two likelihood channels, an exact belief filter over the discrete latent
-block (``filter``), a null-calibrated regime router with channel-split
-detection statistics (``router``), bootstrap-ensemble interval heads, and the
-routed serving surface (``heads``/``machinery``), plugged into the benchmark
-through the base learners' strategy seam (``builders``).
+v2 asserts exactly ONE thing per scenario: the declared causal diagram
+(``cell_graph``). Everything else is derived from it, learned from data, or
+selected by a held-out criterion.
+
+Currently exported: L1, the declaration layer. The v2 estimator (L2-L5) lands
+in subsequent commits; the v1 tabular estimator it replaces was deleted
+wholesale rather than ported, and is preserved on ``feat/grace-critic``.
 """
 
-from src.rl.offline.grace.builders import (
-    build_grace_bcq,
-    build_grace_cql,
-    build_grace_dqn,
-    build_grace_dqn_recurrent,
-    build_grace_iql,
-    build_grace_online_dqn,
-)
-from src.rl.offline.grace.cbn import EpisodeData, GraceOptions, TemplateCBN
 from src.rl.offline.grace.cell_graph import (
-    cell_graph,
-    CELL_GRAPHS,
+    Assumption,
+    CATALOGUE,
+    catalogue_entry,
     CellGraph,
-    identification_report,
+    GraphNode,
+    NODE_KINDS,
+    STATUSES,
+    Verdict,
 )
-from src.rl.offline.grace.discretizer import Discretizer, RewardCodec
-from src.rl.offline.grace.filter import BeliefFilter
-from src.rl.offline.grace.heads import GraceQNetwork, GraceRecurrentQNetwork
-from src.rl.offline.grace.machinery import GraceMachinery
-from src.rl.offline.grace.router import RegimeRouter, RouterVerdict
 
 __all__ = [
-    "BeliefFilter",
-    "CELL_GRAPHS",
+    "Assumption",
+    "CATALOGUE",
     "CellGraph",
-    "cell_graph",
-    "Discretizer",
-    "EpisodeData",
-    "GraceMachinery",
-    "GraceOptions",
-    "GraceQNetwork",
-    "GraceRecurrentQNetwork",
-    "identification_report",
-    "RegimeRouter",
-    "RewardCodec",
-    "RouterVerdict",
-    "TemplateCBN",
-    "build_grace_bcq",
-    "build_grace_cql",
-    "build_grace_dqn",
-    "build_grace_dqn_recurrent",
-    "build_grace_iql",
-    "build_grace_online_dqn",
+    "GraphNode",
+    "NODE_KINDS",
+    "STATUSES",
+    "Verdict",
+    "catalogue_entry",
 ]

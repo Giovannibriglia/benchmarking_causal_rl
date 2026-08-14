@@ -9,7 +9,7 @@ unchanged per rung:
     <results-root>/re_{0300|1000|3000}/{regime}/beta_*_sigma_*/{env}/{algo}/{critic}/{seed}/
 
 G3 (approved thresholds): tau = the observational arm's value-MSE at the
-largest RE; grace must reach <= tau at <= half the data (log-RE
+largest RE; the adaptive arm must reach <= tau at <= half the data (log-RE
 interpolation). The scorer lives in the reporting step; this file only runs
 the ladder and stamps a manifest with full provenance.
 

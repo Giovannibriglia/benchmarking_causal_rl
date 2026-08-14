@@ -33,9 +33,8 @@ algos:
   - dqn
 
 # Online critic sets: only strategies with an online algo variant.
-# grace resolves online to the online_dqn_grace algo variant (refresh-cadence
 # CBN, Gate-B label persistence); scored per arm like the offline router (G4).
 critics:
-  basic:      [observational, proximal, grace]
-  biased:     [observational, grace]
-  confounded: [observational, proximal, grace]
+  basic:      [observational, proximal]
+  biased:     [observational]
+  confounded: [observational, proximal]

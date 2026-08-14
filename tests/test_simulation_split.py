@@ -294,12 +294,10 @@ def test_expected_leaves_per_simulation(tmp_path):
             tmp_path, data_regime="online", simulation="critic_ablation", algos=["dqn"]
         )
     )
-    # online ablation defaults: basic [obs, prox, grace] + biased [obs] +
-    # confounded [obs, prox, grace] = 7 leaves for the reduced 3-point L
-    # (feat/grace-critic: grace joined ONLINE_STRATEGIES — intentional pin
-    # update).
+    # online ablation defaults: basic [obs, prox] + biased [obs] + confounded
+    # [obs, prox] = 5 leaves for the reduced 3-point L
     leaves = _expected_leaves(online_ab, ["dqn"], "CartPole-v1", 0, "results")
-    assert len(leaves) == 7
+    assert len(leaves) == 5
     assert _leaf_marker_files(online_ab) == ("config.yaml", "eval_metrics.csv")
 
     offline_ab = load_sweep_spec(
@@ -350,13 +348,7 @@ def test_cells_ship_both_simulations(regime, stem):
                 # strategies would confound the encoder axis
                 assert spec.critics_for(arm) == ["observational"]
             else:
-                # feat/grace-critic: grace resolves online (online_dqn_grace)
-                # — intentional pin update.
-                assert spec.critics_for(arm) == [
-                    "observational",
-                    "proximal",
-                    "grace",
-                ]
+                assert spec.critics_for(arm) == ["observational", "proximal"]
     if "smoke" in stem:
         assert spec.budget("n_episodes", 999) <= 20  # tiny budget baked in
 
@@ -424,19 +416,15 @@ def test_online_ablation_cell_end_to_end(tmp_path):
         results_root=root,
         device="cpu",
     )
-    # basic [obs, prox, grace] + biased [obs] + confounded [obs, prox, grace]
-    # = 7 leaves (feat/grace-critic: the online grace variant runs end-to-end
-    # here too — intentional pin update).
-    assert len(written) == 7
+    # basic [obs, prox] + biased [obs] + confounded [obs, prox] = 5 leaves
+    assert len(written) == 5
     recs = iter_leaves(root, "online_mdp")
     assert {(r["arm"], r["critic"]) for r in recs} == {
         ("basic", "observational"),
         ("basic", "proximal"),
-        ("basic", "grace"),
         ("biased", "observational"),
         ("confounded", "observational"),
         ("confounded", "proximal"),
-        ("confounded", "grace"),
     }
     # the {algo} segment stays the BASE name (dqn), never the variant
     assert {r["algo"] for r in recs} == {"dqn"}

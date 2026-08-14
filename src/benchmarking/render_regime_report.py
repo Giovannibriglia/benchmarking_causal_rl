@@ -51,14 +51,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from src.benchmarking.regime_report import build_report  # noqa: E402
 
-_CRITIC_ORDER = (
-    "observational",
-    "proximal",
-    "oracle_u",
-    "sensitivity",
-    "grace",
-    "grace_no_router",
-)
+_CRITIC_ORDER = ("observational", "proximal", "oracle_u", "sensitivity")
 
 
 def _num(x) -> float:

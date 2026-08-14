@@ -30,12 +30,7 @@ budgets:
   rollout_episodes: 40
   offline_grad_steps: 40
 
-# Smoke exercises the grace arms end-to-end too (tiny EM/ensemble budgets).
 critics:
-  basic:      [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
-  biased:     [observational, grace]
-  confounded: [observational, proximal, oracle_u, sensitivity, grace, grace_no_router]
-grace:
-  em_iters: 4
-  ensemble_k: 2
-  n_bins: 3
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  biased:     [observational]
+  confounded: [observational, proximal, oracle_u, sensitivity]

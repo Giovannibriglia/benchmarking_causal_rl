@@ -1,31 +1,36 @@
-"""Declared causal graphs for the GRACE template CBN (amendment A9).
+"""Declared causal diagrams — GRACE v2's ENTIRE assumption surface.
 
-One ``CellGraph`` per (cell, arm) family, encoding exactly the per-cell SCMs
-formalized in the paper and enforced by the generation-time gates
-(``compute_confounding_signature`` / ``_action_dependent_signature``):
+v2 asserts exactly one thing per scenario: the causal diagram. Everything else
+is derived from it (L2 identification, L5's testable implications), learned
+from data (mechanism parameters), or selected by a held-out criterion
+(``u_card``, mechanism class). A quantity that is none of those is a defect.
 
-  * ``U -> A`` — OBSERVATIONAL channel only (the behavior policy's
-    confounded action choice; removed by graph surgery in the mutilated
-    channel). Declared on the confounded arm and on the fitting TEMPLATE;
-    absent on the basic arm (the marginally-matched sigma=0 construction makes
-    A independent of U *exactly*, and the generation gate asserts it) and on the
-    biased arm (no U at all).
-  * ``U -> R`` — the action-gated reward channel ``r += c_r * U * 1[a=a_bad]``
-    (``action_gated_reward=True``). Present wherever U is (including the basic
-    arm: ``c_r_for`` keeps c_r > 0 at sigma=0, where the noise is
-    action-independent and therefore NOT confounding).
-  * ``S -> O`` — the emission. Identity in MDP cells (O observed = S); a real
-    emission in POMDP cells, where S is latent and O is the masked observation.
-  * ``S, A -> S'`` dynamics; ``S, A[, U] -> R``; optional ``U -> U'``
-    persistence behind the rho switch (declared, default off).
-  * PROXY NODES: declared EXPLICITLY ABSENT in every current cell
-    (``proxy_nodes=()``): the benchmark constructs no confounder-correlated
-    proxies (Phase-1 audit), so proximal-style point-identification claims are
-    never made and the router must reflect it (brief section B1's conditional).
+This module is therefore four things at once, and is authored as a reviewable
+artifact rather than embedded implicitly in estimator code:
 
-``TemplateCBN`` consumes a ``CellGraph`` and builds BOTH channels from it —
-the observational net from the full edge list, the mutilated net from the same
-list minus edges into A. No edge is introduced anywhere else (A9.2).
+  1. L1 — the declaration itself, and L2's input;
+  2. gate V2's ground truth (L2 must reproduce every ``Verdict`` below);
+  3. L5's source of testable implications;
+  4. the taxonomy's identifiability axis.
+
+The human-readable companion is ``docs/diagram_catalogue.md``; a test asserts
+the two agree entry-for-entry.
+
+TWO VERDICTS PER ENTRY. ``q1`` (per-step ``E[R_t | do(a), s]``) and ``q2``
+(sequential ``V^pi``) are declared separately BECAUSE THEY DIFFER, and a
+single-verdict design would silently license a sequential point estimate from
+a per-step argument:
+
+  * D-F is q1 point-ID (conditioning on the observed emission blocks the
+    state back-door) but q2 NON-ID (a history-dependent policy's value needs
+    the latent-state trajectory law; per-step adjustment does not compose);
+  * D-B is q1 point-ID on the nonparametric proximal bridge, but q2 point-ID
+    only on the STRICTLY STRONGER finite-K latent-class assumption, because
+    the sequential value integrates the exogenous P(U) while the per-step
+    bridge delivers the behaviour-tilted P(U | X).
+
+Each ``Verdict`` therefore carries the ``assumptions`` it rests on, and every
+number produced under it must travel with that label (see ``Verdict.label``).
 """
 
 from __future__ import annotations
@@ -34,47 +39,146 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Tuple
 
 __all__ = [
-    "GraphNode",
+    "Assumption",
     "CellGraph",
-    "cell_graph",
-    "identification_report",
-    "CELL_GRAPHS",
+    "GraphNode",
+    "Verdict",
+    "CATALOGUE",
+    "NODE_KINDS",
+    "STATUSES",
+    "catalogue_entry",
 ]
 
-ARMS: Tuple[str, ...] = ("template", "basic", "biased", "confounded")
-OBSERVABILITIES: Tuple[str, ...] = ("mdp", "pomdp")
+# Node roles. ``proxy`` and ``instrument`` are CONSTRUCTIBLE kinds in v2 (in
+# v1 "proxy" existed only in a comment and a declared proxy node would have
+# raised downstream).
+NODE_KINDS: Tuple[str, ...] = (
+    "state",
+    "latent_confounder",
+    "action",
+    "reward",
+    "observation",
+    "proxy",
+    "instrument",
+)
+
+STATUSES: Tuple[str, ...] = ("point_id", "bounds_only", "non_id")
+
+CRITERIA: Tuple[str, ...] = (
+    "none",
+    "backdoor",
+    "frontdoor",
+    "proximal",
+    "proximal_lagged",
+    "iv",
+    "sequential_composition",
+)
 
 
 @dataclass(frozen=True)
 class GraphNode:
+    """One node. ``lag`` is explicit rather than encoded in a ``_next`` naming
+    convention, so temporal structure is data, not string parsing."""
+
     name: str
-    # "state" | "latent_confounder" | "action" | "reward" | "observation"
-    # | "proxy" — the proxy kind exists so absence is a declaration, not an
-    # omitted concept (A9.1).
     kind: str
     observed: bool
+    lag: int = 0
+
+    def __post_init__(self) -> None:
+        if self.kind not in NODE_KINDS:
+            raise ValueError(f"unknown node kind {self.kind!r}")
+
+
+@dataclass(frozen=True)
+class Assumption:
+    """A named assumption a verdict rests on.
+
+    ``testable_shadow`` is the observable consequence L5 can test, or ``None``
+    when the assumption has NO observable shadow. Recording ``None`` explicitly
+    is the point: it is how the catalogue states which of its own assumptions
+    are beyond falsification (C4).
+    """
+
+    name: str
+    statement: str
+    testable_shadow: str | None = None
+
+    @property
+    def untestable(self) -> bool:
+        return self.testable_shadow is None
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """What the declared diagram licenses for one query."""
+
+    status: str
+    criterion: str
+    assumptions: Tuple[str, ...] = ()
+    adjustment_set: Tuple[str, ...] = ()
+    # D-B's q2 point-ID rests on a derivation under review; it ships OFF so the
+    # conservative bounds reading holds unless explicitly enabled (C4).
+    gated_off_by_default: bool = False
+    note: str = ""
+
+    def __post_init__(self) -> None:
+        if self.status not in STATUSES:
+            raise ValueError(f"unknown status {self.status!r}")
+        if self.criterion not in CRITERIA:
+            raise ValueError(f"unknown criterion {self.criterion!r}")
+
+    @property
+    def effective_status(self) -> str:
+        """What v2 ACTUALLY serves. A gated point-ID degrades to bounds_only
+        unless the gate is explicitly opened."""
+        if self.gated_off_by_default and self.status == "point_id":
+            return "bounds_only"
+        return self.status
+
+    def label(self, enabled: bool = False) -> str:
+        """The assumption label that must travel with every number produced
+        under this verdict (C3) — attached to the estimate object, never left
+        to prose."""
+        status = (
+            self.status if (enabled or not self.gated_off_by_default) else "bounds_only"
+        )
+        if not self.assumptions:
+            return f"{status} ({self.criterion})"
+        return f"{status} ({self.criterion}; assumes {', '.join(self.assumptions)})"
 
 
 @dataclass(frozen=True)
 class CellGraph:
-    """A declared per-(cell, arm) SCM. ``edges`` is the OBSERVATIONAL-channel
-    edge list; the mutilated channel is derived (never re-declared) as the
-    same list minus in-edges of A."""
+    """A declared SCM for one scenario.
 
-    name: str  # e.g. "offline_mdp/confounded"
+    ``edges`` is the OBSERVATIONAL-channel edge list; the mutilated channel is
+    DERIVED (never re-declared) as the same list minus in-edges of the
+    intervention target.
+    """
+
+    id: str
+    name: str
     nodes: Tuple[GraphNode, ...]
     edges: Tuple[Tuple[str, str], ...]
-    action_gated_reward: bool  # U->R is r += c_r*U*1[a=a_bad]
-    rho_persistence: bool  # U->U' declared (fit behind opts.rho)
-    identity_emission: bool  # MDP: O = S exactly
-    proxy_nodes: Tuple[str, ...] = ()  # EXPLICITLY absent in all current cells
+    q1: Verdict
+    q2: Verdict
+    intervention_target: str = "A"
+    proxy_nodes: Tuple[str, ...] = ()
+    instrument_nodes: Tuple[str, ...] = ()
+    persistent_latent: bool = False
+    assumptions: Tuple[Assumption, ...] = ()
+    testable_implications: Tuple[str, ...] = ()
+    asserted_by: Tuple[str, ...] = ()
+    # Filled from the taxonomy manuscript, which is not in this repository.
+    paper_figure: str = "TODO-verify"
 
     # ------------------------------------------------------------- accessors
     def node(self, name: str) -> GraphNode:
         for n in self.nodes:
             if n.name == name:
                 return n
-        raise KeyError(f"{self.name}: no node '{name}'")
+        raise KeyError(f"{self.id}: no node {name!r}")
 
     def has_node(self, name: str) -> bool:
         return any(n.name == name for n in self.nodes)
@@ -86,39 +190,67 @@ class CellGraph:
         return tuple(e for e in self.edges if e[1] == name)
 
     def mutilated_edges(self) -> Tuple[Tuple[str, str], ...]:
-        """The do(A)-surgery edge list: every edge INTO A removed. This is the
-        ONLY place the mutilation is defined (A9.2)."""
-        return tuple(e for e in self.edges if e[1] != "A")
+        """The do()-surgery edge list: every edge into the intervention target
+        removed. THE ONLY definition of the mutilation."""
+        return tuple(e for e in self.edges if e[1] != self.intervention_target)
 
     @property
     def observational_only(self) -> FrozenSet[Tuple[str, str]]:
-        """Edges present in the observational channel but not the mutilated
-        one — by construction, exactly the in-edges of A."""
-        return frozenset(self.in_edges_of("A"))
+        return frozenset(self.in_edges_of(self.intervention_target))
+
+    @property
+    def latents(self) -> Tuple[GraphNode, ...]:
+        return tuple(n for n in self.nodes if not n.observed)
 
     @property
     def confounded(self) -> bool:
-        """Does the DECLARED structure contain the U -> A backdoor edge?"""
-        return self.has_edge("U", "A")
+        """Does a latent confounder point into the intervention target?"""
+        return any(
+            self.has_edge(n.name, self.intervention_target)
+            for n in self.nodes
+            if n.kind == "latent_confounder"
+        )
 
     @property
-    def pomdp(self) -> bool:
-        return self.has_node("S") and not self.node("S").observed
+    def dynamics_confounded(self) -> bool:
+        """Does a latent point into the next state? This is the guard that
+        decides whether q2 can decompose at all: with unconfounded dynamics
+        the occupancy under do(pi) is latent-independent, and V^pi factors
+        into an identified occupancy times a per-(s,a) reward. With
+        U -> S_next it does not, and no per-step result composes."""
+        return any(
+            self.has_edge(n.name, "S_next") for n in self.nodes if not n.observed
+        )
+
+    def assumption(self, name: str) -> Assumption:
+        for a in self.assumptions:
+            if a.name == name:
+                return a
+        raise KeyError(f"{self.id}: no assumption {name!r}")
+
+    @property
+    def untestable_assumptions(self) -> Tuple[str, ...]:
+        return tuple(a.name for a in self.assumptions if a.untestable)
 
     # ------------------------------------------------------------ validation
     def validate(self) -> None:
-        """The repo's standing diagram-validity checks (A9.4): valid DAG, no
-        bidirectional action edges, state nodes present (with an emission path)
-        in partially observed cells, edges only between declared nodes."""
+        """Structural checks: valid DAG, no bidirectional edges, declared nodes
+        only, an emission for every latent state, and declared proxy/instrument
+        names that actually exist with the right kind."""
         names = {n.name for n in self.nodes}
+        if self.intervention_target not in names:
+            raise ValueError(
+                f"{self.id}: intervention target {self.intervention_target!r} "
+                "is not a declared node"
+            )
         for src, dst in self.edges:
             if src not in names or dst not in names:
                 raise ValueError(
-                    f"{self.name}: edge ({src},{dst}) uses undeclared node"
+                    f"{self.id}: edge ({src},{dst}) uses an undeclared node"
                 )
             if (dst, src) in self.edges:
-                raise ValueError(f"{self.name}: bidirectional edge ({src},{dst})")
-        # Acyclicity (Kahn over the tiny declared graph).
+                raise ValueError(f"{self.id}: bidirectional edge ({src},{dst})")
+        # Acyclicity (Kahn).
         indeg = {n: 0 for n in names}
         for _, dst in self.edges:
             indeg[dst] += 1
@@ -133,162 +265,389 @@ class CellGraph:
                     if indeg[dst] == 0:
                         frontier.append(dst)
         if seen != len(names):
-            raise ValueError(f"{self.name}: declared edges contain a cycle")
-        if self.pomdp:
-            if not self.has_node("O") or not self.has_edge("S", "O"):
-                raise ValueError(
-                    f"{self.name}: latent S requires an observed O with an S->O "
-                    "emission edge"
-                )
+            raise ValueError(f"{self.id}: declared edges contain a cycle")
+        # Latent state requires an observed emission.
+        for n in self.nodes:
+            if n.kind == "state" and not n.observed and n.name == "S":
+                if not self.has_node("O") or not self.has_edge("S", "O"):
+                    raise ValueError(
+                        f"{self.id}: latent S requires an observed O with S->O"
+                    )
         for p in self.proxy_nodes:
-            if p not in names:
-                raise ValueError(f"{self.name}: proxy '{p}' not declared as a node")
+            if p not in names or self.node(p).kind != "proxy":
+                raise ValueError(f"{self.id}: {p!r} is not a declared proxy node")
+        for i in self.instrument_nodes:
+            if i not in names or self.node(i).kind != "instrument":
+                raise ValueError(f"{self.id}: {i!r} is not a declared instrument node")
+        # Every assumption a verdict cites must be declared.
+        declared = {a.name for a in self.assumptions}
+        for v in (self.q1, self.q2):
+            missing = set(v.assumptions) - declared
+            if missing:
+                raise ValueError(
+                    f"{self.id}: verdict cites undeclared {sorted(missing)}"
+                )
+        # The q2 decomposition guard (see dynamics_confounded).
+        if self.dynamics_confounded and self.q2.status == "point_id":
+            raise ValueError(
+                f"{self.id}: q2 cannot be point_id with confounded dynamics — the "
+                "occupancy under do(pi) is not latent-independent, so no per-step "
+                "result composes"
+            )
 
 
-def cell_graph(
-    observability: str, arm: str = "template", rho: bool = False
-) -> CellGraph:
-    """Build the declared SCM for one (observability, arm) family.
+# --------------------------------------------------------------------------- #
+# Shared pieces                                                                #
+# --------------------------------------------------------------------------- #
+_CORE_EDGES: Tuple[Tuple[str, str], ...] = (
+    ("S", "A"),
+    ("S", "R"),
+    ("A", "R"),
+    ("S", "S_next"),
+    ("A", "S_next"),
+)
 
-    ``arm="template"`` is the MODEL CLASS GRACE fits — structurally the
-    confounded arm (U -> A declared, observational channel only), so the fitted
-    latent can EXPRESS confounding; whether the data evidences it is the
-    router's question, never the graph's. The per-arm instances are the
-    ground-truth SCMs used by tests, docs and the G4 labels.
-    """
-    if observability not in OBSERVABILITIES:
-        raise ValueError(f"unknown observability '{observability}'")
-    if arm not in ARMS:
-        raise ValueError(f"unknown arm '{arm}'")
-    pomdp = observability == "pomdp"
-    has_u = arm != "biased"
-    u_to_a = arm in ("template", "confounded")
 
-    nodes = [
-        GraphNode("S", "state", observed=not pomdp),
-        GraphNode("O", "observation", observed=True),
+def _mdp_nodes(*extra: GraphNode) -> Tuple[GraphNode, ...]:
+    return (
+        GraphNode("S", "state", observed=True),
         GraphNode("A", "action", observed=True),
         GraphNode("R", "reward", observed=True),
-        GraphNode("S_next", "state", observed=not pomdp),
-    ]
-    edges: list[Tuple[str, str]] = [
-        ("S", "O"),
-        ("S", "A"),
-        ("S", "R"),
-        ("A", "R"),
-        ("S", "S_next"),
-        ("A", "S_next"),
-    ]
-    if pomdp:
-        # The behavior policy sees the OBSERVATION, not the latent state.
-        edges[edges.index(("S", "A"))] = ("O", "A")
-    if has_u:
-        nodes.append(GraphNode("U", "latent_confounder", observed=False))
-        edges.append(("U", "R"))
-        if u_to_a:
-            edges.append(("U", "A"))
-        if rho:
-            nodes.append(GraphNode("U_next", "latent_confounder", observed=False))
-            edges.append(("U", "U_next"))
-    g = CellGraph(
-        name=f"{observability}/{arm}",
-        nodes=tuple(nodes),
-        edges=tuple(edges),
-        action_gated_reward=has_u,
-        rho_persistence=bool(rho and has_u),
-        identity_emission=not pomdp,
-        proxy_nodes=(),  # explicitly absent in every current cell (A9.1)
+        GraphNode("S_next", "state", observed=True, lag=1),
+    ) + extra
+
+
+_U = GraphNode("U", "latent_confounder", observed=False)
+
+# Shared implication strings. D-A and D-C assert the SAME memorylessness
+# constraint, so it is written once: the entries then differ by exactly the
+# cross-step reward constraint, which is what makes M1 detectable.
+_IMPL_POLICY_MEMORYLESS = "A_t indep (R_{t-1}, A_{t-1}, S_{t-1}, ...) | S_t"
+_IMPL_NO_CROSS_STEP_REWARD = (
+    "R_t indep R_t' | (S_t, A_t, S_t', A_t')  [no cross-step reward dependence]"
+)
+
+# Assumptions reused across entries.
+_A_COMPLETENESS = Assumption(
+    name="completeness",
+    statement=(
+        "The proxy-to-latent map is injective (the measurement matrix is "
+        "non-degenerate), so the bridge equation is well posed."
+    ),
+    testable_shadow=None,  # irreducibly untestable
+)
+_A_FINITE_K = Assumption(
+    name="finite_K_latent_class",
+    statement=(
+        "The latent takes finitely many values (|U| = K) and the latent-class "
+        "model is identifiable from repeated within-episode measurements. This "
+        "is what lets the sequential value re-marginalise U from the "
+        "behaviour-tilted P(U|X) to the exogenous P(U)."
+    ),
+    testable_shadow="rank <= K on cross-time / proxy moment matrices",
+)
+_A_STATIC_U = Assumption(
+    name="static_U",
+    statement="U is constant within an episode (no U_{t-1} -> U_t edge).",
+    testable_shadow="proxy informativeness does not decay with lag",
+)
+_A_EP_LEN = Assumption(
+    name="episode_length_ge_3",
+    statement=(
+        "Episodes are long enough to supply three conditionally independent "
+        "measurements of U (t-2, t-1, t) — the condition the finite-mixture "
+        "identifiability result needs."
+    ),
+    testable_shadow="episode-length distribution is directly observable",
+)
+_A_PROXY_SIGNAL = Assumption(
+    name="proxy_informativeness",
+    statement=(
+        "Both proxies carry signal about U: sigma > 0 (so the action proxy is "
+        "U-dependent) AND P(A = a_bad) is bounded away from 0 (so the gated "
+        "reward proxy is U-dependent). Because the reward shift is ACTION-GATED, "
+        "this decays as the behaviour policy improves."
+    ),
+    testable_shadow="estimated rank gap / proxy-U mutual information",
+)
+
+
+# --------------------------------------------------------------------------- #
+# The catalogue                                                                #
+# --------------------------------------------------------------------------- #
+def _build() -> Dict[str, CellGraph]:
+    entries: list[CellGraph] = []
+
+    # ---- D-A: MDP, no latent. Asserted by the BIASED arm only. -------------
+    entries.append(
+        CellGraph(
+            id="D-A",
+            name="MDP, no latent",
+            nodes=_mdp_nodes(),
+            edges=_CORE_EDGES,
+            q1=Verdict("point_id", "backdoor", adjustment_set=("S",)),
+            q2=Verdict("point_id", "sequential_composition", adjustment_set=("S",)),
+            testable_implications=(_IMPL_POLICY_MEMORYLESS, _IMPL_NO_CROSS_STEP_REWARD),
+            asserted_by=("offline_mdp/biased", "offline_pomdp/biased"),
+        )
     )
-    g.validate()
-    return g
 
-
-def identification_report(graph: CellGraph) -> Dict[str, object]:
-    """The A9.3 graphical precondition, evaluated against the DECLARED graph.
-
-    * ``confounded_serving_ok`` — the U -> A edge is declared; without it the
-      confounded serving mode is structurally unjustified and the router must
-      not route to Q_do on confounding grounds, whatever the statistics say.
-    * ``proxies_present`` — governs whether proximal-style point-
-      identification claims are ever made (currently never: every declared
-      cell has ``proxy_nodes=()``).
-    * ``adjustment_ok`` — every common cause of (A, R) in the declared
-      structure is either observed or a MODELED latent: U is the enumerated
-      discrete latent block; a latent S is admissible only with a declared
-      S -> O emission (checked by ``validate``).
-
-    Returns the flags plus human-readable ``reasons`` — logged per cell.
-    """
-    graph.validate()
-    reasons: list[str] = []
-    confounded_ok = graph.has_edge("U", "A")
-    if not confounded_ok:
-        reasons.append(
-            f"{graph.name}: no declared U->A edge — confounded serving "
-            "structurally unjustified (router must never route to Q_do on "
-            "confounding grounds)"
+    # ---- D-A-null: the clean null (c_r = 0). -------------------------------
+    entries.append(
+        CellGraph(
+            id="D-A-null",
+            name="MDP, no latent, no coverage defect (reference null)",
+            nodes=_mdp_nodes(),
+            edges=_CORE_EDGES,
+            q1=Verdict("point_id", "backdoor", adjustment_set=("S",)),
+            q2=Verdict("point_id", "sequential_composition", adjustment_set=("S",)),
+            testable_implications=(_IMPL_POLICY_MEMORYLESS, _IMPL_NO_CROSS_STEP_REWARD),
+            asserted_by=("offline_mdp/null",),
         )
-    proxies = bool(graph.proxy_nodes)
-    if not proxies:
-        reasons.append(
-            f"{graph.name}: proxy nodes declared ABSENT — no proximal-style "
-            "point-identification claim is ever made for this cell"
+    )
+
+    # ---- D-C: MDP, action-INDEPENDENT latent. The BASIC arm. ---------------
+    entries.append(
+        CellGraph(
+            id="D-C",
+            name="MDP, action-independent latent (reward-only)",
+            nodes=_mdp_nodes(_U),
+            edges=_CORE_EDGES + (("U", "R"),),
+            q1=Verdict("point_id", "backdoor", adjustment_set=("S",)),
+            q2=Verdict("point_id", "sequential_composition", adjustment_set=("S",)),
+            # Deliberately NOT cross-step reward independence: that is exactly
+            # the constraint D-C drops relative to D-A, and the one that makes
+            # the two empirically distinguishable. The shared constraint is
+            # stated with the SAME string as D-A's so the difference between
+            # the two entries is exactly one implication (asserted in tests).
+            testable_implications=(_IMPL_POLICY_MEMORYLESS,),
+            asserted_by=("offline_mdp/basic",),
         )
+    )
 
-    def _reaches(src: str, dst: str) -> bool:
-        frontier = [src]
-        seen = set()
-        while frontier:
-            cur = frontier.pop()
-            if cur == dst:
-                return True
-            if cur in seen:
-                continue
-            seen.add(cur)
-            frontier.extend(d for s, d in graph.edges if s == cur)
-        return False
-
-    adjustment_ok = True
-    for node in graph.nodes:
-        if node.name in ("A", "R"):
-            continue
-        common_cause = _reaches(node.name, "A") and _reaches(node.name, "R")
-        if not common_cause:
-            continue
-        if node.observed:
-            continue
-        if node.kind == "latent_confounder":
-            continue  # the enumerated discrete latent block models it
-        if node.kind == "state" and graph.has_edge(node.name, "O"):
-            continue  # latent state with a declared emission
-        adjustment_ok = False
-        reasons.append(
-            f"{graph.name}: unmodeled latent common cause '{node.name}' of "
-            "(A, R) — no adjustment path for the declared structure"
+    # ---- D-B: MDP, episode-static U, action-gated reward. CONFOUNDED. ------
+    entries.append(
+        CellGraph(
+            id="D-B",
+            name="MDP, episode-static latent, action-gated reward",
+            nodes=_mdp_nodes(_U),
+            edges=_CORE_EDGES + (("U", "A"), ("U", "R")),
+            q1=Verdict(
+                "point_id",
+                "proximal_lagged",
+                assumptions=(
+                    "static_U",
+                    "episode_length_ge_3",
+                    "proxy_informativeness",
+                    "completeness",
+                ),
+                gated_off_by_default=True,
+                note=(
+                    "Lagged proxies W = R_{t-1}, Z = A_{t-2}, X = (S_{t-2}, S_{t-1}, S_t). "
+                    "The NAIVE pairing (Z = A_{t-1}, W = R_{t-1}) is INVALID: the direct "
+                    "edge A_{t-1} -> R_{t-1} violates W indep Z | U."
+                ),
+            ),
+            q2=Verdict(
+                "point_id",
+                "proximal_lagged",
+                assumptions=(
+                    "static_U",
+                    "episode_length_ge_3",
+                    "proxy_informativeness",
+                    "completeness",
+                    "finite_K_latent_class",
+                ),
+                gated_off_by_default=True,
+                note=(
+                    "STRICTLY STRONGER than q1. Per-step proximal gives the "
+                    "X-conditional effect under P(U|X); V^pi needs the exogenous "
+                    "P(U). Closing that gap requires recovering the latent-class "
+                    "model itself, not merely the bridge."
+                ),
+            ),
+            assumptions=(
+                _A_STATIC_U,
+                _A_EP_LEN,
+                _A_PROXY_SIGNAL,
+                _A_COMPLETENESS,
+                _A_FINITE_K,
+            ),
+            testable_implications=("rank <= K on cross-time moment matrices",),
+            asserted_by=("offline_mdp/confounded",),
         )
-    return {
-        "confounded_serving_ok": confounded_ok,
-        "proxies_present": proxies,
-        "adjustment_ok": adjustment_ok,
-        "reasons": tuple(reasons),
-    }
+    )
+
+    # ---- D-B': persistent U. ----------------------------------------------
+    entries.append(
+        CellGraph(
+            id="D-B-prime",
+            name="MDP, PERSISTENT latent (rho > 0), action-gated reward",
+            nodes=_mdp_nodes(
+                _U, GraphNode("U_next", "latent_confounder", observed=False, lag=1)
+            ),
+            edges=_CORE_EDGES + (("U", "A"), ("U", "R"), ("U", "U_next")),
+            persistent_latent=True,
+            q1=Verdict(
+                "bounds_only",
+                "proximal_lagged",
+                assumptions=(
+                    "episode_length_ge_3",
+                    "proxy_informativeness",
+                    "completeness",
+                ),
+                note=(
+                    "The EXCLUSIONS survive drift (conditioning on U_t blocks the "
+                    "paths through U_{t-1}); COMPLETENESS is what degrades, because "
+                    "W measures U_{t-1} and is only correlated with the U_t that "
+                    "confounds step t. Point-ID in principle while the latent "
+                    "transition is invertible, dying by ill-conditioning at full "
+                    "refresh — so the shipped verdict is the conservative one."
+                ),
+            ),
+            q2=Verdict(
+                "bounds_only",
+                "proximal_lagged",
+                assumptions=(
+                    "episode_length_ge_3",
+                    "proxy_informativeness",
+                    "completeness",
+                ),
+            ),
+            assumptions=(_A_EP_LEN, _A_PROXY_SIGNAL, _A_COMPLETENESS),
+            testable_implications=(
+                "rank <= K on cross-time moment matrices (ill-conditioned with drift)",
+            ),
+            asserted_by=("offline_mdp/persistent",),
+        )
+    )
+
+    # ---- D-D: explicit negative-control proxies. --------------------------
+    entries.append(
+        CellGraph(
+            id="D-D",
+            name="MDP + explicit negative-control proxies (proximal cell)",
+            nodes=_mdp_nodes(
+                _U,
+                GraphNode("Z", "proxy", observed=True),
+                GraphNode("W", "proxy", observed=True),
+            ),
+            edges=_CORE_EDGES + (("U", "A"), ("U", "R"), ("U", "Z"), ("U", "W")),
+            proxy_nodes=("Z", "W"),
+            q1=Verdict("point_id", "proximal", assumptions=("completeness",)),
+            q2=Verdict(
+                "point_id",
+                "proximal",
+                assumptions=("completeness", "finite_K_latent_class"),
+            ),
+            assumptions=(_A_COMPLETENESS, _A_FINITE_K),
+            testable_implications=("rank <= |U| on P(Z, W | A, S)",),
+            asserted_by=("offline_mdp/proximal",),
+        )
+    )
+
+    # ---- D-E: instrument. Bounds, NOT point-ID. ---------------------------
+    entries.append(
+        CellGraph(
+            id="D-E",
+            name="MDP + instrument (IV cell)",
+            nodes=_mdp_nodes(_U, GraphNode("I", "instrument", observed=True)),
+            edges=_CORE_EDGES + (("U", "A"), ("U", "R"), ("I", "A")),
+            instrument_nodes=("I",),
+            q1=Verdict(
+                "bounds_only",
+                "iv",
+                note="Balke-Pearl. A valid instrument does NOT point-identify "
+                "E[R|do(a)] without monotonicity/homogeneity.",
+            ),
+            q2=Verdict("bounds_only", "iv"),
+            testable_implications=("instrumental inequalities (refutation-only)",),
+            asserted_by=("offline_mdp/iv",),
+        )
+    )
+
+    # ---- D-F: POMDP, latent state, no U. q1 != q2. ------------------------
+    entries.append(
+        CellGraph(
+            id="D-F",
+            name="POMDP, latent state, no confounder",
+            nodes=(
+                GraphNode("S", "state", observed=False),
+                GraphNode("O", "observation", observed=True),
+                GraphNode("A", "action", observed=True),
+                GraphNode("R", "reward", observed=True),
+                GraphNode("S_next", "state", observed=False, lag=1),
+            ),
+            edges=(
+                ("S", "O"),
+                ("O", "A"),
+                ("S", "R"),
+                ("A", "R"),
+                ("S", "S_next"),
+                ("A", "S_next"),
+            ),
+            q1=Verdict("point_id", "backdoor", adjustment_set=("O",)),
+            q2=Verdict(
+                "non_id",
+                "none",
+                note=(
+                    "Per-step adjustment does NOT compose: a history-dependent "
+                    "target policy's value needs the joint law of latent-state "
+                    "trajectories under do(pi), which observational data does not "
+                    "pin down without proxy structure."
+                ),
+            ),
+            testable_implications=(
+                "HMM-style rank constraints on observation matrices",
+            ),
+            asserted_by=("offline_pomdp/basic", "offline_pomdp/biased"),
+        )
+    )
+
+    # ---- D-G: POMDP + U. --------------------------------------------------
+    entries.append(
+        CellGraph(
+            id="D-G",
+            name="POMDP + confounder",
+            nodes=(
+                GraphNode("S", "state", observed=False),
+                GraphNode("O", "observation", observed=True),
+                GraphNode("A", "action", observed=True),
+                GraphNode("R", "reward", observed=True),
+                GraphNode("S_next", "state", observed=False, lag=1),
+                _U,
+            ),
+            edges=(
+                ("S", "O"),
+                ("O", "A"),
+                ("S", "R"),
+                ("A", "R"),
+                ("S", "S_next"),
+                ("A", "S_next"),
+                ("U", "A"),
+                ("U", "R"),
+            ),
+            q1=Verdict("bounds_only", "none"),
+            q2=Verdict("non_id", "none"),
+            testable_implications=(
+                "HMM-style rank constraints on observation matrices",
+            ),
+            asserted_by=("offline_pomdp/confounded",),
+        )
+    )
+
+    return {e.id: e for e in entries}
 
 
-def _build_registry() -> Dict[str, Dict[str, CellGraph]]:
-    reg: Dict[str, Dict[str, CellGraph]] = {}
-    for regime, obs in (
-        ("offline_mdp", "mdp"),
-        ("offline_pomdp", "pomdp"),
-        ("online_mdp", "mdp"),
-        ("online_pomdp", "pomdp"),
-    ):
-        reg[regime] = {arm: cell_graph(obs, arm) for arm in ARMS}
-        for arm, g in reg[regime].items():
-            object.__setattr__(g, "name", f"{regime}/{arm}")
-    return reg
+CATALOGUE: Dict[str, CellGraph] = _build()
+for _e in CATALOGUE.values():
+    _e.validate()
 
 
-# One declaration per (cell, arm); ``[cell]["template"]`` is what GRACE fits.
-# docs/grace.md cross-references each entry to the paper's formalization
-# figures (A9.4).
-CELL_GRAPHS: Dict[str, Dict[str, CellGraph]] = _build_registry()
+def catalogue_entry(entry_id: str) -> CellGraph:
+    try:
+        return CATALOGUE[entry_id]
+    except KeyError:
+        raise KeyError(
+            f"unknown diagram {entry_id!r}; declared: {sorted(CATALOGUE)}"
+        ) from None

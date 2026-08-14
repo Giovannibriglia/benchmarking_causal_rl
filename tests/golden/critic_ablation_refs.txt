@@ -29,7 +29,7 @@ src/benchmarking/regime_sweep.py:            leaf / "critic_ablation_metrics.csv
 src/benchmarking/regime_sweep.py:            staging / "critic_ablation_metrics.csv",
 src/benchmarking/regime_sweep.py:        "sweep_yaml", help="path to a cell YAML (classical.yaml / critic_ablation.yaml)"
 src/benchmarking/regime_sweep.py:        "{regime}/classical/ leaves) or critic_ablation (per-{critic} leaves). "
-src/benchmarking/regime_sweep.py:        critic_ablation_cfg=CriticAblationConfig(
+src/benchmarking/regime_sweep.py:        critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
 src/benchmarking/regime_sweep.py:    """Copy ``critic_ablation_metrics.csv`` keeping the header + only ``critic``'s
 src/benchmarking/regime_sweep.py:    # WHICH simulation this cell runs: "critic_ablation" (default — the historical
 src/benchmarking/regime_sweep.py:    # component, so a regime's classical and critic_ablation cells ask for the
