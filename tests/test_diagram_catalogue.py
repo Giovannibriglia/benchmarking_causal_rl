@@ -164,3 +164,77 @@ def test_verdict_labels_are_self_describing(entry_id):
         for name in verdict.assumptions:
             if not verdict.gated_off_by_default:
                 assert name in label
+
+
+# --------------------------------------------------------------------------- #
+# C5: the reference null arm must clear generation preflight.                  #
+# --------------------------------------------------------------------------- #
+def _null_arm_signature(seed: int, expect_gated: bool, n: int = 20000):
+    """A c_r = 0 arm: U is drawn but influences nothing (no U->R edge), and
+    sigma = 0 so A is independent of U. The diagram is exactly D-A-null."""
+    import numpy as np
+    from src.envs.offline.generate import (
+        ACTION_DEPENDENT_GATE,
+        compute_confounding_signature,
+    )
+
+    rng = np.random.default_rng(seed)
+    u = rng.integers(0, 2, n).astype(float)
+    a = rng.integers(0, 2, n).astype(float)
+    r = rng.normal(size=n)  # c_r = 0
+    samples = {
+        "a": a,
+        "u": u,
+        "r": r,
+        "p_s": np.full(n, 0.5),
+        "intervened": np.zeros(n),
+    }
+    gate = {**ACTION_DEPENDENT_GATE, "expect_gated_reward": expect_gated}
+    return compute_confounding_signature(
+        samples, 0.0, gate=gate, a_bad=1, is_online=False
+    )
+
+
+def test_null_arm_clears_preflight_on_every_seed():
+    """Without the declaration the A4 check is a COIN FLIP on the null arm
+    (measured: 35/60 seeds passed), because with no U->R edge corr_r_u_gated is
+    noise around zero and the check demands `> 0`. Declaring the arm
+    signature-free must make preflight deterministic."""
+    from src.envs.offline.generate import enforce_confounding_gate
+
+    for seed in range(25):
+        sig = _null_arm_signature(seed, expect_gated=False)
+        enforce_confounding_gate(sig, f"null-arm-seed{seed}")  # must not raise
+        assert sig["gated_reward_expected"] is False
+
+
+def test_null_arm_skip_is_recorded_not_disguised_as_a_pass():
+    """A reader must be able to tell 'not applicable' from 'passed'."""
+    sig = _null_arm_signature(0, expect_gated=False)
+    assert sig["gated_reward_expected"] is False
+    assert "corr_r_u_gated" in sig  # still recorded as a diagnostic
+
+
+def test_real_confounding_is_still_gated():
+    """The exemption must not weaken the check where an edge IS declared."""
+    import numpy as np
+    from src.envs.offline.generate import (
+        ACTION_DEPENDENT_GATE,
+        compute_confounding_signature,
+    )
+
+    rng = np.random.default_rng(0)
+    n = 20000
+    u = rng.integers(0, 2, n).astype(float)
+    a = rng.integers(0, 2, n).astype(float)
+    r = rng.normal(size=n) + 1.0 * u * (a == 1)  # a real U->R edge
+    sig = compute_confounding_signature(
+        {"a": a, "u": u, "r": r, "p_s": np.full(n, 0.5), "intervened": np.zeros(n)},
+        0.0,
+        gate=dict(ACTION_DEPENDENT_GATE),
+        a_bad=1,
+        is_online=False,
+    )
+    assert sig["gated_reward_expected"] is True
+    assert sig["check_a4_gated_reward"] is True
+    assert sig["corr_r_u_gated"] > 0.1

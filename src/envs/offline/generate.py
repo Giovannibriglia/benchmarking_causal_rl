@@ -553,6 +553,10 @@ ACTION_DEPENDENT_GATE: dict = {
     "ungated_reward_corr_max": 0.05,
     "intervened_tolerance": 0.02,
     "entropy_min": 0.05,  # min mean(p_s(1-p_s)): the confounder is inert below this
+    # Whether the dataset is DECLARED to carry a U->R edge at all. A null arm
+    # (c_r = 0) has none, so A4 has nothing to detect and must be SKIPPED
+    # rather than expected to pass on noise (see _action_dependent_signature).
+    "expect_gated_reward": True,
 }
 
 
@@ -643,10 +647,22 @@ def _action_dependent_signature(
     # A3 — the confounder is NOT inert: pi_basic has real entropy on the gated pair.
     a3 = bool(entropy > entropy_min)
     # A4 — gated U->R live within a==a_bad; dead within a!=a_bad.
+    #
+    # NULL ARM: when the gate declares no U->R edge (expect_gated_reward=False,
+    # set by the generator for c_r == 0), there is no gated correlation to
+    # detect. corr_r_u_gated is then pure noise around 0 and is NEGATIVE about
+    # half the time, so requiring `> 0.0` would reject a deliberately
+    # signature-free dataset on a coin flip. The check is SKIPPED by
+    # declaration and the metadata records that it was, so a later reader can
+    # tell "not applicable" from "passed".
+    expect_gated = bool(gate.get("expect_gated_reward", True))
     mask = a == a_bad
     corr_r_u_gated = _pearson(r[mask], u[mask]) if int(mask.sum()) > 1 else 0.0
     corr_r_u_ungated = _pearson(r[~mask], u[~mask]) if int((~mask).sum()) > 1 else 0.0
-    a4 = bool(corr_r_u_gated > 0.0 and abs(corr_r_u_ungated) < ungated_max)
+    if expect_gated:
+        a4 = bool(corr_r_u_gated > 0.0 and abs(corr_r_u_ungated) < ungated_max)
+    else:
+        a4 = True  # vacuous: no U->R edge is claimed
     # A5 — interventional fraction: ~= 1-sigma online, == 0 offline.
     iv = samples.get("intervened")
     mean_iv = float(np.mean(iv)) if iv is not None and iv.size else 0.0
@@ -666,6 +682,7 @@ def _action_dependent_signature(
         "intervened_mean": mean_iv,
         "check_a2_point_corr": a2,
         "check_a3_p_nondegenerate": a3,
+        "gated_reward_expected": expect_gated,
         "check_a4_gated_reward": a4,
         "check_a5_intervened": a5,
     }
@@ -1101,7 +1118,11 @@ def generate_offline_dataset(
         behavior_policy in ("bias_confounded", "bias_confounded_action")
         and sig_samples is not None
     ):
-        _gate = gate if gate is not None else default_gate_for(behavior_policy)
+        _gate = dict(gate if gate is not None else default_gate_for(behavior_policy))
+        # A null arm declares no U->R edge; tell the gate so it skips A4 rather
+        # than testing for a signature the dataset deliberately lacks.
+        if _gate.get("type") == "action_dependent" and not confounder_c_r:
+            _gate["expect_gated_reward"] = False
         signature = compute_confounding_signature(
             sig_samples, behavior_strength, gate=_gate, a_bad=a_bad, is_online=False
         )
