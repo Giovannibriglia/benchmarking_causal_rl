@@ -1,3 +1,4 @@
+src/benchmarking/hosted_sweep.py:                    set_seed(seed, deterministic=True)
 src/benchmarking/regime_sweep.py:                set_seed(seed, deterministic=True)
 src/benchmarking/runner.py:        g = torch.Generator().manual_seed(0)
 src/benchmarking/runner.py:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)

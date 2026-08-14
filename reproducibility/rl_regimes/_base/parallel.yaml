@@ -16,3 +16,35 @@
 #
 # Override per cell in its sweep.yaml if a regime wants a different default.
 max_workers: 1
+
+# --------------------------------------------------------------------------- #
+# Rollout speed knobs (docs/dataset_generation_speedup.md). These place the
+# DATASET-GENERATION rollout only; generator TRAINING always runs on the run
+# device (its batched updates genuinely want the GPU).
+#
+# rollout_device: stepping the vector env on CUDA costs a ~15 ms host<->device
+#   round trip PER STEP at batch 1 (measured) versus ~33 us on CPU. 'cpu' is
+#   therefore the default and is ~24x faster end-to-end on its own. It also frees
+#   the GPU, so max_workers above can rise without contention.
+# rollout_n_envs: parallel rollout slots stepped in lockstep with ONE batched
+#   policy forward. 16 measured best on CartPole (short episodes make very wide
+#   batches waste steps on idle slots); together with the CPU move this is ~185x
+#   the pre-speedup rollout throughput.
+# legacy_rollout: true restores the pre-speedup rollout exactly (run device, one
+#   slot, scalar collector) — set it only to regenerate historical dataset ids
+#   bit-for-bit. The fast paths are NOT byte-identical (CPU/CUDA argmax ties,
+#   batched draws), which is sound because datasets self-certify: the confounding
+#   signature is recomputed at generation and enforced at load.
+rollout_device: cpu
+rollout_n_envs: 16
+legacy_rollout: false
+
+# S4 cross-simulation dataset reuse. Dataset ids carry no simulation component,
+# so a regime's classical and critic_ablation cells ask for the SAME ids. With
+# reuse on, a point whose existing dataset carries a matching
+# generation_fingerprint (every generation-determining input, incl. the rollout
+# mode) plus the right episode count and a non-failed gate is REUSED instead of
+# regenerated — a regime's second simulation skips its whole generation phase
+# (measured: 87 s -> 0.03 s for a 7-point CartPole cell). Set false to always
+# regenerate.
+reuse_datasets: true

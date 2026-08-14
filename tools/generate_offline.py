@@ -74,6 +74,27 @@ def main() -> None:
         default="outputs/generate",
         help="generator training dir (checkpoints + eval_metrics.csv)",
     )
+    # Rollout speed (docs/dataset_generation_speedup.md). Generator TRAINING
+    # always uses the run device; these place the ROLLOUT only.
+    p.add_argument(
+        "--rollout-device",
+        default="cpu",
+        help="device the rollout env/policy run on (default cpu: CUDA pays a "
+        "~15ms host<->device round trip per batch-1 step)",
+    )
+    p.add_argument(
+        "--rollout-n-envs",
+        type=int,
+        default=16,
+        help="parallel rollout slots, one batched policy forward per step "
+        "(1 = scalar collector)",
+    )
+    p.add_argument(
+        "--legacy-rollout",
+        action="store_true",
+        help="restore the pre-speedup rollout exactly (run device, 1 slot) to "
+        "regenerate historical dataset ids bit-for-bit",
+    )
     args = p.parse_args()
 
     # Build the declarative gate config from defaults + any CLI tolerance overrides.
@@ -103,6 +124,9 @@ def main() -> None:
         seed=args.seed,
         dataset_id=args.dataset_id,
         run_dir=args.run_dir,
+        rollout_device=args.rollout_device,
+        rollout_n_envs=args.rollout_n_envs,
+        legacy_rollout=args.legacy_rollout,
     )
     print(f"created {ds.id}: {ds.total_steps} steps, {ds.total_episodes} episodes")
 

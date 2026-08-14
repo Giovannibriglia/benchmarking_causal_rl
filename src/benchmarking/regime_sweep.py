@@ -264,6 +264,22 @@ class SweepSpec:
     # subprocess pool (src/benchmarking/sweep_supervisor.py). run_cell itself is
     # untouched — it stays serial WITHIN a group; parallelism is across groups only.
     max_workers: int = 1
+    # Rollout speed knobs (docs/dataset_generation_speedup.md), forwarded to
+    # generate_offline_dataset. Generator TRAINING stays on the run device; only
+    # the ROLLOUT moves. Defaults are the fast path (CPU stepping, 16 slots):
+    # ~185x the pre-speedup CUDA-batch-1 rollout on CartPole. Set
+    # legacy_rollout: true to regenerate historical dataset ids bit-for-bit.
+    rollout_device: str = "cpu"
+    rollout_n_envs: int = 16
+    legacy_rollout: bool = False
+    # S4 cross-simulation dataset reuse. Dataset ids carry no simulation
+    # component, so a regime's classical and critic_ablation cells ask for the
+    # SAME ids — the second cell would otherwise regenerate byte-equivalent data.
+    # When True, a point whose existing dataset carries a matching
+    # generation_fingerprint (every generation-determining input, incl. the
+    # rollout mode) is reused instead of regenerated. Set False to always
+    # regenerate.
+    reuse_datasets: bool = True
     # WHICH simulation this cell runs: "critic_ablation" (default — the historical
     # behavior of every sweep.yaml) or "classical" (algo x env benchmark, no
     # critic axis, ``{regime}/classical/`` leaves).
@@ -339,6 +355,10 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
             k: [int(i) for i in v] for k, v in (pick("mask_indices", {}) or {}).items()
         },
         max_workers=int(pick("max_workers", 1)),
+        rollout_device=str(pick("rollout_device", "cpu")),
+        rollout_n_envs=int(pick("rollout_n_envs", 16)),
+        legacy_rollout=bool(pick("legacy_rollout", False)),
+        reuse_datasets=bool(pick("reuse_datasets", True)),
         simulation=simulation,
         critics=critics,
         beta_arm=beta_arm,
@@ -905,6 +925,72 @@ def _validate_algos_for_regime(spec: SweepSpec, algos: Sequence[str]) -> None:
             )
 
 
+def _reusable_dataset_hash(
+    dataset_id: str,
+    spec: "SweepSpec",
+    env: str,
+    seed: int,
+    beta: float,
+    sigma: float,
+    behavior_policy: str,
+    strength: float,
+    generator_hash: str,
+) -> str | None:
+    """Return the generator hash of ``dataset_id`` when it is provably the dataset
+    this sweep point would generate, else ``None`` (S4 reuse gate).
+
+    Three independent checks, all of which must pass:
+
+      1. the stored ``generation_fingerprint`` equals the one THIS point's inputs
+         produce (arm params, epsilon, c_r, a_bad, rollout budget, seed,
+         pi_basic hash, rollout device/slots/legacy);
+      2. the episode count matches the configured rollout budget — catches a
+         dataset truncated by an interrupted run, which the fingerprint (an
+         input-only hash) cannot see;
+      3. the confounding gate did not fail.
+
+    Any error reading the store (absent, corrupt, older dataset without a
+    fingerprint) returns ``None``, i.e. regenerate — reuse is never the fallback.
+    """
+    from src.envs.offline.generate import generation_fingerprint
+
+    try:
+        import minari
+
+        if dataset_id not in minari.list_local_datasets():
+            return None
+        ds = minari.load_dataset(dataset_id)
+        meta = ds.storage.metadata
+        stored = meta.get("generation_fingerprint")
+        if not stored:
+            return None  # pre-S4 dataset: no proof available -> regenerate
+        expected = generation_fingerprint(
+            env_id=env,
+            generator_algo=spec.generator_algo,
+            tier="random",
+            behavior_policy=behavior_policy,
+            behavior_strength=strength,
+            confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+            pi_basic_epsilon=spec.pi_basic_epsilon,
+            a_bad=1,
+            rollout_episodes=spec.budget("rollout_episodes", 30),
+            seed=seed,
+            generator_hash=generator_hash,
+            rollout_device=spec.rollout_device,
+            rollout_n_envs=spec.rollout_n_envs,
+            legacy_rollout=spec.legacy_rollout,
+        )
+        if stored != expected:
+            return None
+        if int(ds.total_episodes) != int(spec.budget("rollout_episodes", 30)):
+            return None
+        if meta.get("gate_test_passed") is False:
+            return None
+        return meta.get("generator_checkpoint_hash")
+    except Exception:
+        return None
+
+
 def run_cell(
     sweep_yaml: str | Path,
     *,
@@ -1020,6 +1106,34 @@ def run_cell(
                     f"(rollout_episodes={spec.budget('rollout_episodes', 30)})",
                     flush=True,
                 )
+                # S4: reuse an existing dataset whose generation fingerprint
+                # matches what THIS point would generate — same inputs, same
+                # deterministic pipeline, so regenerating could only reproduce
+                # it. Chiefly this skips a regime's second simulation entirely
+                # (classical and critic_ablation share dataset ids). Any changed
+                # input (arm params, epsilon, c_r, rollout budget/mode, pi_basic)
+                # misses and regenerates.
+                if spec.reuse_datasets:
+                    hit_hash = _reusable_dataset_hash(
+                        did,
+                        spec,
+                        env,
+                        seed,
+                        beta,
+                        sigma,
+                        bp,
+                        strength,
+                        _hash,
+                    )
+                    if hit_hash is not None:
+                        print(
+                            f"[regime_sweep] {env} seed{seed}: reusing dataset "
+                            f"{did} (fingerprint match — generation skipped)",
+                            flush=True,
+                        )
+                        datasets[(beta, sigma)] = did
+                        point_hashes[(beta, sigma)] = hit_hash
+                        continue
                 try:
                     import minari
 
@@ -1044,6 +1158,9 @@ def run_cell(
                     dataset_id=did,
                     agent=agent,
                     device=device,
+                    rollout_device=spec.rollout_device,
+                    rollout_n_envs=spec.rollout_n_envs,
+                    legacy_rollout=spec.legacy_rollout,
                 )
                 # The biased arm's ``biased`` policy is unconfounded, so its signature
                 # leaves ``behavior_strength_sigma`` = None; the arm genuinely sits at

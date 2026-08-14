@@ -328,6 +328,215 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     return buffers, samples
 
 
+def _rollout_vectorized(
+    env, collection_policy, n_episodes, seed, action_type, max_steps=1000
+):
+    """Vectorized twin of ``_rollout``: ``env.n_envs`` slots stepped in lockstep
+    with ONE batched policy forward per step (strategy S2 in
+    docs/dataset_generation_speedup.md).
+
+    Same OUTPUT CONTRACT as ``_rollout`` — ``n_episodes`` EpisodeBuffers plus the
+    flat ``signature_samples`` dict — so the gate, the metadata stamp and the
+    Minari write are all unchanged. Three deliberate differences:
+
+      * NOT byte-identical to ``_rollout``, and not meant to be: policy draws are
+        batched across slots and the per-slot env streams come from a single
+        vector reset (slot ``i`` gets ``seed + 1000 + i``). A vectorized dataset
+        is reproducible for a fixed ``(seed, n_envs)`` pair and self-certifies
+        through the confounding gate exactly as the scalar path does.
+      * Deterministic OUTPUT ORDER: episodes are keyed by the index assigned when
+        a slot picks them up and emitted sorted by that index, so the dataset
+        bytes never depend on which slot happened to finish first.
+      * Autoreset (gymnasium NEXT_STEP): the step AFTER a slot's terminal step
+        returns that slot's reset observation with a dummy action/reward. It
+        opens the slot's next episode and is never recorded as a transition.
+
+    A slot with no episode left to collect keeps being stepped (the vector env is
+    all-or-nothing) but its data is discarded.
+    """
+    from minari.data_collector.episode_buffer import EpisodeBuffer
+
+    confounded = hasattr(env, "current_u")
+    # Same optional per-transition readers as the scalar path (pure reads, no RNG).
+    _ps_fn = getattr(collection_policy, "_base_action_probs", None)
+    _ps_a_bad = int(getattr(collection_policy, "a_bad", 1))
+    _probs_fn = getattr(collection_policy, "action_probs", None)
+
+    n_slots = int(env.n_envs)
+    obs, _ = env.reset(seed=seed + 1000)
+
+    def _blank():
+        return {
+            "obs": [],
+            "acts": [],
+            "rews": [],
+            "terms": [],
+            "truncs": [],
+            "u": [],
+            "iv": [],
+            "cmin": [],
+            "sig_a": [],
+            "sig_r": [],
+            "sig_u": [],
+            "sig_iv": [],
+            "sig_ps": [],
+        }
+
+    obs_np = obs.reshape(obs.shape[0], -1).detach().cpu().numpy()
+    slot_ep: list = [None] * n_slots  # episode index each slot is building
+    slot_buf: list = [None] * n_slots
+    awaiting = [False] * n_slots  # True => next step returns this slot's reset obs
+    next_ep = 0
+    for i in range(n_slots):
+        if next_ep < n_episodes:
+            slot_ep[i] = next_ep
+            slot_buf[i] = _blank()
+            slot_buf[i]["obs"].append(obs_np[i])
+            next_ep += 1
+
+    done_eps: dict = {}
+    # Loop guard: every episode is TimeLimit-bounded, so this can only trip on a
+    # misconfigured env. Sized generously (worst case: every episode runs the
+    # full cap, one slot at a time).
+    step_cap = max_steps * (n_episodes + n_slots) + 100
+    steps_taken = 0
+
+    from tqdm import tqdm
+
+    pbar = tqdm(total=n_episodes, desc="dataset generation (vec)", leave=False)
+    while len(done_eps) < n_episodes:
+        if steps_taken > step_cap:
+            raise RuntimeError(
+                f"vectorized rollout exceeded {step_cap} steps with "
+                f"{len(done_eps)}/{n_episodes} episodes collected — is the env "
+                "missing a TimeLimit?"
+            )
+        u_t = env.current_u.reshape(-1).detach().cpu().numpy() if confounded else None
+        cmin_t = (
+            _probs_fn(obs).min(dim=1).values.detach().cpu().numpy()
+            if _probs_fn is not None
+            else None
+        )
+        ps_t = (
+            _ps_fn(obs)[:, _ps_a_bad].detach().cpu().numpy()
+            if (confounded and _ps_fn is not None)
+            else None
+        )
+        act_out = collection_policy.act(obs)
+        action = act_out.action
+        iv_t = (
+            act_out.intervened.reshape(-1).detach().cpu().numpy()
+            if act_out.intervened is not None
+            else None
+        )
+        obs, reward, term, trunc, _ = env.step(action)
+        steps_taken += 1
+
+        obs_np = obs.reshape(obs.shape[0], -1).detach().cpu().numpy()
+        act_np = action.reshape(action.shape[0], -1).detach().cpu().numpy()
+        rew_np = reward.reshape(-1).detach().cpu().numpy()
+        term_np = term.reshape(-1).detach().cpu().numpy()
+        trunc_np = trunc.reshape(-1).detach().cpu().numpy()
+
+        for i in range(n_slots):
+            if awaiting[i]:
+                # Autoreset step: this slot's action/reward are dummies and the
+                # observation is the new episode's first one.
+                awaiting[i] = False
+                if slot_ep[i] is not None:
+                    slot_buf[i]["obs"].append(obs_np[i])
+                continue
+            if slot_ep[i] is None:
+                continue  # idle slot (no episodes left to assign)
+            b = slot_buf[i]
+            a_i = act_np[i]
+            b["obs"].append(obs_np[i])
+            b["acts"].append(
+                int(a_i[0]) if action_type == "discrete" else a_i.astype(np.float32)
+            )
+            r_i = float(rew_np[i])
+            b["rews"].append(r_i)
+            b["terms"].append(bool(term_np[i]))
+            b["truncs"].append(bool(trunc_np[i]))
+            if confounded:
+                b["sig_a"].append(
+                    float(a_i[0])
+                    if action_type == "discrete"
+                    else float(np.linalg.norm(a_i))
+                )
+                b["sig_r"].append(r_i)
+                b["sig_u"].append(float(u_t[i]))
+                b["u"].append(float(u_t[i]))
+                if iv_t is not None:
+                    b["sig_iv"].append(bool(iv_t[i]))
+                if ps_t is not None:
+                    b["sig_ps"].append(float(ps_t[i]))
+            if iv_t is not None:
+                b["iv"].append(bool(iv_t[i]))
+            if cmin_t is not None:
+                b["cmin"].append(float(cmin_t[i]))
+
+            if bool(term_np[i]) or bool(trunc_np[i]):
+                done_eps[slot_ep[i]] = b
+                pbar.update(1)
+                awaiting[i] = True
+                # Hand this slot the next unassigned episode (or idle it).
+                if next_ep < n_episodes:
+                    slot_ep[i] = next_ep
+                    slot_buf[i] = _blank()
+                    next_ep += 1
+                else:
+                    slot_ep[i] = None
+                    slot_buf[i] = None
+    pbar.close()
+
+    adt = np.int64 if action_type == "discrete" else np.float32
+    buffers = []
+    sig_a: list = []
+    sig_r: list = []
+    sig_u: list = []
+    sig_iv: list = []
+    sig_ps: list = []
+    for ep_idx in range(n_episodes):
+        b = done_eps[ep_idx]
+        infos: dict = {}
+        if confounded:
+            infos["confounder_u"] = np.asarray(b["u"], dtype=np.float32)
+        if b["iv"]:
+            infos["intervened"] = np.asarray(b["iv"], dtype=bool)
+        if b["cmin"]:
+            infos["coverage_min"] = np.asarray(b["cmin"], dtype=np.float32)
+        ep_kwargs = {"infos": infos} if infos else {}
+        buffers.append(
+            EpisodeBuffer(
+                observations=np.asarray(b["obs"], dtype=np.float32),
+                actions=np.asarray(b["acts"], dtype=adt),
+                rewards=np.asarray(b["rews"], dtype=np.float32),
+                terminations=np.asarray(b["terms"], dtype=bool),
+                truncations=np.asarray(b["truncs"], dtype=bool),
+                **ep_kwargs,
+            )
+        )
+        sig_a.extend(b["sig_a"])
+        sig_r.extend(b["sig_r"])
+        sig_u.extend(b["sig_u"])
+        sig_iv.extend(b["sig_iv"])
+        sig_ps.extend(b["sig_ps"])
+
+    samples = (
+        {
+            "a": np.asarray(sig_a, dtype=np.float64),
+            "r": np.asarray(sig_r, dtype=np.float64),
+            "u": np.asarray(sig_u, dtype=np.float64),
+            "intervened": np.asarray(sig_iv, dtype=np.float64),
+            "p_s": np.asarray(sig_ps, dtype=np.float64),
+        }
+        if confounded
+        else None
+    )
+    return buffers, samples
+
+
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     # Guard against a constant series (zero variance -> undefined corr -> 0).
     if x.std() == 0 or y.std() == 0:
@@ -559,6 +768,66 @@ def generator_checkpoint_hash(agent) -> str:
     return h.hexdigest()[:16]
 
 
+def generation_fingerprint(
+    *,
+    env_id: str,
+    generator_algo: str,
+    tier: str,
+    behavior_policy: str,
+    behavior_strength,
+    confounder_c_r,
+    pi_basic_epsilon,
+    a_bad: int,
+    rollout_episodes: int,
+    seed: int,
+    generator_hash: str,
+    rollout_device: str,
+    rollout_n_envs: int,
+    legacy_rollout: bool,
+) -> str:
+    """Hash of EVERY input that determines a generated dataset's contents (S4).
+
+    Stamped into the dataset metadata at generation and compared before a
+    regeneration: an identical fingerprint means re-running the pipeline would
+    reproduce the same dataset, so the existing one can be reused instead. This
+    is what makes cross-simulation reuse safe — ``classical`` and
+    ``critic_ablation`` cells of one regime share dataset ids (the id carries no
+    simulation component), so the second cell would otherwise re-generate
+    byte-equivalent data from scratch.
+
+    Everything that moves the data is in the key, INCLUDING the rollout mode
+    (device / slot count / legacy flag), because the fast rollout paths are not
+    byte-identical to the legacy one. The generator's parameter hash covers
+    ``pi_basic`` itself. A change to any of them misses the cache and
+    regenerates — the fingerprint is never a claim about equivalence, only about
+    identity of inputs.
+    """
+    import hashlib
+
+    parts = [
+        ("env_id", env_id),
+        ("generator_algo", generator_algo),
+        ("tier", tier),
+        ("behavior_policy", behavior_policy),
+        ("behavior_strength", behavior_strength),
+        ("confounder_c_r", confounder_c_r),
+        ("pi_basic_epsilon", pi_basic_epsilon),
+        ("a_bad", int(a_bad)),
+        ("rollout_episodes", int(rollout_episodes)),
+        ("seed", int(seed)),
+        ("generator_hash", generator_hash),
+        # Rollout mode: only the device TYPE matters (cuda:0 vs cuda is the same
+        # numerics); slot count and the legacy flag both change the trajectories.
+        ("rollout_device", torch.device(rollout_device).type),
+        ("rollout_n_envs", 1 if legacy_rollout else int(rollout_n_envs)),
+        ("legacy_rollout", bool(legacy_rollout)),
+    ]
+    h = hashlib.sha256()
+    for k, v in parts:
+        h.update(f"{k}={v!r};".encode())
+    return h.hexdigest()[:16]
+
+
 def build_generator_agent(
     env_id: str,
     generator_algo: str,
@@ -659,6 +928,9 @@ def generate_offline_dataset(
     run_dir: str | None = None,
     device: str | None = None,
     agent=None,
+    rollout_device: str | None = "cpu",
+    rollout_n_envs: int = 1,
+    legacy_rollout: bool = False,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -673,7 +945,30 @@ def generate_offline_dataset(
     generator's parameter hash is stamped into the dataset metadata
     (``generator_checkpoint_hash``) so the driver can REFUSE a cell whose arms carry
     different hashes. With ``agent=None`` the legacy fresh-agent-per-call path is
-    byte-unchanged."""
+    byte-unchanged.
+
+    Rollout speed (docs/dataset_generation_speedup.md). Generator TRAINING always
+    runs on ``device`` (batched, GPU-friendly); the ROLLOUT is placed separately:
+
+      ``rollout_device`` (default ``"cpu"``, strategy S1): stepping the vector env
+        on CUDA costs a ~15 ms host<->device round trip PER STEP at batch 1 versus
+        ~33 us on CPU — a ~70x end-to-end rollout speedup. A CPU copy of the
+        generator serves the collection policy; the ORIGINAL agent is what gets
+        hashed and its parameter VALUES are identical, so
+        ``generator_checkpoint_hash`` is unaffected.
+      ``rollout_n_envs`` (default 1, strategy S2): >1 collects through
+        ``_rollout_vectorized`` — N slots stepped in lockstep with one batched
+        policy forward. Episodes are emitted in assignment order, so the dataset
+        never depends on completion order.
+      ``legacy_rollout``: restores the pre-speedup path exactly (rollout on
+        ``device``, one slot, scalar ``_rollout``) for regenerating historical
+        dataset ids bit-for-bit.
+
+    The fast paths are NOT byte-identical to the legacy one (CPU/CUDA argmax ties
+    break differently; batched draws reorder the policy RNG stream). That is sound
+    here because datasets SELF-CERTIFY: the confounding signature is recomputed at
+    generation and enforced at load, so a regenerated dataset carries its own
+    validity proof."""
     import gymnasium as gym
 
     from src.benchmarking.registry import register_default_algorithms, registry
@@ -695,6 +990,15 @@ def generate_offline_dataset(
     assert_action_space_match(generator_algo, env_action_type)
 
     dev = torch.device(device) if device else detect_device()
+    # Rollout placement (S1/S2). legacy_rollout pins the historical behavior:
+    # rollout on the training device, a single slot, scalar _rollout.
+    if legacy_rollout:
+        roll_dev, n_slots = dev, 1
+    else:
+        roll_dev = (
+            torch.device(rollout_device) if rollout_device else torch.device("cpu")
+        )
+        n_slots = max(1, int(rollout_n_envs))
 
     # --- train (skipped for the random tier, and when a pre-built agent is given) ---
     sel_ep = None
@@ -709,8 +1013,8 @@ def generate_offline_dataset(
     # --- rollout env + agent ---
     rollout_env = build_rollout_env(
         env_id,
-        1,
-        dev,
+        n_slots,
+        roll_dev,
         seed,
         behavior_policy,
         behavior_strength,
@@ -745,12 +1049,25 @@ def generate_offline_dataset(
         )
         agent.load_state_dict(ckpt["agent_state"])
 
+    # S1: the collection policy must live on the ROLLOUT device. Parameter values
+    # are preserved exactly by the copy (nn.Module .to() is a dtype-preserving
+    # move), so the hash stamped below — taken from the ORIGINAL agent — is
+    # unchanged. Copying only when the devices actually differ keeps the legacy
+    # path allocation-for-allocation identical.
+    rollout_agent = agent
+    _agent_dev = getattr(agent, "device", None)
+    if _agent_dev is not None and torch.device(_agent_dev).type != roll_dev.type:
+        import copy as _copy
+
+        rollout_agent = _copy.deepcopy(agent).to(roll_dev)
+        rollout_agent.device = roll_dev
+
     if behavior_policy == "agent":
-        collection_policy = AgentBehaviorPolicy(agent)
+        collection_policy = AgentBehaviorPolicy(rollout_agent)
     else:
         collection_policy = build_collection_policy(
             behavior_policy,
-            agent,
+            rollout_agent,
             action_type,
             action_space,
             behavior_strength,
@@ -758,7 +1075,9 @@ def generate_offline_dataset(
             pi_basic_epsilon=pi_basic_epsilon,
         )
 
-    buffers, sig_samples = _rollout(
+    # S2: >1 slot routes to the vectorized collector (same output contract).
+    _collect = _rollout_vectorized if n_slots > 1 else _rollout
+    buffers, sig_samples = _collect(
         rollout_env, collection_policy, rollout_episodes, seed, action_type
     )
     rollout_env.close()
@@ -797,6 +1116,25 @@ def generate_offline_dataset(
     # arms of a cell were collected under one pi_basic (refuse a cell whose arms
     # differ). Stamped on every dataset — internal-build or pre-built agent alike.
     signature["generator_checkpoint_hash"] = generator_checkpoint_hash(agent)
+    # S4: stamp the input fingerprint so a later run can PROVE that regenerating
+    # this dataset would reproduce it, and reuse it instead (see
+    # generation_fingerprint + regime_sweep's reuse check).
+    signature["generation_fingerprint"] = generation_fingerprint(
+        env_id=env_id,
+        generator_algo=generator_algo,
+        tier=tier,
+        behavior_policy=behavior_policy,
+        behavior_strength=behavior_strength,
+        confounder_c_r=confounder_c_r,
+        pi_basic_epsilon=pi_basic_epsilon,
+        a_bad=a_bad,
+        rollout_episodes=rollout_episodes,
+        seed=seed,
+        generator_hash=signature["generator_checkpoint_hash"],
+        rollout_device=str(roll_dev),
+        rollout_n_envs=n_slots,
+        legacy_rollout=legacy_rollout,
+    )
     ds.storage.update_metadata(signature)
     return ds
 

@@ -58,6 +58,7 @@ from src.benchmarking.regime_sweep import (
     results_leaf,
     run_cell,
 )
+from src.config.threads import DEFAULT_MAX_INTRAOP_THREADS
 
 # Repo root: this file is <root>/src/benchmarking/sweep_supervisor.py, so parents[2]
 # is the root a ``python -m src.benchmarking.regime_sweep`` child must run from.
@@ -338,7 +339,18 @@ def _supervise(
         "OPENBLAS_NUM_THREADS",
         "NUMEXPR_NUM_THREADS",
     )
-    threads_per_worker = str(max(1, (os.cpu_count() or max_workers) // max_workers))
+    # Also cap ABOVE: even a lone worker should not take the machine's full core
+    # count, because the small-batch updates lose badly to thread-pool barriers
+    # (see src/config/threads.py for the measurements).
+    threads_per_worker = str(
+        max(
+            1,
+            min(
+                (os.cpu_count() or max_workers) // max_workers,
+                DEFAULT_MAX_INTRAOP_THREADS,
+            ),
+        )
+    )
     thread_env = {v: threads_per_worker for v in thread_vars if v not in os.environ}
     # On an interactive terminal, MIRROR each worker's current progress line
     # (its own tqdm bar, or the generation-phase print) into a fixed slot below.

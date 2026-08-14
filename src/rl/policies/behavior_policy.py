@@ -341,14 +341,19 @@ class CuriosityBehaviorPolicy(BehaviorPolicy):
         buf = getattr(self.agent, "buffer", None)
         if buf is None or len(buf) < self.min_buffer or self._step % self.train_every:
             return
-        storage = list(buf.storage)
         idx = torch.randint(
-            0, len(storage), (self.train_batch,), generator=self._gen
+            0, len(buf), (self.train_batch,), generator=self._gen
         ).tolist()
         device = next(self.models[0].parameters()).device
-        obs = torch.stack([storage[i]["obs"] for i in idx]).to(device).float()
-        actions = torch.stack([storage[i]["actions"] for i in idx]).to(device)
-        next_obs = torch.stack([storage[i]["next_obs"] for i in idx]).to(device).float()
+        # buffer.gather indexes the contiguous per-key tensors directly. The
+        # previous form materialized EVERY transition as a dict
+        # (``list(buf.storage)``) on every training step just to index a few of
+        # them; the draws are unchanged (same generator, same indices, same
+        # rows), so behavior is identical.
+        rows = buf.gather(idx)
+        obs = rows["obs"].to(device).float()
+        actions = rows["actions"].to(device)
+        next_obs = rows["next_obs"].to(device).float()
         for m, opt in zip(self.models, self.opts):
             loss = F.mse_loss(m(obs, actions), next_obs)
             opt.zero_grad(set_to_none=True)

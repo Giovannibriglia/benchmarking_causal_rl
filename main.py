@@ -19,6 +19,7 @@ from src.benchmarking.runner import (
 )
 from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 from src.config.device import detect_device
+from src.config.threads import configure_intraop_threads
 from src.envs.registry import register_default_env_wrappers
 
 
@@ -371,6 +372,10 @@ def main():
     args = parse_args()
     register_default_algorithms()
     register_default_env_wrappers()
+    # Cap intra-op threads before any tensor work: torch's default pool
+    # (= core count) oversubscribes this repo's small-batch updates badly
+    # (up to 5.9x on iql). See src/config/threads.py; BCRL_NUM_THREADS overrides.
+    configure_intraop_threads()
 
     cfg_from_file: dict = {}
     repro_path = None

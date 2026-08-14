@@ -203,6 +203,40 @@ never helps" — suspicious enough to audit end-to-end. Verdict:
   recurrent-CQL workstream; adding plain `cql` to the family's algos would put
   the wedge itself into the sweep's report.
 
+#### MuJoCo tier-sweep investigation (2026-08-13): metric artifact + robust coverage effect
+
+Follow-up audit of the tier-ladder results, using per-dataset behavior anchors
+(hopper 1656/2818/3858, halfcheetah 6927/12089/16243 full-episode) and a
+FULL-EPISODE re-eval of every seed-0 checkpoint:
+
+- **The 512-step window metric is misleading for MuJoCo, in both directions.**
+  It forgives early termination (falling + auto-reset keeps accruing per-step
+  reward: window said Hopper-expert BCQ 1915 = best arm; full episodes say 1106
+  = WORST arm) and it caps the survival signal (Hopper tier quality mostly
+  manifests as living past 512 steps). MuJoCo-family cells should be read on
+  full-episode returns (post-hoc; the frozen window eval is untouched).
+- **Full-episode picture**: Hopper medium is the best arm (IQL/BCQ ~3515,
+  125% of behavior) and simple-arm learners EXCEED behavior too (BCQ 188%) —
+  genuine offline policy improvement, not cloning. The expert arm collapses on
+  BOTH envs (Hopper 20-29%, HalfCheetah 10% of behavior). HalfCheetah recovery
+  ladder: BCQ 101% -> 56% -> 10% across simple -> medium -> expert.
+- **The coverage effect is budget-robust**: a 5x budget probe (BCQ, 250k grad
+  steps, HalfCheetah medium+expert) moved recovery only 56->59% and 10->10.6%
+  — the narrow-expert collapse is coverage-fundamental at this scale, not
+  undertraining. (`results/offline_mdp/hosted_mujoco_budget_probe/`.)
+- Standing caveat: `cql_continuous` fails everywhere except Hopper-simple —
+  a budget/config failure of our variant, excluded from conclusions.
+
+**BabyAI partial-vs-fullobs mechanism (same audit day)**: the egocentric view
+ALIASES states — GoToRedBall partial data has 601 distinct observations
+(10.1 transitions each, 99.4% eval-state coverage) vs fullobs 2415 distinct
+(2.5 each, 48.7% coverage). Two-force account: when the egocentric view keeps
+everything task-relevant, the coverage/generalization force makes partial WIN
+(observation aliasing = translation invariance = a representation prior);
+when it hides task-critical state (KeyCorridor carrying-state), the
+information force makes fullobs win (CQL 27.3 vs 0.0). Conservatism guards
+OOD actions, not OOD states — hence naive DQN's fullobs collapse.
+
 #### Integration checklist — DONE 2026-08-11 (hosted cells are live, as SWEEPS)
 
 All items landed. Hosted data runs as **behavior-policy sweeps** — one family

@@ -46,7 +46,13 @@ algos:
   # Memory row — the explicit networks block is REQUIRED (a plain string
   # defaults every component to mlp, which the recurrent builder rejects).
   - {name: offline_dqn_recurrent, networks: {critic: lstm}}
-  - offline_dqn               # memoryless baseline
+  - offline_dqn               # memoryless baseline (same base as the memory row)
+  # Competent memoryless reference (audit finding): CQL recovers the behavior
+  # policy on KeyCorridor-FULLOBS (0.94/100%) but is structurally capped at 0
+  # on KeyCorridor-PARTIAL (carrying-state unobservable) — the observability
+  # wedge this row makes visible inside the sweep. Closing it from the partial
+  # side needs recurrent-cql (deferred workstream).
+  - cql
 
 seeds: [0, 1, 2]
 

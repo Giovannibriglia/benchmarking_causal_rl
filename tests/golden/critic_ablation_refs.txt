@@ -24,6 +24,7 @@ src/benchmarking/regime_report.py:    filename = _METRIC_SOURCE_FILE.get(column,
 src/benchmarking/regime_report.py:    return _read_last_checkpoint(Path(leaf) / "critic_ablation_metrics.csv", column)
 src/benchmarking/regime_report.py:# leaves are plain benchmark run dirs — no critic_ablation_metrics.csv exists).
 src/benchmarking/regime_report.py:# named here defaults to critic_ablation_metrics.csv (the existing behavior).
+src/benchmarking/regime_sweep.py:                # (classical and critic_ablation share dataset ids). Any changed
 src/benchmarking/regime_sweep.py:            leaf / "critic_ablation_metrics.csv",
 src/benchmarking/regime_sweep.py:            staging / "critic_ablation_metrics.csv",
 src/benchmarking/regime_sweep.py:        "sweep_yaml", help="path to a cell YAML (classical.yaml / critic_ablation.yaml)"
@@ -31,6 +32,7 @@ src/benchmarking/regime_sweep.py:        "{regime}/classical/ leaves) or critic_
 src/benchmarking/regime_sweep.py:        critic_ablation_cfg=CriticAblationConfig(critics=list(critics)),
 src/benchmarking/regime_sweep.py:    """Copy ``critic_ablation_metrics.csv`` keeping the header + only ``critic``'s
 src/benchmarking/regime_sweep.py:    # WHICH simulation this cell runs: "critic_ablation" (default — the historical
+src/benchmarking/regime_sweep.py:    # component, so a regime's classical and critic_ablation cells ask for the
 src/benchmarking/regime_sweep.py:    ``critic_ablation`` = one run per (point, base algo, strategy VARIANT)
 src/benchmarking/regime_sweep.py:    from src.benchmarking.critic_ablation import CriticAblationConfig
 src/benchmarking/regime_sweep.py:    mode: str = "critic_ablation",
@@ -67,4 +69,5 @@ src/benchmarking/sweep_supervisor.py:        return ("config.yaml", "critic_abla
 src/benchmarking/sweep_supervisor.py:    critic_ablation: one per (sweep point x algo x that arm's critic) — critic
 src/benchmarking/sweep_supervisor.py:    critic_ablation_metrics.csv into every leaf; classical and online-ablation
 src/benchmarking/sweep_supervisor.py:    if spec.simulation == "critic_ablation" and spec.data_regime == "offline":
+src/envs/offline/generate.py:    ``critic_ablation`` cells of one regime share dataset ids (the id carries no
 src/rl/on_policy/base_actor_critic.py:    # them, and critic_ablation / aux_models — which consume the flat (T*N, D)
