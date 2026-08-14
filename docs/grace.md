@@ -229,8 +229,19 @@ updated `nbn/NOTICE.md` provenance block.
   reward channel is not available on the serving path, so U-evidence stays at
   the prior there. Offline scoring (flat single-obs eval set) uses the
   emission-conditioned prior belief (QMDP-style belief-averaged Q_do).
-* **Factored transitions (Acrobot)** are an approximation (A8) — validated by
-  the reduction gate, reported, and subject to the A8 stop rule.
+* **Factored transitions (A8) are UNEXERCISED at production scale.** The
+  factored per-dimension transition mode engages only when the joint bin space
+  exceeds `joint_cap` (2048). CartPole at 6 bins × 4 dims = 1296 stays *under*
+  the cap, so it runs the exact-joint path; Acrobot (4⁶ = 4096) is the only
+  wired env that would exercise the factored path — and Acrobot is **deferred
+  to a background job** under the Block-A re-scope (it has no stored
+  independent `noise_ref`, so its gate verdicts would be provisional
+  regardless). Consequently the factored approximation is covered *only* by
+  the unit-level reduction test, never at production budget, and the **R1
+  state-space-blowup risk is not closed** by the offline_mdp blocks. The
+  deferred Acrobot job is its validation; until that job runs, treat any
+  factored-mode claim as untested at scale, and honour the A8 stop rule if it
+  then fails the reduction gate at the chosen binning.
 * **`rho` persistence** is declared but its fit is out of scope (raises if
   enabled).
 * **POMDP latent-S EM** is a random-init Baum-Welch (seeded, canonicalized);
@@ -251,8 +262,35 @@ ancestral sampling, same signature); (3) nothing tabular leaks into the
 `Grace` / `RegimeRouter` public signatures. Continuous actions are out of
 scope at every phase (the ablation host is discrete-action by construction).
 
+## Cost of the method (measured)
+
+GRACE's machinery is cheap; its cost to the benchmark is the extra *arms*.
+
+* **Per-fit CBN cost** (one `fit_from_buffer`: main EM + K=5 bootstrap + the
+  three restricted router fits + value iteration): **~1.8 s** at CartPole
+  scale, **~13.2 s** at half-Acrobot scale (factored mode). Negligible beside
+  a 50k-step learner.
+* **Marginal benchmark cost**: the critic set grows 4 → 6 arms, and an
+  ablation task costs `(1 base actor + N critic arms) × grad_steps × algos`,
+  so a basic/confounded point costs **~+50%**. That is the honest price of an
+  always-on ensemble plus router: the interval needs K refits and the router
+  needs its restricted fits, both per arm, on every point.
+
+The E0 router calibration is cheaper than it looks: its components are
+*dataset* quantities (no base-learner training), so it costs dataset
+generation plus CBN fits only.
+
+## Experiment scope (Block A onward)
+
+Experiments run as **blocks**, each ending in a push and a relay pause.
+Block A (offline_mdp E1) is scoped to **CartPole-v1 × {cql, iql}**, all 7
+sweep points, all 5 seeds — those being the only (env, algo) pairs with
+stored *independent* `noise_ref` values and therefore the only ones whose
+G1/G2 verdicts can be non-provisional. Acrobot and the `offline_dqn` / `bcq`
+bases are deferred to background jobs that gate no report; see the A8
+limitation above for what the Acrobot deferral leaves untested.
+
 ## Results
 
-Populated by the staged experiment nights (E0 calibration; E1 ablations; E2
-return-level runs; E4 RE ladder; E3 online) — see the per-night reports and
-`results/_report/`.
+Populated per block (E0 calibration; E1 ablations; E2 return-level runs; E4 RE
+ladder; E3 online) — see the per-block reports and `results/_report/`.
