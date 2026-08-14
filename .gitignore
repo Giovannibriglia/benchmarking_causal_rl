@@ -5,6 +5,7 @@ build
 runs
 results
 results_smoke
+results_archive
 outputs
 __pycache__/
 *.pyc
