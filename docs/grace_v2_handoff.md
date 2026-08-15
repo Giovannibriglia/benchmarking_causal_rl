@@ -49,13 +49,17 @@ these, not rediscover them.**
 | **L2** identification | **Done.** `identify.py`, derived from graph structure only (never reads `Verdict`, so gate V2 is a real test). Precedence: backdoor → frontdoor → proximal → instrument → lagged (gated) → **unknown ⇒ bounds-only, never point-ID by default**. |
 | **arms** | **Done.** D-A-null / D-D / D-E / D-B′ generate, certify, and are byte-frozen against the historical arms. |
 | **L3** estimation | **Core done, guarded.** `estimator.py`: EM over an episode-static latent, both channels, monotone-guarded GEM. |
-| **L4** uncertainty | **Not started.** `interventional_sweep` is the seam. |
+| **L4** uncertainty | **Design decided, not implemented** — see `grace_v2_l4_design.md`. Compatible set = LR confidence region with the threshold **bootstrap-calibrated** (shared mechanism with L5, since chi-2 asymptotics fail on the mixture boundary); validation is q1 against Balke-Pearl for exactness and q2 against MC ground truth for **coverage plus width**. `interventional_sweep` is the evaluation seam; the optimiser must use `sample(do=)`. |
 | **L5** falsification | **Not started.** The headline capability. |
 
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.
 * **D-D's reward-view coupling** — documented in the catalogue, to be *quantified by R4*, deliberately not engineered away. Third-proxy remedy held in reserve, evidence-driven only.
+* **L4's threshold must never become a constant** — this is the single most
+  likely place for v1's `k` to reappear, since a bound with an unjustified width
+  still looks like a bound. The identified-cell collapse check (D-D and D-A to
+  ~0 width, D-E not) is what would catch it.
 * **C1's splitter assertion** attaches to V-D.
 * **D-B's q2 stays gated** — degrades to bounds, does not serve point values.
 * The **untestable-assumption section** in `diagram_catalogue.md` is the paper's limitations section in draft. A test enforces that a new untestable assumption cannot be added without appearing there.
