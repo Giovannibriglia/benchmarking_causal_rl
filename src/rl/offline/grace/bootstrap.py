@@ -25,6 +25,25 @@ and handled by an explicit choice — never by default. A bootstrap reporting
 "B = 99" while having used 71 is the same species of error as a run reporting 27
 rows into 8 datasets.
 
+**THE SYMMETRY RULE — the invariant a reviewer probes first.** Whatever fitting
+procedure produces the OBSERVED statistic must produce the REPLICATE statistics:
+same lr schedule, same epoch budget, same initialisation policy, same
+convergence tolerance, same guard settings. *Any* procedural asymmetry biases
+the threshold, in a direction that is not knowable from the outputs.
+
+Two concrete traps this rules out:
+
+* **Warm-starting replicates from the null-generating parameters.** Tempting and
+  very effective — and wrong: the replicate is generated *from* those
+  parameters, so warm-starting hands it a head start the observed fit never got.
+  The replicate statistics come out systematically better-optimised than the
+  observed one and the null shifts.
+* **A cheaper fit budget for replicates than for the observed fit.** Legitimate
+  only if applied to BOTH sides; applied to one, it is the same bias wearing
+  different clothes.
+
+Both are special cases of the same rule, and both look like pure speed-ups.
+
 ``B`` is a **reported Monte-Carlo precision parameter**, not a calibration
 constant — the same distinction as ``alpha`` in L4. Every threshold is returned
 with its own Monte-Carlo error, because a threshold quoted without its
@@ -194,6 +213,7 @@ def bootstrap_null(
     statistic_name: str = "",
     max_failure_rate: float = 0.0,
     on_failure: str = "report",
+    n_jobs: int = 1,
 ) -> BootstrapNull:
     """Calibrate a reference distribution by running ``statistic`` ``b`` times.
 
@@ -206,6 +226,15 @@ def bootstrap_null(
     Determinism: replicate ``i`` gets ``seed + 1 + i``, and that seed is passed
     in rather than drawn here, so the caller's refit is seeded too and a
     threshold is reproducible end to end.
+
+    ``n_jobs`` runs replicates concurrently. Replicates are independent refits, so
+    this is **statistically neutral** — the first lever to reach for, ahead of
+    anything that touches the procedure. Determinism is preserved regardless of
+    completion order because each replicate's seed is assigned from its INDEX
+    before dispatch and results are collected back by index. Threads rather than
+    processes: the fitting releases the GIL, and the statistic closes over live
+    model objects that would not pickle. Cap each fit's own thread count
+    (``torch.set_num_threads``) so the pool does not oversubscribe.
 
     ``on_failure``:
       * ``"report"`` (default) — record failures, compute the threshold from the
@@ -220,8 +249,7 @@ def bootstrap_null(
     if b < 2:
         raise ValueError(f"b must be at least 2 to form a null, got {b}")
 
-    results: List[ReplicateResult] = []
-    for i in range(b):
+    def _one(i: int) -> ReplicateResult:
         rep_seed = seed + 1 + i
         rec = ReplicateResult(index=i, seed=rep_seed)
         try:
@@ -229,27 +257,23 @@ def bootstrap_null(
         except Exception as exc:  # a failed fit is DATA about the null, not noise
             rec.failed = True
             rec.reason = f"{type(exc).__name__}: {exc}"[:200]
-            results.append(rec)
-            continue
+            return rec
         if out is None:
             rec.failed = True
             rec.reason = "statistic returned None"
-            results.append(rec)
-            continue
+            return rec
         value = getattr(out, "value", out)
         try:
             rec.statistic = float(value)
         except (TypeError, ValueError):
             rec.failed = True
             rec.reason = f"statistic returned non-numeric {type(out).__name__}"
-            results.append(rec)
-            continue
+            return rec
         if not np.isfinite(rec.statistic):
             rec.failed = True
             rec.reason = f"statistic was {rec.statistic}"
             rec.statistic = None
-            results.append(rec)
-            continue
+            return rec
         rec.converged = bool(getattr(out, "converged", True))
         rec.monotone = bool(getattr(out, "monotone", True))
         rec.backtracks = int(getattr(out, "backtracks", 0))
@@ -260,7 +284,18 @@ def bootstrap_null(
         if rec.backtrack_exhausted:
             rec.failed = True
             rec.reason = "backtrack budget exhausted (EM stopped on a decrease)"
-        results.append(rec)
+        return rec
+
+    if n_jobs == 1:
+        results: List[ReplicateResult] = [_one(i) for i in range(b)]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+            # Collected BY INDEX, so the null does not depend on which replicate
+            # finished first -- the same discipline as the vectorized rollout's
+            # deterministic output order.
+            results = list(pool.map(_one, range(b)))
 
     null = BootstrapNull(
         replicates=results,

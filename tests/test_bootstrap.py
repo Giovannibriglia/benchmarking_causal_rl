@@ -209,3 +209,31 @@ def test_per_replicate_diagnostics_survive_to_the_aggregate():
     assert d["n_non_monotone"] > 0
     assert d["total_backtracks"] == sum(r.backtracks for r in null.replicates)
     assert d["n_used"] + d["n_failed"] == d["n_requested"]
+
+
+def test_parallel_replicates_give_the_identical_null():
+    """Parallelism across replicates is statistically NEUTRAL -- independent
+    refits -- so it is the first lever to reach for, ahead of anything that
+    touches the procedure. Determinism must survive it: seeds are assigned from
+    the INDEX before dispatch and results collected back by index, so the null
+    cannot depend on which replicate finished first."""
+    f = lambda s: float((s * 17) % 23)  # noqa: E731
+    serial = bootstrap_null(f, b=32, seed=3, n_jobs=1)
+    parallel = bootstrap_null(f, b=32, seed=3, n_jobs=8)
+    assert np.array_equal(serial.successes, parallel.successes)
+    assert [r.seed for r in serial.replicates] == [r.seed for r in parallel.replicates]
+    assert [r.index for r in parallel.replicates] == list(range(32))
+
+
+def test_parallelism_preserves_failure_accounting():
+    """A failure in a worker must be recorded, not swallowed by the pool."""
+
+    def stat(seed):
+        if seed % 4 == 0:
+            raise RuntimeError("EM diverged")
+        return float(seed)
+
+    a = bootstrap_null(stat, b=20, seed=0, n_jobs=1)
+    b = bootstrap_null(stat, b=20, seed=0, n_jobs=6)
+    assert a.n_failed == b.n_failed > 0
+    assert a.diagnostics() == b.diagnostics()

@@ -172,3 +172,50 @@ block-plan-changing difference.
 
 Do NOT reach for a third lever of dropping slow or non-converging replicates:
 that is exactly the bias the module refuses (see `bootstrap.py`).
+
+
+### 3a. Is `lr` only a wall-clock knob? **NOT ESTABLISHED — treat it as disclosed**
+
+Checked directly, because mixture EM has multiple local optima and a step size
+that lands in a different one changes the *estimand*, not merely the time to
+reach it. 200 episodes x 10, two seeds per setting:
+
+| lr | mean final LL | recovery (seed 0 / 1) | prior₀ |
+|---|---|---|---|
+| 1e-2 | −3633.74 | 0.960 / 0.935 | 0.453 / 0.499 |
+| 3e-3 | −3658.63 | 0.960 / 0.945 | 0.454 / 0.494 |
+| 1e-3 | −3674.70 | **0.980 / 0.990** | 0.440 / 0.455 |
+
+Spread across `lr` was 40.96 against a within-`lr` seed spread of 43.37, so the
+formal comparison says "within noise" — **but that verdict is not usable**, for
+two reasons:
+
+1. **The trend is monotone in `lr`** (−3633.7, −3658.6, −3674.7). Systematic
+   ordering is not what sampling noise looks like, and with n = 2 seeds the
+   comparison has no power to separate the two.
+2. **Log-likelihood and recovery accuracy disagree in direction.** The *worst*
+   LL (lr = 1e-3) gives the *best* latent recovery (0.980 / 0.990). If `lr` were
+   pure wall clock, both would be flat. Instead this looks like different optima
+   with different qualities — exactly the failure mode the check was for.
+
+**Ruling for now: `lr` is disclosed like `α`** — reported with every result, not
+treated as a free knob — until a properly powered comparison (≥ 10 seeds, idle
+machine) either establishes agreement or characterises the dependence. The
+optimiser setting must not be chosen by wall clock while it may be choosing the
+answer.
+
+### 3b. Lever priority, fixed
+
+1. **Parallelism across replicates** — statistically neutral, implemented
+   (`n_jobs`, thread pool, deterministic by index). Take this first.
+2. **Fewer SGD epochs per M-step** — GEM permits a partial M-step, so this is
+   legitimate. **Symmetrically only.**
+3. **Reducing B** — honest degradation, with the MC error reported alongside.
+   After the free levers, never instead of them.
+
+**Excluded: warm-starting replicates from the null-generating parameters.** The
+replicate is generated *from* those parameters, so warm-starting hands it a head
+start the observed fit never got, and the replicate statistics come out
+systematically better-optimised. Same asymmetry as an uneven fit budget. The
+general rule now lives in `bootstrap.py`'s docstring: **the procedure that
+produces the observed statistic must produce the replicate statistics.**
