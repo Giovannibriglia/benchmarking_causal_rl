@@ -15,55 +15,68 @@ with `K` components is identifiable up to label swapping from **three or more
 conditionally independent measurements**, under a Kruskal-rank condition on the
 three component-conditional matrices.
 
-> **Citation `TODO-verify`.** The result is Kruskal's trilinear-decomposition
-> theorem as applied to latent structure models by Allman, Matias & Rhodes.
-> Exact venue, year, and theorem number must be checked against the source
-> before this appears in the paper — deliberately not reconstructed from
-> memory.
+**References (verified against primary sources; do not re-derive):**
 
-### The measurement triple for D-B
+- Kruskal, J. B. (1977). "Three-way arrays: rank and uniqueness of trilinear
+  decompositions, with application to arithmetic complexity and statistics."
+  *Linear Algebra and its Applications* **18**(2): 95–138.
+- Allman, E. S., Matias, C., & Rhodes, J. A. (2009). "Identifiability of
+  parameters in latent structure models with many observed variables." *The
+  Annals of Statistics* **37**(6A): 3099–3132. doi:10.1214/09-AOS689
+  (arXiv:0809.5032).
 
-Three measurements conditionally independent given `U`, all available inside one
-episode with `U` static:
+AMR's framing matches Step 3 directly: models in which some observed variables
+are conditionally independent given the hidden ones, with Kruskal's theorem for
+a finite-state latent-class model at the core.
 
-> `M₁ = R_{t₁}`, `M₂ = R_{t₂}`, `M₃ = R_{t₃}` at three distinct times,
-> conditionally independent given `(U, S_{tᵢ}, A_{tᵢ})` because each reward's
-> noise is fresh and reward is a sink (nothing downstream reads it).
+### The measurement triple for D-B — with a correction
 
-### The condition, sharpened — and it is *not* the one first stated
+Three rewards at distinct times inside one episode:
 
-Kruskal's condition needs the three measurement matrices' Kruskal ranks to sum
-to at least `2K + 2`. For binary `U` (`K = 2`), each measurement contributes
-Kruskal rank 2 **iff that measurement's distribution actually differs between
-`U = 0` and `U = 1`**, i.e. `P(R_{tᵢ} | U=0) ≠ P(R_{tᵢ} | U=1)`. Three
-informative measurements give `2 + 2 + 2 = 6 ≥ 2(2) + 2 = 6` — satisfied, but
-**exactly at the boundary**, so no measurement may be uninformative.
+> `M₁ = R_{t₁}`, `M₂ = R_{t₂}`, `M₃ = R_{t₃}`
 
-Now the specific structure bites. The reward shift is **action-gated**:
-`r += c_r·U·1[A = a_bad]`. A transition where `A ≠ a_bad` carries **no**
-`U`-signal at all, so its measurement matrix has Kruskal rank 1, and the sum
-drops below the threshold.
+**Correction to the earlier statement.** These are *not* conditionally
+independent given `U` alone: `R_{t₁}` and `R_{t₂}` remain coupled through the
+observed state–action chain (`S_{t₁} → … → S_{t₂}`, and `A_t` depends on `S_t`).
+The correct statement is that they are conditionally independent given
+**`U` together with the `(S_t, A_t)` at the measurement times**, because each
+reward's noise is fresh and reward is a sink. The view matrices are therefore
+`Mᵢ[u, ·] = P(R_{tᵢ} | U = u, S = s, A = a)` — the standard conditional-on-
+covariates reading of AMR, not the bare marginal one.
 
-**Therefore the real condition is not "episode length ≥ 3" but:**
+### The k-rank condition, evaluated
 
-> **at least three transitions per episode on which `a_bad` was actually taken.**
+Kruskal's sufficient condition for essential uniqueness is that the **sum of the
+three views' k-ranks is at least `2R + 2`**, for `R` latent classes. A view's
+k-rank is capped at `R`, and reaches `R` only if the reward law differs across
+*all* `R` strata at that `(s, a)` — which, under the action-gated confounder
+`r += c_r·U·1[A = a_bad]`, requires `a = a_bad`. A non-`a_bad` view has
+identical laws across strata and k-rank 1.
 
-The catalogue's `episode_length_ge_3` assumption is a necessary consequence of
-this, not the condition itself, and the entry should be read accordingly. Three
-consequences:
+| `R` | required sum | 3 informative | 2 informative | 1 informative |
+|---|---|---|---|---|
+| 2 | 6 | **6 — OK (exactly tight)** | 5 — fails | 4 — fails |
+| 4 | 10 | **12 — OK** | 9 — fails | 6 — fails |
 
-1. **It is directly measurable** — count `a_bad` transitions per episode. That
-   makes it an assumption with an *observable shadow*, unlike completeness.
-2. **It ties to the R4 finding.** With `P(A = a_bad) = p` and episode length
-   `T`, the expected count is `pT`. At the wired operating point (CartPole,
-   `T ≈ 13` at random tier, `pi_basic_epsilon = 0.5`, so `p ≈ 0.5`) the
-   expectation is ≈ 6.5 — comfortable. As the logged policy improves and `p`
-   falls, episodes stop supplying three informative measurements and Q2's
-   identification fails *before* Q1's degrades, because Q1 needs two
-   informative proxies and Q2 needs three.
-3. **Q2 fails earlier than Q1 along the policy-quality axis.** That is a
-   prediction the R4 sweep can check directly, and a sharper statement than
-   "identification degrades".
+**Consequence 1 — at `|U| = 2` the condition is exactly tight.** All three views
+must have full k-rank 2; there is no slack. This is `proxy_informativeness`
+arriving from the theorem rather than from intuition, and it is why
+`P(A = a_bad)` bounded away from zero is load-bearing: one view in which the
+gate never fires drops the sum to 5 and the condition fails.
+
+**Consequence 2 — raising `u_card` makes identification harder, not merely more
+expensive.** At `|U| = 4` the requirement rises to 10 against views capped at 4,
+so the views must be strictly richer. A `K` chosen purely by held-out likelihood
+may therefore sit outside the range Kruskal's condition licenses. **`u_card`
+selection must report the estimated view k-ranks alongside the likelihood
+curve**, so the two criteria are visible together and a likelihood-preferred `K`
+that violates the rank condition is caught rather than silently adopted.
+
+**Verdict for the D-B entry: the condition HOLDS ONLY UNDER THE STATED
+PROXY-INFORMATIVENESS** — concretely, at least three `a_bad` transitions per
+episode. That is checkable per episode, so D-B's q2 gate stays **conditional and
+shut by default** rather than permanently shut: GRACE counts informative
+transitions and degrades the estimate to bounds when the count is short.
 
 ### Consequence for the implementation
 

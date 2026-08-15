@@ -66,6 +66,16 @@ stratum's bandwidth would therefore reflect the pooled data rather than that
 stratum's, biasing the component densities toward each other — precisely the
 direction that would make strata look *less* separable than they are.
 
+**Direction of the bias, and what it costs.** Pooling makes latent classes look
+**less** separable than they are. That matters for L5's accounting: it produces
+**false negatives, not false alarms** — it degrades V3's *detection power* and
+its detection curve, while leaving the false-positive rate (measured on the
+D-A-null arm, where there are no classes to blur) intact. A KDE-induced failure
+would therefore look like "the diagram was not refuted", the quiet failure mode,
+which is exactly why the mechanism choice is constrained rather than left to
+taste. This belongs in L5's limitations section alongside M2's in-principle
+undetectability.
+
 **Consequence.** In the weighted EM path, use **MDN, normalizing flow, or
 LinearGaussian** for continuous nodes. `supports_weights` is `True` for all
 three (verified), and `False` for KNN — so a mistaken choice fails fast in
