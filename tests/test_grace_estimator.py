@@ -108,10 +108,12 @@ def test_interventional_reward_recovers_the_known_do_effect():
     U-marginal effect is E[R|do(1)] - E[R|do(0)] = 1.5 * P(U=1) = 0.75."""
     est, fit, _ = _fitted()
     s = torch.zeros(2)
-    v0 = est.interventional_reward(s, 0, fit.prior, n_samples=1024)
-    v1 = est.interventional_reward(s, 1, fit.prior, n_samples=1024)
-    assert abs(float(v0.detach()) - 1.0) < 0.15, float(v0)
-    assert 0.4 < float((v1 - v0).detach()) < 1.1, float(v1 - v0)
+    v0 = est.interventional_reward(s, 0, fit, n_samples=1024)
+    v1 = est.interventional_reward(s, 1, fit, n_samples=1024)
+    assert abs(float(v0) - 1.0) < 0.15, float(v0)
+    assert 0.4 < float(v1) - float(v0) < 1.1, (float(v0), float(v1))
+    # C3: every estimate carries its conditions.
+    assert isinstance(v0.monotone, bool) and "sep=" in v0.label()
 
 
 def test_the_target_path_is_differentiable():
@@ -123,9 +125,9 @@ def test_the_target_path_is_differentiable():
     than merely the value."""
     est, fit, _ = _fitted(n_ep=80, T=8)
     est.model.zero_grad(set_to_none=True)
-    v = est.interventional_reward(torch.zeros(2), 1, fit.prior, n_samples=256)
-    assert v.requires_grad, "sample(do=) target lost its gradient"
-    v.backward()
+    v = est.interventional_reward(torch.zeros(2), 1, fit, n_samples=256)
+    assert v.value.requires_grad, "sample(do=) target lost its gradient"
+    v.value.backward()
     total = sum(
         float(p.grad.norm()) for p in est.model.parameters() if p.grad is not None
     )
@@ -147,7 +149,8 @@ def test_the_readonly_sweep_is_not_differentiable_and_says_so():
     est, fit, _ = _fitted(n_ep=80, T=8)
     states = torch.zeros(4, 2)
     est.model.zero_grad(set_to_none=True)
-    out = est.interventional_sweep(states, [0, 1, 0, 1], fit.prior)
+    est_out = est.interventional_sweep(states, [0, 1, 0, 1], fit)
+    out = est_out.value
     assert out.shape == (4,)
     assert not out.requires_grad, "the read-only sweep must not carry a gradient"
     probe = (out.sum() * torch.ones(1, requires_grad=True)).sum()
@@ -164,15 +167,62 @@ def test_both_interventional_paths_agree():
     (query_batch) for do(a=0)/do(a=1) on the fixture."""
     est, fit, _ = _fitted()
     s = torch.zeros(2)
-    sweep = est.interventional_sweep(torch.zeros(2, 2), [0, 1], fit.prior)
+    sweep = est.interventional_sweep(torch.zeros(2, 2), [0, 1], fit)
     for i, a in enumerate((0, 1)):
-        looped = float(
-            est.interventional_reward(s, a, fit.prior, n_samples=2048).detach()
-        )
-        assert abs(looped - float(sweep[i])) < 0.1, (a, looped, float(sweep[i]))
+        looped = float(est.interventional_reward(s, a, fit, n_samples=2048))
+        assert abs(looped - float(sweep.value[i])) < 0.1, (a, looped)
 
 
 def test_the_sweep_is_per_row_and_refuses_a_mismatch():
     est, fit, _ = _fitted(n_ep=60, T=6)
     with pytest.raises(ValueError, match="per-row"):
-        est.interventional_sweep(torch.zeros(4, 2), [0, 1], fit.prior)
+        est.interventional_sweep(torch.zeros(4, 2), [0, 1], fit)
+
+
+def test_the_snapshot_is_not_aliased_to_the_live_parameters():
+    """The guard's load-bearing detail. state_dict() returns tensors SHARING
+    STORAGE with the live parameters, so an in-place step mutates the snapshot
+    too and a restore silently reinstates the already-stepped values -- the
+    backtrack would accept every step it meant to reject, with nothing raising.
+    Verified on this vendored copy: LinearGaussian's _bias read -0.012977, then
+    -0.017710 through a naive snapshot after a step, while a deepcopy still read
+    -0.012977."""
+    est, _, _ = _fitted(n_ep=40, T=6)
+    deep = est._snapshot()
+    naive = est.model.state_dict()
+    key = next(k for k in deep if deep[k].numel() and deep[k].is_floating_point())
+    before = float(deep[key].reshape(-1)[0])
+    with torch.no_grad():
+        for p in est.model.parameters():
+            p.add_(torch.ones_like(p))
+    assert float(deep[key].reshape(-1)[0]) == before, "deepcopy snapshot was mutated"
+    # ...and the naive one demonstrably is, which is why deepcopy is required.
+    assert float(naive[key].reshape(-1)[0]) != before
+
+    est._restore(deep)
+    live = est.model.state_dict()
+    assert abs(float(live[key].reshape(-1)[0]) - before) < 1e-9, "restore failed"
+
+
+def test_em_is_monotone_under_the_guard():
+    """GEM requires only that the M-step INCREASE the objective, so rejecting
+    decreases restores the guarantee outright -- and with it the convergence
+    test, which cannot distinguish convergence from oscillation if the
+    likelihood may fall."""
+    _, data = _fixture(n_ep=200, T=10, proxy=True)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
+    fit = est.fit(data, max_iter=8, epochs=30, lr=1e-2)
+    assert fit.monotone, fit.log_likelihood
+    assert fit.converged or fit.backtrack_exhausted or fit.n_iter == 8
+
+
+def test_an_exhausted_backtrack_budget_stops_rather_than_proceeding():
+    """If the budget is spent and the objective still falls, the fit must stop on
+    the last good parameters and SAY so, never continue on a decrease."""
+    _, data = _fixture(n_ep=60, T=6, proxy=True)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
+    # A wildly oversized step makes every M-step overshoot.
+    fit = est.fit(data, max_iter=4, epochs=3, lr=5.0, max_backtracks=1)
+    assert fit.monotone, "a decrease survived the guard"
+    if fit.backtrack_exhausted:
+        assert not fit.converged

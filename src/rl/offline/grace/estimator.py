@@ -36,6 +36,7 @@ Written against NBN v0.14.0 the library's own way, per ``docs/nbn_requirements``
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
@@ -50,7 +51,7 @@ from nbn import (
     NeuralCategoricalMechanism,
 )
 
-__all__ = ["EpisodeData", "LatentClassFit", "LatentClassEstimator"]
+__all__ = ["EpisodeData", "Estimate", "LatentClassFit", "LatentClassEstimator"]
 
 # Mechanisms whose weighted fit is exact. KDE is excluded deliberately (N3).
 _WEIGHTED_SAFE = (MDNMechanism, LinearGaussianMechanism, NeuralCategoricalMechanism)
@@ -132,6 +133,41 @@ class EpisodeData:
 
 
 @dataclass
+class Estimate:
+    """A number that carries the conditions it was produced under (C3).
+
+    ``value`` stays a tensor, so the differentiable path is unaffected. The
+    labels ride alongside because a fit that decreased its likelihood, or that
+    never separated, can still produce a perfectly plausible-looking value —
+    recovery was 0.980 on a fixture WITH a decrease present. Non-monotone does
+    not mean wrong, which is exactly why it must be labelled rather than either
+    trusted or discarded.
+    """
+
+    value: torch.Tensor
+    monotone: bool
+    converged: bool
+    separability: float
+    backtracks: int = 0
+    backtrack_exhausted: bool = False
+
+    def label(self) -> str:
+        bits = [f"sep={self.separability:.2f}"]
+        if not self.monotone:
+            bits.append("NON-MONOTONE-EM")
+        if not self.converged:
+            bits.append("NOT-CONVERGED")
+        if self.backtrack_exhausted:
+            bits.append("BACKTRACK-EXHAUSTED")
+        if self.backtracks:
+            bits.append(f"backtracks={self.backtracks}")
+        return " ".join(bits)
+
+    def __float__(self) -> float:
+        return float(self.value.detach())
+
+
+@dataclass
 class LatentClassFit:
     """What EM converged to, and the evidence for it."""
 
@@ -142,6 +178,20 @@ class LatentClassFit:
     n_iter: int = 0
     converged: bool = False
     label_permutation: tuple = ()
+    backtracks: int = 0
+    backtrack_exhausted: bool = False
+
+    def estimate(self, value: torch.Tensor) -> "Estimate":
+        """Wrap a value with this fit's conditions — the ONLY way estimates are
+        produced, so a number cannot escape without its labels."""
+        return Estimate(
+            value=value,
+            monotone=self.monotone,
+            converged=self.converged,
+            separability=self.separability(),
+            backtracks=self.backtracks,
+            backtrack_exhausted=self.backtrack_exhausted,
+        )
 
     @property
     def monotone(self) -> bool:
@@ -359,6 +409,26 @@ class LatentClassEstimator:
         return resp.mean(dim=0)
 
     # -------------------------------------------------------------------- EM --
+    def _snapshot(self) -> dict:
+        """A parameter snapshot the M-step CANNOT mutate.
+
+        ``state_dict()`` returns tensors SHARING STORAGE with the live
+        parameters, so an in-place optimiser step mutates the snapshot too and
+        a restore silently reinstates the already-stepped values. Verified on
+        this vendored copy: LinearGaussian's ``_bias`` read -0.012977, then
+        -0.017710 through the naive snapshot after a step, while a deepcopy
+        still read -0.012977. Nothing raises.
+
+        Written the natural way, the backtrack below would therefore ACCEPT
+        every step it meant to reject — the exact failure the guard exists to
+        prevent, reachable through the obvious spelling. ``copy.deepcopy`` is
+        the supported idiom.
+        """
+        return copy.deepcopy(self.model.state_dict())
+
+    def _restore(self, snapshot: dict) -> None:
+        self.model.load_state_dict(snapshot)
+
     def fit(
         self,
         data: EpisodeData,
@@ -366,26 +436,67 @@ class LatentClassEstimator:
         max_iter: int = 30,
         tol: float = 1e-4,
         init: str = "proxy",
+        max_backtracks: int = 3,
         verbose: bool = False,
         **fit_kwargs,
     ) -> LatentClassFit:
+        """Monotone-guarded generalized EM.
+
+        Our M-step is a PARTIAL (SGD) maximisation, so the textbook EM
+        monotonicity guarantee does not apply and decreases were observed. GEM
+        requires only that the M-step INCREASE the objective, not maximise it —
+        so a guard restores the guarantee outright rather than merely reporting
+        its absence: if an M-step decreases the observed-data log-likelihood,
+        revert to the pre-step parameters and retry with a halved learning rate.
+
+        This also repairs the CONVERGENCE TEST, which was unsound without it:
+        if the likelihood may decrease, ``|dLL| < tol`` cannot distinguish
+        convergence from oscillating across a maximum or overshooting and
+        returning. With decreases rejected, the sequence is non-decreasing by
+        construction and a small increment means what it says again.
+
+        Cost is one extra E-step evaluation per iteration in principle, and
+        NONE in the happy path: the post-M-step E-step that checks the objective
+        IS the next iteration's E-step, so it is computed once and reused.
+        """
         torch.manual_seed(self.seed)
-        prior = torch.full((self.u_card,), 1.0 / self.u_card, device=data.state.device)
         resp = self._init_responsibilities(data, init)
         prior = self.m_step(data, resp, **fit_kwargs)
+        resp, ll = self.e_step(data, prior)
 
-        history: List[float] = []
-        converged = False
+        history: List[float] = [ll]
+        base_lr = float(fit_kwargs.pop("lr", 1e-3))
+        backtracks, exhausted, converged = 0, False, False
         it = 0
         for it in range(1, max_iter + 1):
-            resp, ll = self.e_step(data, prior)
+            snapshot = self._snapshot()
+            tried = 0
+            while True:
+                new_prior = self.m_step(
+                    data, resp, lr=base_lr * (0.5**tried), **fit_kwargs
+                )
+                new_resp, new_ll = self.e_step(data, new_prior)
+                if new_ll >= ll - 1e-9 or tried >= max_backtracks:
+                    break
+                # The M-step overshot. Revert and take a smaller one.
+                self._restore(snapshot)
+                tried += 1
+                backtracks += 1
+                if verbose:
+                    print(f"  EM {it:3d}  backtrack {tried}: {ll:.4f} -> {new_ll:.4f}")
+            if new_ll < ll - 1e-9:
+                # Budget spent and still decreasing: stop on the last good
+                # parameters rather than proceed on a decrease.
+                self._restore(snapshot)
+                exhausted = True
+                break
+            prior, resp = new_prior, new_resp
+            improvement = new_ll - ll
+            ll = new_ll
             history.append(ll)
-            prior = self.m_step(data, resp, **fit_kwargs)
             if verbose:
                 print(f"  EM {it:3d}  ll={ll:.4f}  prior={prior.tolist()}")
-            if len(history) >= 2 and abs(history[-1] - history[-2]) < tol * abs(
-                history[-2]
-            ):
+            if improvement < tol * abs(ll):
                 converged = True
                 break
 
@@ -396,6 +507,8 @@ class LatentClassEstimator:
             log_likelihood=history,
             n_iter=it,
             converged=converged,
+            backtracks=backtracks,
+            backtrack_exhausted=exhausted,
         )
         return self._canonicalise(fit, data)
 
@@ -476,10 +589,10 @@ class LatentClassEstimator:
         self,
         state: torch.Tensor,
         action: int,
-        prior: torch.Tensor,
+        fit: "LatentClassFit",
         *,
         n_samples: int = 2048,
-    ) -> torch.Tensor:
+    ) -> "Estimate":
         """``E[R | do(A = a), s]``, marginalising ``U`` over the EXOGENOUS prior.
 
         **Path choice: ``sample(do=)``, looped over intervention values, because
@@ -513,6 +626,7 @@ class LatentClassEstimator:
         inside the sampler rather than at the call. Evidence is expanded to
         ``n`` rows because the sampler reshapes each parent to ``(n, -1)``.
         """
+        prior = fit.prior
         state = state.reshape(1, -1).to(self.model.device)
         evidence = {"S": state.expand(n_samples, -1)}
         total = torch.zeros((), device=state.device)
@@ -526,14 +640,15 @@ class LatentClassEstimator:
                 },
             )
             total = total + prior[k] * out["R"].reshape(-1).mean()
-        return total
+        # C3: the number leaves carrying the conditions it was produced under.
+        return fit.estimate(total)
 
     def interventional_sweep(
         self,
         states: torch.Tensor,
         actions: Sequence[int],
-        prior: torch.Tensor,
-    ) -> torch.Tensor:
+        fit: "LatentClassFit",
+    ) -> "Estimate":
         """READ-ONLY per-row interventional sweep — ``(n_rows,)`` of ``E[R|do(a),s]``.
 
         **Path choice: ``query_batch(do=)``, because nothing here feeds a loss.**
@@ -548,6 +663,7 @@ class LatentClassEstimator:
         producing a zero gradient. If you need a gradient here, you want
         ``interventional_reward`` instead — the choice is per call site.
         """
+        prior = fit.prior
         states = states.to(self.model.device)
         n_rows = states.shape[0]
         a = torch.as_tensor(list(actions), device=states.device).reshape(-1, 1)
@@ -563,4 +679,4 @@ class LatentClassEstimator:
                 ["R"], evidence={"S": states}, do={"A": a.reshape(-1), "U": u_col}
             )
             total = total + prior[k].item() * _posterior_mean(out)
-        return total
+        return fit.estimate(total)
