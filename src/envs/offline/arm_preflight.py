@@ -171,6 +171,40 @@ def _episode_permutation_z(
     return observed, z
 
 
+def _max_family_z(
+    family, episode_ids, strata=None, n_perm: int = _N_PERM, seed: int = 0
+) -> float:
+    """``z`` of the MAXIMUM statistic over a family, against the max's own null.
+
+    Each entry is ``(episode_constant_series, statistic)``. In every permutation
+    the whole family is recomputed and its maximum taken, so the reference
+    distribution is that of the max — which is what makes a single cutoff valid
+    for a family test. Without this, a per-test cutoff applied to a max reports
+    roughly ``len(family)`` times the intended false-alarm rate.
+    """
+    ids = np.asarray(episode_ids).reshape(-1)
+    uniq, inv = np.unique(ids, return_inverse=True)
+    strat_ep = _episode_view(strata, ids) if strata is not None else np.zeros(uniq.size)
+    rng = np.random.default_rng(seed)
+    per_ep = [_episode_view(b, ids) for b, _ in family]
+    observed = max(
+        abs(float(stat(np.asarray(b, dtype=np.float64).reshape(-1))))
+        for b, stat in family
+    )
+    null = []
+    for _ in range(n_perm):
+        vals = []
+        for arr, (_, stat) in zip(per_ep, family):
+            shuffled = arr.copy()
+            for s in np.unique(strat_ep):
+                m = strat_ep == s
+                shuffled[m] = rng.permutation(arr[m])
+            vals.append(abs(float(stat(shuffled[inv]))))
+        null.append(max(vals))
+    sd = float(np.std(null))
+    return 0.0 if sd < 1e-12 else abs(observed - float(np.mean(null))) / sd
+
+
 def _corr(a: np.ndarray, b: np.ndarray) -> float:
     a = np.asarray(a, dtype=np.float64).reshape(-1)
     b = np.asarray(b, dtype=np.float64).reshape(-1)
@@ -245,6 +279,12 @@ def _view_matrix(values: np.ndarray, u: np.ndarray, n_bins: int = 8) -> np.ndarr
     """
     classes = np.unique(u)
     edges = np.quantile(values, np.linspace(0, 1, n_bins + 1)[1:-1])
+    # A view with too few distinct values -- Acrobot's reward is -1 almost
+    # everywhere -- collapses the quantile edges, and the histogram degenerates
+    # to a single occupied bin. That is NOT evidence of an uninformative view,
+    # it is the binning failing, and the two must not be reported alike.
+    if np.unique(edges).size < 2:
+        return np.zeros((classes.size, n_bins), dtype=np.float64)
     mat = np.zeros((classes.size, n_bins), dtype=np.float64)
     for i, c in enumerate(classes):
         idx = np.digitize(values[u == c], edges)
@@ -348,13 +388,11 @@ def check_proxies(
         strata=u,
     )
     a_resid = _residualise(action, u)
-    action_zs = []
-    for proxy in (z, w):
-        _, zz = _episode_permutation_z(
-            lambda b: _corr(_residualise(b, u), a_resid), proxy, episode_ids, strata=u
-        )
-        action_zs.append(zz)
-    max_action_z = max(action_zs)
+    max_action_z = _max_family_z(
+        [(proxy, lambda b: _corr(_residualise(b, u), a_resid)) for proxy in (z, w)],
+        episode_ids,
+        strata=u,
+    )
     max_action = max(
         abs(_corr(_residualise(z, u), a_resid)),
         abs(_corr(_residualise(w, u), a_resid)),
