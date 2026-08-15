@@ -636,6 +636,7 @@ def _preflight_certification(
     u_drift,
     max_episodes: int,
     null_arm: bool = False,
+    a_bad: int = 1,
 ) -> dict:
     """Run the ground-truth preflight and flatten it into metadata keys.
 
@@ -690,8 +691,20 @@ def _preflight_certification(
                 "preflight_proxy_margins": {
                     k: float(v) for k, v in rep.condition_numbers.items()
                 },
+                # The permutation p-values are what the VERDICTS read; the
+                # z-scores are kept only as a human-readable effect size, since
+                # a max-over-a-family null is right-skewed and a 3-sd rule on it
+                # is not the level it appears to be.
+                "preflight_proxy_null_p": {k: float(v) for k, v in rep.null_p.items()},
                 "preflight_proxy_null_sds": {
                     k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_proxy_episodes": int(rep.n_episodes),
+                # A collapsed quantile grid is a FAILED MEASUREMENT, not an
+                # uninformative view (S3/S8), so it travels separately from the
+                # k-rank verdict it would otherwise be mistaken for.
+                "preflight_proxy_binning_degenerate": {
+                    k: bool(v) for k, v in rep.binning_degenerate.items()
                 },
                 "preflight_proxy_covariate_free": bool(rep.covariate_free),
                 "preflight_proxy_kruskal_ok": bool(rep.kruskal_ok),
@@ -717,9 +730,13 @@ def _preflight_certification(
         reasons += list(rep.reasons)
         out.update(
             {
+                "preflight_instrument_null_p": {
+                    k: float(v) for k, v in rep.null_p.items()
+                },
                 "preflight_instrument_null_sds": {
                     k: float(v) for k, v in rep.null_sds.items()
                 },
+                "preflight_instrument_episodes": int(rep.n_episodes),
                 "preflight_instrument_exogenous": bool(rep.independent_of_u),
                 "preflight_instrument_relevant": bool(rep.relevant),
                 "preflight_instrument_excluded": bool(rep.exclusion_holds),
@@ -741,6 +758,21 @@ def _preflight_certification(
                 "preflight_drift_rho": float(u_drift),
                 "preflight_drift_realised_autocorr": float(rep.realised_autocorr),
                 "preflight_drift_predicted_autocorr": float(rep.predicted_autocorr),
+                # D-B' is the ONE statistic left at transition level. Its S1b
+                # exemption rests on rho being homogeneous across episodes, so
+                # the exemption is measured (short- vs long-episode halves)
+                # rather than asserted -- a gap here means a future
+                # state-dependent drift variant has voided it.
+                "preflight_drift_autocorr_short_episodes": float(
+                    rep.autocorr_short_episodes
+                ),
+                "preflight_drift_autocorr_long_episodes": float(
+                    rep.autocorr_long_episodes
+                ),
+                "preflight_drift_length_weighting_gap": float(rep.length_weighting_gap),
+                "preflight_drift_length_weighting_inert": bool(
+                    rep.length_weighting_inert
+                ),
             }
         )
 
@@ -750,15 +782,20 @@ def _preflight_certification(
             action=samples["a"][keep],
             reward=samples["r"][keep],
             episode_ids=ep_k,
+            a_bad=float(a_bad),
         )
         passed &= rep.u_inert
         reasons += list(rep.reasons)
         out.update(
             {
                 "preflight_null_arm_u_inert": bool(rep.u_inert),
+                "preflight_null_arm_null_p": {
+                    k: float(v) for k, v in rep.null_p.items()
+                },
                 "preflight_null_arm_null_sds": {
                     k: float(v) for k, v in rep.null_sds.items()
                 },
+                "preflight_null_arm_gated_episodes": int(rep.gated_episodes),
             }
         )
 
@@ -1478,6 +1515,7 @@ def generate_offline_dataset(
                 u_drift=u_drift,
                 max_episodes=preflight_episodes,
                 null_arm=not confounder_c_r,
+                a_bad=a_bad,
             )
         )
     # S4: stamp the input fingerprint so a later run can PROVE that regenerating

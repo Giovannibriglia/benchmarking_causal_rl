@@ -107,8 +107,8 @@ def test_proxies_are_covariate_free_and_excluded():
     # state, so a proxy of U is marginally correlated with the state BY DESIGN.
     # Asserting a small marginal here would re-enshrine the bug that finding
     # exposed; the conditional statement is what covariate-freeness means.
-    assert rep.null_sds["proxy_vs_state_given_u"] < 3.0, rep.summary()
-    assert rep.null_sds["z_vs_w_given_u"] < 3.0
+    assert rep.null_p["proxy_vs_state_given_u"] >= 0.01, rep.summary()
+    assert rep.null_p["z_vs_w_given_u"] >= 0.01
     assert abs(rep.corr_z_u) > 0.5 and abs(rep.corr_w_u) > 0.5  # actually informative
 
 
@@ -174,8 +174,8 @@ def test_instrument_is_exogenous_relevant_and_excluded():
     # Exogeneity is "inside the null", relevance is "outside it" -- an
     # instrument that fails to move A is useless, so for relevance a null result
     # IS the failure. Judging both by one magnitude tolerance got this backwards.
-    assert rep.null_sds["i_vs_u"] < 3.0, rep.summary()
-    assert rep.null_sds["i_vs_a"] >= 3.0, rep.summary()
+    assert rep.null_p["i_vs_u"] >= 0.01, rep.summary()
+    assert rep.null_p["i_vs_a"] < 0.01, rep.summary()
 
 
 def test_the_exclusion_check_rejects_a_real_leak():
@@ -203,7 +203,7 @@ def test_the_exclusion_check_rejects_a_real_leak():
     bad = check_instrument(i=i, u=u, action=a, reward=leaked, episode_ids=ep)
     assert bad.exclusion_testable
     assert not bad.exclusion_holds, "a leaking instrument must be caught"
-    assert bad.null_sds["i_vs_r_given_a_u"] > 3.0, bad.summary()
+    assert bad.null_p["i_vs_r_given_a_u"] < 0.01, bad.summary()
 
 
 def test_exclusion_reports_when_it_cannot_be_tested_rather_than_passing():
@@ -262,3 +262,229 @@ def test_existing_arms_are_byte_unchanged_when_the_new_features_are_off():
     assert not np.array_equal(
         base["A"], with_instrument["A"]
     ), "the instrument did not move the action -- it would be irrelevant"
+
+
+# --------------------------------------------------------------------------
+# S1b — granularity. These are the regression tests for the bug the existing
+# harness above CANNOT see: _FakeVecEnv ends every episode at a fixed 12 steps,
+# so length carries no information and length-weighting has nothing to bite on.
+# That is exactly rule S5 (a synthetic harness whose marginals happen to equal
+# its conditionals passes checks the real generator fails), so the fixtures here
+# make episode length an OUTCOME of the latent, as it is in a real env.
+# --------------------------------------------------------------------------
+
+
+def _length_coupled_arm(n_ep=600, seed=0, leak=0.0):
+    """Episodes whose LENGTH is an OUTCOME of behaviour, as it is in a real env.
+
+    **EPISODE LENGTH IS A COLLIDER, and that -- not "length correlates with
+    behaviour" -- is the mechanism behind S1b.** Everything driving the action
+    drives how long the episode survives, so ``L`` is a common descendant:
+    ``I -> A -> L <- A <- U``. Pooling an episode-constant quantity over
+    transitions weights each episode by its own ``L``, which is a form of
+    conditioning on that collider -- and conditioning on a collider manufactures
+    dependence between its causes. It follows that the bias is NOT uniform: a
+    passive proxy that drives nothing is barely touched, while an instrument,
+    whose whole job is to move the action, is hit hardest.
+
+    The bias is largest when ``U`` and ``I`` INTERACT in the action law, because
+    then the surviving episodes are systematically the ones where the two
+    disagree. Measured on the real D-E arm, mean length by ``(U, I)`` cell:
+    19.5 / 59.0 / 67.4 / 15.4 -- a clean disagree-lives-longer pattern, and the
+    reason pooled ``corr(I, U)`` reached **-0.590** on an instrument drawn from
+    its own Bernoulli. This fixture reproduces it (13 / 42 / 42 / 13, pooled
+    ``corr(I, U) = -0.53`` against **-0.003** per episode) by making the
+    per-step hazard a function of the realised action mix: an extreme mix
+    destabilises the plant, a balanced one survives. ``L`` is therefore a
+    descendant of ``A`` alone, never of ``U`` or ``I`` directly.
+
+    The other fixture in this file (``_FakeVecEnv``) cannot show any of this: it
+    truncates every episode at a fixed 12 steps, so ``L`` has no variance and
+    the collider cannot open. Rule S5 exactly -- a synthetic harness whose
+    marginals happen to equal its conditionals passes what the real generator
+    fails.
+
+    ``leak`` injects a genuine proxy->state association so the check can be
+    shown to still reject; at ``leak = 0`` every conditional independence holds
+    by construction and any rejection is a false alarm.
+    """
+    rng = np.random.default_rng(seed)
+    u_ep = rng.integers(0, 2, n_ep).astype(float)
+    i_ep = rng.integers(0, 2, n_ep).astype(float)  # never reads U
+    z_ep = 1.5 * u_ep + rng.normal(0, 1, n_ep)  # passive: drives nothing
+    w_ep = 1.5 * u_ep + rng.normal(0, 1, n_ep)
+
+    ep, u, z, w, i, s, a, r = [], [], [], [], [], [], [], []
+    for e in range(n_ep):
+        p = min(
+            max((0.8 if u_ep[e] > 0.5 else 0.2) + 0.3 * (i_ep[e] - 0.5), 0.02), 0.98
+        )
+        acts: list[float] = []
+        n_bad = 0.0
+        while len(acts) < 400:
+            act = float(rng.random() < p)
+            acts.append(act)
+            n_bad += act
+            if len(acts) >= 10:
+                frac = n_bad / len(acts)
+                if rng.random() < 0.008 + 1.15 * (frac - 0.5) ** 2:
+                    break
+        acts_arr = np.asarray(acts)
+        t = acts_arr.size
+        ep.extend([e] * t)
+        u.extend([u_ep[e]] * t)
+        z.extend([z_ep[e]] * t)
+        w.extend([w_ep[e]] * t)
+        i.extend([i_ep[e]] * t)
+        a.extend(acts_arr.tolist())
+        # FOUR state dimensions, as CartPole has: the covariate-free check is
+        # then a family of dims x proxies = 8 statistics whose MAXIMUM is the
+        # verdict, which is what makes S3's null-of-the-max necessary. Judged
+        # per-test it runs ~8x the intended false-alarm rate. The state reads the
+        # action, never the proxies -- unless `leak` is on.
+        s.extend(
+            (
+                rng.normal(0, 1, (t, 4)) + 0.5 * acts_arr[:, None] + leak * z_ep[e]
+            ).tolist()
+        )
+        r.extend((1.0 + u_ep[e] * acts_arr + rng.normal(0, 0.3, t)).tolist())
+    return {
+        "E": np.array(ep),
+        "U": np.array(u),
+        "Z": np.array(z),
+        "W": np.array(w),
+        "I": np.array(i),
+        "S": np.array(s),
+        "A": np.array(a),
+        "R": np.array(r),
+    }
+
+
+def test_length_coupling_does_not_manufacture_a_proxy_state_association():
+    """S1b. The proxies here are drawn from their own generator and the state
+    provably never reads them, so every rejection is a false alarm. What makes
+    it fire is that U sets episode LENGTH: pooled over transitions, each episode
+    enters weighted by its own length, and since length is a function of U the
+    statistic acquires a U-driven dependence that the episode-permuted null
+    cannot reproduce. The fix is granularity, not a wider null."""
+    d = _length_coupled_arm()
+    rep = check_proxies(
+        z=d["Z"],
+        w=d["W"],
+        u=d["U"],
+        state=d["S"],
+        action=d["A"],
+        reward=d["R"],
+        episode_ids=d["E"],
+    )
+    assert rep.covariate_free, rep.summary()
+    assert rep.exclusions_hold, rep.reasons
+    assert rep.n_episodes == 600, rep.summary()
+
+
+def test_the_covariate_free_check_still_rejects_a_real_leak():
+    """R2 again: the passing result above is worth nothing until the failing one
+    is demonstrated on the SAME fixture. A check made granularity-correct could
+    just as easily have been made blind."""
+    d = _length_coupled_arm(leak=0.6)
+    rep = check_proxies(
+        z=d["Z"],
+        w=d["W"],
+        u=d["U"],
+        state=d["S"],
+        action=d["A"],
+        reward=d["R"],
+        episode_ids=d["E"],
+    )
+    assert not rep.covariate_free, rep.summary()
+    assert any("covariate-free" in s for s in rep.reasons), rep.reasons
+
+
+def test_length_coupling_does_not_make_an_exogenous_instrument_look_endogenous():
+    """The measured case: corr(I, U) = -0.590 pooled over transitions against
+    -0.034 with one row per episode, on an instrument drawn from its own
+    Bernoulli. Eleven of V-B's D-E rows failed exogeneity this way."""
+    d = _length_coupled_arm()
+    rep = check_instrument(
+        i=d["I"], u=d["U"], action=d["A"], reward=d["R"], episode_ids=d["E"]
+    )
+    assert rep.independent_of_u, rep.summary()
+    assert rep.relevant, rep.summary()
+    assert abs(rep.corr_i_u) < 0.15, rep.summary()
+
+
+def test_an_episode_constant_reduction_refuses_a_per_step_quantity():
+    """The mirror-image mistake: handing a genuinely per-step series to the
+    episode-constant reduction would silently keep one arbitrary step's value
+    and read as a clean measurement. It has to raise."""
+    import pytest
+
+    d = _length_coupled_arm(n_ep=30)
+    drifting_u = d["U"] + (np.arange(d["U"].size) % 2)  # varies within episodes
+    with pytest.raises(ValueError, match="varies WITHIN an episode"):
+        check_proxies(
+            z=d["Z"],
+            w=d["W"],
+            u=drifting_u,
+            state=d["S"],
+            action=d["A"],
+            reward=d["R"],
+            episode_ids=d["E"],
+        )
+
+
+def test_drift_measures_its_own_length_weighting_exemption():
+    """D-B' keeps a transition-level statistic, and the exemption rests on rho
+    being HOMOGENEOUS across episodes. That is now measured rather than
+    asserted: with one declared rho the short- and long-episode halves must
+    agree, and a heterogeneous-rho variant must be caught."""
+    rng = np.random.default_rng(0)
+
+    def chain(rho, t):
+        u = [float(rng.integers(0, 2))]
+        for _ in range(t - 1):
+            u.append(1.0 - u[-1] if rng.random() < rho else u[-1])
+        return u
+
+    lengths = [20] * 200 + [80] * 200
+    homogeneous = [chain(0.1, t) for t in lengths]
+    rep = check_drift(u_by_episode=homogeneous, rho=0.1)
+    assert rep.matches, rep.summary()
+    assert rep.length_weighting_inert, rep.summary()
+
+    # The variant that voids the exemption: rho depends on episode length, so
+    # the pooled autocorrelation drifts toward whatever the LONG episodes have.
+    heterogeneous = [chain(0.05 if t == 20 else 0.35, t) for t in lengths]
+    bad = check_drift(u_by_episode=heterogeneous, rho=0.1)
+    assert not bad.length_weighting_inert, bad.summary()
+
+
+def test_no_false_alarms_across_seeds_on_a_provably_clean_arm():
+    """The false-alarm RATE, not one draw of it. V-B's 130-dataset run turned
+    four D-D rows down for a proxy-state association at 3.1-3.7 null SDs -- all
+    of them just over a per-test 3-sd line applied to the MAXIMUM of
+    dims x proxies = 8 statistics, which is S3's failure mode exactly. On this
+    fixture the old per-test maximum reached 2.77 null SDs on a generator whose
+    proxies provably never read the state; the margin was thin by construction,
+    not by accident.
+
+    Six independent seeds, every conditional independence true by construction,
+    so every rejection here is a false alarm."""
+    for seed in range(6):
+        d = _length_coupled_arm(seed=seed)
+        rep = check_proxies(
+            z=d["Z"],
+            w=d["W"],
+            u=d["U"],
+            state=d["S"],
+            action=d["A"],
+            reward=d["R"],
+            episode_ids=d["E"],
+        )
+        assert rep.covariate_free, f"seed {seed}: {rep.summary()}"
+        assert rep.exclusions_hold, f"seed {seed}: {rep.reasons}"
+        inst = check_instrument(
+            i=d["I"], u=d["U"], action=d["A"], reward=d["R"], episode_ids=d["E"]
+        )
+        assert inst.independent_of_u, f"seed {seed}: {inst.summary()}"
+        assert inst.relevant, f"seed {seed}: {inst.summary()}"
