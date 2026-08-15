@@ -123,3 +123,52 @@ way to exonerate the optimiser.
   `diagram_catalogue.md`.
 * q2 stays **non-ID under confounded dynamics** regardless of q1 — L2 already
   enforces this, and L4 must not present an interval that implies otherwise.
+
+
+---
+
+## 3. Measured cost of a bootstrap replicate under the monotone guard
+
+Pre-measured because it changes the V-D block plan, and is better known now than
+discovered mid-run. **Caveat on every number here: taken on 2 threads while V-B
+was generating**, so these are upper bounds on a contended machine, not clean
+timings. Re-measure on an idle machine before the block plan is fixed.
+
+Fixture: 300 episodes x 12 steps (3600 transitions), `epochs=30`, `max_iter=8`.
+
+| base lr | mean fit | backtracks | iters | per-iter | monotone |
+|---|---|---|---|---|---|
+| 1e-2 | 117–146 s | 6–7 | 5 | 23.5 s | yes |
+| **3e-3** | **62.6 s** | **3.0** | 3.5 | **17.9 s** | yes |
+| 1e-3 | 100.3 s | 3.5 | 3.0 | 33.4 s | yes |
+
+**The guard's cost is the BACKTRACKS, not the extra likelihood evaluation.** The
+claim that the happy path is free stands — the checking E-step *is* the next
+iteration's E-step — but the happy path is not where we were: at lr = 1e-2 the
+M-step overshoots on roughly every iteration, and each rejected step is a full
+M-step redone. A run with retries disabled finished in 37 s, but only by
+stopping early on a decrease it could not repair, so that is not a like-for-like
+baseline and should not be quoted as "the unguarded cost".
+
+**Consequence for planning.** The earlier estimate (refit ≈ 8.65 s, B = 99 ≈ 7.7
+min per constraint) did not include backtracking and is now optimistic by more
+than an order of magnitude: at this fixture scale and thread budget a guarded
+fit is ~63–146 s, so B = 99 is roughly **1.7–4 hours per constraint**. That is a
+block-plan-changing difference.
+
+**Two levers before accepting it**, in order:
+
+1. **Base step size.** lr = 3e-3 halves the cost of lr = 1e-2 by overshooting
+   less. Note the non-monotonicity in the *table*: 1e-3 is slower than 3e-3
+   despite fewer backtracks, because a smaller step needs more epochs to make
+   the same progress. There is an optimum and it is measurable — but it is a
+   *performance* knob, not a calibration constant, and nothing downstream reads
+   it. It must be chosen by wall-clock on an idle machine and reported.
+2. **Fit budget per replicate.** A bootstrap replicate does not need the
+   precision of the point fit; `epochs` and `max_iter` can be lower, provided
+   the reduction is applied to the *observed* fit as well so the null and the
+   statistic come from the same procedure. Applying it to only one would bias
+   the threshold — a subtler version of the dropped-replicate bias.
+
+Do NOT reach for a third lever of dropping slow or non-converging replicates:
+that is exactly the bias the module refuses (see `bootstrap.py`).
