@@ -22,6 +22,38 @@ from pathlib import Path
 CELLS = Path("reproducibility/rl_regimes/diagrams")
 
 
+def _row_from(ds, cell, spec, env_id, seed, sigma, did, ghash, seconds) -> dict:
+    """One report row, built identically whether the dataset was just generated
+    or reused — so a resumed run's report is not a different shape."""
+    m = dict(ds.storage.metadata)
+    return {
+        "cell": cell,
+        "diagram": spec.diagram,
+        "env": env_id,
+        "seed": seed,
+        "sigma": sigma,
+        "dataset_id": did,
+        "generator_hash": ghash,
+        "seconds": seconds,
+        "gate_passed": m.get("gate_test_passed"),
+        "gate_type": m.get("gate_type"),
+        "preflight_passed": m.get("preflight_passed"),
+        "preflight_reasons": m.get("preflight_reasons"),
+        "proxy_k_ranks": m.get("preflight_proxy_k_ranks"),
+        "proxy_margins": m.get("preflight_proxy_margins"),
+        "instrument_null_sds": m.get("preflight_instrument_null_sds"),
+        "instrument_exclusion_testable": m.get(
+            "preflight_instrument_exclusion_testable"
+        ),
+        "drift_realised": m.get("preflight_drift_realised_autocorr"),
+        "null_arm_u_inert": m.get("preflight_null_arm_u_inert"),
+        "null_arm_null_sds": m.get("preflight_null_arm_null_sds"),
+        "ok": bool(
+            m.get("gate_test_passed") and m.get("preflight_passed") is not False
+        ),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -31,6 +63,11 @@ def main() -> int:
     ap.add_argument("--rollout-episodes", type=int, default=None)
     ap.add_argument("--seeds", nargs="+", type=int, default=None)
     ap.add_argument("--envs", nargs="+", default=None)
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="keep datasets whose generation_fingerprint already matches",
+    )
     args = ap.parse_args()
 
     from src.benchmarking.regime_sweep import load_sweep_spec
@@ -39,6 +76,7 @@ def main() -> int:
         build_generator_agent,
         dataset_name,
         generate_offline_dataset,
+        generation_fingerprint,
     )
     from src.envs.registry import register_default_env_wrappers
 
@@ -89,6 +127,53 @@ def main() -> int:
                     did = dataset_name(
                         env_id, "medium", k.behavior_policy, sigma
                     ).replace("generated/", f"grace-v2/{cell}-")
+                    # Idempotent: a partial or interrupted V-B run must be
+                    # resumable, and Minari refuses to overwrite an existing id.
+                    # --resume keeps a dataset whose generation_fingerprint
+                    # matches (identical inputs => regenerating reproduces it),
+                    # and deletes one whose fingerprint differs rather than
+                    # silently serving data generated under other settings.
+                    import minari
+
+                    if did in minari.list_local_datasets():
+                        existing = minari.load_dataset(did)
+                        fp = dict(existing.storage.metadata).get(
+                            "generation_fingerprint"
+                        )
+                        want = generation_fingerprint(
+                            env_id=env_id,
+                            generator_algo=spec.generator_algo,
+                            tier="medium",
+                            behavior_policy=k.behavior_policy,
+                            behavior_strength=k.behavior_strength,
+                            confounder_c_r=k.confounder_c_r,
+                            pi_basic_epsilon=spec.pi_basic_epsilon,
+                            a_bad=1,
+                            rollout_episodes=n_ep,
+                            seed=seed,
+                            generator_hash=ghash,
+                            rollout_device=spec.rollout_device,
+                            rollout_n_envs=spec.rollout_n_envs,
+                            legacy_rollout=spec.legacy_rollout,
+                            **kw,
+                        )
+                        if args.resume and fp == want:
+                            print(f"  {did}: reusing (fingerprint match)", flush=True)
+                            report.append(
+                                _row_from(
+                                    existing,
+                                    cell,
+                                    spec,
+                                    env_id,
+                                    seed,
+                                    sigma,
+                                    did,
+                                    ghash,
+                                    0.0,
+                                )
+                            )
+                            continue
+                        minari.delete_dataset(did)
                     t = time.time()
                     ds = generate_offline_dataset(
                         env_id,
@@ -107,38 +192,19 @@ def main() -> int:
                         rollout_n_envs=spec.rollout_n_envs,
                         **kw,
                     )
-                    m = dict(ds.storage.metadata)
-                    row = {
-                        "cell": cell,
-                        "diagram": spec.diagram,
-                        "env": env_id,
-                        "seed": seed,
-                        "sigma": sigma,
-                        "dataset_id": did,
-                        "generator_hash": ghash,
-                        "seconds": round(time.time() - t, 1),
-                        "gate_passed": m.get("gate_test_passed"),
-                        "gate_type": m.get("gate_type"),
-                        "preflight_passed": m.get("preflight_passed"),
-                        "preflight_reasons": m.get("preflight_reasons"),
-                        "proxy_k_ranks": m.get("preflight_proxy_k_ranks"),
-                        "proxy_margins": m.get("preflight_proxy_margins"),
-                        "instrument_null_sds": m.get("preflight_instrument_null_sds"),
-                        "instrument_exclusion_testable": m.get(
-                            "preflight_instrument_exclusion_testable"
-                        ),
-                        "drift_realised": m.get("preflight_drift_realised_autocorr"),
-                        "null_arm_u_inert": m.get("preflight_null_arm_u_inert"),
-                        "null_arm_null_sds": m.get("preflight_null_arm_null_sds"),
-                    }
+                    row = _row_from(
+                        ds,
+                        cell,
+                        spec,
+                        env_id,
+                        seed,
+                        sigma,
+                        did,
+                        ghash,
+                        round(time.time() - t, 1),
+                    )
                     report.append(row)
-                    # preflight_passed is None only when an arm has no channel
-                    # to certify -- "not applicable", never a failure. Every arm
-                    # here does have one (the null arm certifies U's INERTNESS),
-                    # so None would now mean the certification did not run.
-                    ok = row["gate_passed"] and row["preflight_passed"] is not False
-                    flag = "" if ok else "  <-- FAILED"
-                    row["ok"] = bool(ok)
+                    flag = "" if row["ok"] else "  <-- FAILED"
                     print(
                         f"  {env_id} s{seed} sigma={sigma:<5} gate={row['gate_passed']} "
                         f"preflight={row['preflight_passed']} "
