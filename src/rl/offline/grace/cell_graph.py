@@ -567,6 +567,13 @@ def _build() -> Dict[str, CellGraph]:
                 GraphNode("W", "proxy", observed=True),
             ),
             edges=_CORE_EDGES + (("U", "A"), ("U", "R"), ("U", "Z"), ("U", "W")),
+            # COVARIATE-FREE proxies: parents(Z) = parents(W) = {U} exactly, so
+            # P(Z|U) and P(W|U) do not depend on (s,a), the measurement matrices
+            # are GLOBAL, and the labelling they induce is global. That -- not
+            # "the proxies are explicit" -- is why D-D needs no
+            # cross_stratum_label_linking assumption and D-B does. Preflight
+            # asserts independence from S, because proxy noise that scaled with
+            # the state would silently make them covariate-conditional.
             proxy_nodes=("Z", "W"),
             q1=Verdict("point_id", "proximal", assumptions=("completeness",)),
             q2=Verdict(

@@ -41,6 +41,9 @@ class ConfoundedCollectionWrapper:
         seed: int | None = None,
         confounder_kind: str = "additive",
         a_bad: int = 1,
+        proxy_strength: float | None = None,
+        instrument_strength: float | None = None,
+        u_drift: float = 0.0,
     ):
         self.env = env
         self.c_a = float(c_a)
@@ -70,7 +73,43 @@ class ConfoundedCollectionWrapper:
         else:
             self._gen = torch.Generator(device=self.device)
             self._gen.manual_seed(int(seed))
+        # --- GRACE v2 arms. All default OFF, and every one draws from its OWN
+        # generator, so an arm that does not enable them consumes exactly the
+        # RNG the byte-frozen paths always consumed.
+        #
+        # D-D proxies: two COVARIATE-FREE noisy measurements of U. "Covariate
+        # free" is the load-bearing property, not a nicety -- because
+        # P(Z|U), P(W|U) do not depend on (s,a), the proxy measurement matrices
+        # are GLOBAL and pin the latent's labelling globally. Letting the noise
+        # scale with the state (an easy, natural-looking choice) would silently
+        # turn them covariate-conditional and collapse D-D into D-B's situation.
+        # Hence: the noise below is drawn from a dedicated generator and NEVER
+        # reads obs.
+        self.proxy_strength = None if proxy_strength is None else float(proxy_strength)
+        # D-E instrument: drawn per episode INDEPENDENTLY of U, read by the
+        # behaviour policy, with no path to the reward.
+        self.instrument_strength = (
+            None if instrument_strength is None else float(instrument_strength)
+        )
+        # D-B' persistence: per-step flip probability. 0.0 = episode-static
+        # (D-B) and consumes NO draws, so D-B is reproduced byte-for-byte.
+        self.u_drift = float(u_drift)
+        if not 0.0 <= self.u_drift <= 0.5:
+            raise ValueError(
+                f"u_drift is a per-step flip probability in [0, 0.5]; 0.5 is full "
+                f"refresh (U_t independent of U_{{t-1}}). Got {self.u_drift}."
+            )
+        self._aux_gen = None
+        if seed is not None and (
+            self.proxy_strength is not None
+            or self.instrument_strength is not None
+            or self.u_drift > 0.0
+        ):
+            self._aux_gen = torch.Generator(device=self.device)
+            self._aux_gen.manual_seed(int(seed) + 8_675_309)
         self.current_u = self._sample_u()
+        self.current_z, self.current_w = self._sample_proxies()
+        self.current_i = self._sample_instrument()
         # action_gated is DISCRETE-ONLY: the a_bad reward gate has no meaning on a
         # continuous action space (a float action never equals a_bad -> the gate would
         # never fire -> a silently UNCONFOUNDED dataset). The continuous confounder is
@@ -100,10 +139,64 @@ class ConfoundedCollectionWrapper:
             torch.full((self.n_envs,), 0.5, device=self.device), generator=self._gen
         )
 
+    def _sample_proxies(self):
+        """Two conditionally-independent measurements of U, COVARIATE-FREE.
+
+        ``Z = s*(2U-1) + eps_z``, ``W = s*(2U-1) + eps_w`` with independent
+        standard-normal noise and ``s = proxy_strength`` the signal knob (R4
+        sweeps it). Neither reads the observation, so ``parents(Z) =
+        parents(W) = {U}`` exactly, and ``Z indep W | U`` holds by independent
+        draws. Neither is a function of the action, so neither is affected by A.
+        """
+        if self.proxy_strength is None:
+            return None, None
+        centred = 2.0 * self.current_u - 1.0
+        z = self.proxy_strength * centred + torch.randn(
+            self.n_envs, device=self.device, generator=self._aux_gen
+        )
+        w = self.proxy_strength * centred + torch.randn(
+            self.n_envs, device=self.device, generator=self._aux_gen
+        )
+        return z, w
+
+    def _sample_instrument(self):
+        """A per-episode instrument, drawn INDEPENDENTLY of U and never
+        entering the reward. The behaviour policy reads ``current_i``; the
+        wrapper's reward perturbation ignores it entirely, which is what makes
+        the exclusion restriction hold by construction."""
+        if self.instrument_strength is None:
+            return None
+        return torch.bernoulli(
+            torch.full((self.n_envs,), 0.5, device=self.device),
+            generator=self._aux_gen,
+        )
+
+    def _drift_u(self, u: torch.Tensor) -> torch.Tensor:
+        """D-B': flip each sub-env's U with probability ``u_drift``. At 0.0 this
+        consumes no randomness, so the static path stays byte-identical."""
+        if self.u_drift <= 0.0:
+            return u
+        flip = (
+            torch.rand(self.n_envs, device=self.device, generator=self._aux_gen)
+            < self.u_drift
+        )
+        return torch.where(flip, 1.0 - u, u)
+
+    def _aux_info(self) -> dict:
+        out = {}
+        if self.current_z is not None:
+            out["proxy_z"] = self.current_z.clone()
+            out["proxy_w"] = self.current_w.clone()
+        if self.current_i is not None:
+            out["instrument_i"] = self.current_i.clone()
+        return out
+
     def reset(self, seed=None):
         obs, info = self.env.reset(seed=seed)
         self.current_u = self._sample_u()
-        info = {**info, "confounder_u": self.current_u.clone()}
+        self.current_z, self.current_w = self._sample_proxies()
+        self.current_i = self._sample_instrument()
+        info = {**info, "confounder_u": self.current_u.clone(), **self._aux_info()}
         return obs, info
 
     def step(self, action):
@@ -115,10 +208,21 @@ class ConfoundedCollectionWrapper:
         else:  # action_gated (discrete-only): shift ONLY on the a_bad transitions
             gate = (action == self.a_bad).to(reward.dtype)
             reward = reward + self.c_r * self.current_u * gate
-        info = {**info, "confounder_u": self.current_u.clone()}
+        info = {**info, "confounder_u": self.current_u.clone(), **self._aux_info()}
+        # D-B' drift: U evolves WITHIN the episode, after the reward that this
+        # transition's U produced. At u_drift = 0 this is a no-op consuming no
+        # randomness (D-B).
+        self.current_u = self._drift_u(self.current_u)
         # Resample U for sub-envs whose episode just ended (after perturbing the
         # terminal reward) so the next episode draws a fresh latent.
         done = torch.logical_or(terminated, truncated)
         if bool(done.any()):
             self.current_u = torch.where(done, self._sample_u(), self.current_u)
+            fresh_z, fresh_w = self._sample_proxies()
+            if fresh_z is not None:
+                self.current_z = torch.where(done, fresh_z, self.current_z)
+                self.current_w = torch.where(done, fresh_w, self.current_w)
+            fresh_i = self._sample_instrument()
+            if fresh_i is not None:
+                self.current_i = torch.where(done, fresh_i, self.current_i)
         return obs, reward, terminated, truncated, info

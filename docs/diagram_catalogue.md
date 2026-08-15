@@ -213,6 +213,16 @@ One Phase-2 check: `enforce_confounding_gate` may object to a σ=0 arm whose sig
 
 Construction: two conditionally-independent noisy measurements of `U` emitted into `infos` (`W = U + ε_W`, `Z = U + ε_Z`, independent noise). Because neither *causes* anything, requirements (i) and (ii) hold **by construction** rather than by the delicate lag argument of D-B.
 
+### ⭐ Why D-D is the clean case: its proxies are COVARIATE-FREE
+
+The distinction that does the work is **not** explicit-versus-implicit proxies. It is **covariate-free versus covariate-conditional**:
+
+> `parents(Z) = parents(W) = {U}` exactly. So `P(Z | U)` and `P(W | U)` do **not** depend on `(s, a)`: the proxy measurement matrices are **global**, and the labelling they induce is global.
+
+D-B's lagged views are covariate-*conditional* (they condition on the states at the measurement times), so Kruskal applies per `(s, a)` and fixes the latent only up to a relabelling **at each configuration** — which is why D-B must carry the `cross_stratum_label_linking` assumption and D-D need not. That single structural property is the reason D-D is the uncontested point-ID cell, and it is a cleaner axis for the paper than "explicit versus implicit".
+
+**It is also fragile in an easy-to-miss way.** Letting proxy noise scale with the state — a natural-looking implementation choice — silently makes the proxies covariate-conditional, collapsing D-D into D-B's situation with no error raised anywhere. The generator therefore asserts independence from `S` in preflight, not merely dependence on `U`; measured `max|corr(proxy, S)| = 0.0093`.
+
 **Q1, Q2 — point-ID via proximal**, under completeness (non-degenerate noise scale). The one cell where point-ID is clean and uncontested; keep it regardless of how D-B resolves.
 
 **Testable implications.** `P(Z, W | A, S)` has **rank ≤ |U|** — a genuine observable shadow of the latent-class structure, and the constraint that misspecification arm M3 violates.
