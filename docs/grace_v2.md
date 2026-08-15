@@ -100,6 +100,41 @@ that boundary is where the differentiable path is guaranteed.
 `query`/`query_batch` remain the right tool for *diagnostics* that need no
 gradient (ESS, PSIS-k̂, batched dose-response readouts).
 
+### N1a — Which interventional API: the discriminator is GRADIENTS
+
+| need | API | why |
+|---|---|---|
+| a target, or anything feeding a loss | **`sample(do=)`**, looped over intervention values | the only differentiable interventional path |
+| L4's bound evaluation, any read-only quantity | **`query_batch(do=)`**, one batched call | takes a per-row intervention vector; ~0.3 ms batched against ~37.7 ms looped for 256 interventions |
+
+`query`/`query_batch` are non-differentiable **by design**. Routing a target
+through `query_batch` for the speed would not raise — it would return a value
+with no gradient, presenting downstream as a model that will not train. Decide
+per call site and **say which you chose in the code comment**; both call sites in
+`estimator.py` do, and both are pinned by a contract test.
+
+The loop cost is negligible where it applies (~1.5 ms per intervention value),
+so there is no reason to trade the gradient away for it.
+
+**Shape contract for `sample(do=)`**, which cost real time to find: `do` values
+are `[1, D]` — *not* 0-d scalars and *not* `(n,)` vectors — because the
+do-dispatch builds a deterministic mechanism that indexes a batch axis, so a 0-d
+value fails inside the sampler rather than at the call. Evidence is expanded to
+`n` rows, since the sampler reshapes each parent to `(n, -1)`. Ancestral sampling
+genuinely has no batch axis for a *varying* intervention and says so explicitly —
+but that was not the failure here, and assuming it would have sent the fix in the
+wrong direction.
+
+**`query_batch`'s return is not always a tensor.** For a discrete target it is
+`[B, K]`; for a continuous one (which `R` is) the engine returns the
+likelihood-weighting particle representation `(weights [B, N], samples [B, N, D])`
+and the posterior mean is the weighted average over particles.
+
+Cross-checked on the L3 fixture: `do(a=0)` gives 0.998 (sample) against 0.999
+(query_batch), `do(a=1)` gives 1.812 against 1.808. They answer the same question
+by different machinery, so agreement is evidence and a drift would mean one is
+wrong.
+
 ### N2 — `update_local` refuses weights: the online refresh must **refit**
 
 `update_local(..., weights=…)` raises `NotImplementedError` (verified). There

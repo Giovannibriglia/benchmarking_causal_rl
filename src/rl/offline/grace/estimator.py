@@ -56,6 +56,32 @@ __all__ = ["EpisodeData", "LatentClassFit", "LatentClassEstimator"]
 _WEIGHTED_SAFE = (MDNMechanism, LinearGaussianMechanism, NeuralCategoricalMechanism)
 
 
+def _posterior_mean(out) -> torch.Tensor:
+    """Collapse ``query_batch``'s return into a per-row posterior mean.
+
+    For a DISCRETE target it hands back ``[B, K]`` directly. For a CONTINUOUS
+    one — which ``R`` is — the engine returns the likelihood-weighting particle
+    representation ``(weights [B, N], samples [B, N, D])`` instead, and the
+    posterior mean is the weighted average over particles. Documented as
+    returning a tensor, so the tuple is worth naming here rather than
+    rediscovering at each call site.
+    """
+    if not isinstance(out, tuple):
+        return out.reshape(out.shape[0], -1).mean(dim=1)
+    w, samples = out
+    # Log-weights (any negative entry) versus raw weights: normalise the right
+    # way for each rather than assuming, since an unnormalised exp would silently
+    # bias the mean toward whichever particles happen to dominate.
+    w = (
+        torch.softmax(w, dim=1)
+        if bool((w < 0).any())
+        else w / w.sum(dim=1, keepdim=True).clamp_min(1e-30)
+    )
+    return (
+        (w.unsqueeze(-1) * samples).sum(dim=1).reshape(samples.shape[0], -1).mean(dim=1)
+    )
+
+
 @dataclass
 class EpisodeData:
     """Transitions plus the episode blocks that own them.
@@ -456,6 +482,21 @@ class LatentClassEstimator:
     ) -> torch.Tensor:
         """``E[R | do(A = a), s]``, marginalising ``U`` over the EXOGENOUS prior.
 
+        **Path choice: ``sample(do=)``, looped over intervention values, because
+        this value feeds a loss.** The discriminator between the two
+        interventional APIs is GRADIENTS, not samples-versus-posterior:
+        ``query``/``query_batch`` are non-differentiable by design and return
+        inference-mode tensors, which are worse than merely detached ones
+        because they RAISE if later used in a differentiable op. Routing this
+        computation through ``query_batch`` for its speed would not raise here —
+        it would hand back a value with no gradient, presenting downstream as a
+        model that will not train. See ``interventional_sweep`` for the
+        read-only counterpart, which is two orders of magnitude faster and is
+        the right tool for L4's bound evaluation.
+
+        The ~1.5 ms per intervention value is negligible at this call site, so
+        the loop costs nothing that matters.
+
         Two things this must not do, both of which produce plausible wrong
         numbers rather than errors:
 
@@ -463,22 +504,63 @@ class LatentClassEstimator:
           policy tilts the former, and it is exactly that tilt the intervention
           is supposed to remove. This is the same asymmetry that makes D-B's q2
           rest on a strictly stronger assumption than its q1.
-        * route through ``query``/``intervene``. Both sever the gradient (N1),
-          so L4's bound optimiser would silently receive zeros. ``sample(do=)``
-          is the differentiable path, verified at gradient 1.0000 against an
-          analytic 1.0.
+        * route through ``intervene()``, which deep-copies and severs the
+          caller's graph (N1).
+
+        Shape contract, learned the hard way: ``do`` values are ``[1, D]``, NOT
+        0-d scalars and NOT ``(n,)`` vectors — the do-dispatch builds a
+        deterministic mechanism that indexes a batch axis, so a 0-d value fails
+        inside the sampler rather than at the call. Evidence is expanded to
+        ``n`` rows because the sampler reshapes each parent to ``(n, -1)``.
         """
         state = state.reshape(1, -1).to(self.model.device)
+        evidence = {"S": state.expand(n_samples, -1)}
         total = torch.zeros((), device=state.device)
         for k in range(self.u_card):
-            do = {
-                "A": torch.full((n_samples,), int(action), dtype=torch.long),
-                "U": torch.full((n_samples,), k, dtype=torch.long),
-            }
             out = self.model.sample(
                 n_samples,
-                evidence={"S": state.expand(n_samples, -1)},
-                do=do,
+                evidence=evidence,
+                do={
+                    "A": torch.tensor([[int(action)]], device=state.device),
+                    "U": torch.tensor([[k]], device=state.device),
+                },
             )
             total = total + prior[k] * out["R"].reshape(-1).mean()
+        return total
+
+    def interventional_sweep(
+        self,
+        states: torch.Tensor,
+        actions: Sequence[int],
+        prior: torch.Tensor,
+    ) -> torch.Tensor:
+        """READ-ONLY per-row interventional sweep — ``(n_rows,)`` of ``E[R|do(a),s]``.
+
+        **Path choice: ``query_batch(do=)``, because nothing here feeds a loss.**
+        It takes a per-row intervention vector and returns the whole sweep in one
+        call — measured upstream at 0.3 ms batched against 37.7 ms looped for 256
+        interventions, bit-identical to the loop. That is the right trade for
+        L4's bound evaluation and any other read-only interventional quantity.
+
+        **The result is NOT differentiable, deliberately.** Do not feed it to an
+        optimiser: ``query_batch`` runs under inference mode, so the returned
+        tensor raises if used in a differentiable op rather than silently
+        producing a zero gradient. If you need a gradient here, you want
+        ``interventional_reward`` instead — the choice is per call site.
+        """
+        states = states.to(self.model.device)
+        n_rows = states.shape[0]
+        a = torch.as_tensor(list(actions), device=states.device).reshape(-1, 1)
+        if a.shape[0] != n_rows:
+            raise ValueError(
+                f"{a.shape[0]} actions against {n_rows} states; the sweep is "
+                "per-row, so they must correspond"
+            )
+        total = torch.zeros(n_rows, device=states.device)
+        for k in range(self.u_card):
+            u_col = torch.full((n_rows,), k, device=states.device, dtype=torch.long)
+            out = self.model.query_batch(
+                ["R"], evidence={"S": states}, do={"A": a.reshape(-1), "U": u_col}
+            )
+            total = total + prior[k].item() * _posterior_mean(out)
         return total

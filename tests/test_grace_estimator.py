@@ -94,3 +94,85 @@ def test_episode_data_refuses_misaligned_arrays():
             reward=torch.zeros(10),
             episode_ids=torch.zeros(10, dtype=torch.long),
         )
+
+
+def _fitted(n_ep=200, T=10, seed=0):
+    u_ep, data = _fixture(n_ep=n_ep, T=T, seed=seed, proxy=False)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, u_card=2, seed=seed)
+    fit = est.fit(data, max_iter=6, epochs=40)
+    return est, fit, data
+
+
+def test_interventional_reward_recovers_the_known_do_effect():
+    """Ground truth on the fixture is r = 1 + 1.5*u*a, so under do(a) the
+    U-marginal effect is E[R|do(1)] - E[R|do(0)] = 1.5 * P(U=1) = 0.75."""
+    est, fit, _ = _fitted()
+    s = torch.zeros(2)
+    v0 = est.interventional_reward(s, 0, fit.prior, n_samples=1024)
+    v1 = est.interventional_reward(s, 1, fit.prior, n_samples=1024)
+    assert abs(float(v0.detach()) - 1.0) < 0.15, float(v0)
+    assert 0.4 < float((v1 - v0).detach()) < 1.1, float(v1 - v0)
+
+
+def test_the_target_path_is_differentiable():
+    """THE contract. sample(do=) is the only differentiable interventional path;
+    query/query_batch are non-differentiable BY DESIGN. Routing a target through
+    the fast one would not raise -- it would return a value with no gradient,
+    presenting downstream as a model that will not train. That silent failure is
+    exactly what this test exists to prevent, so it pins the gradient rather
+    than merely the value."""
+    est, fit, _ = _fitted(n_ep=80, T=8)
+    est.model.zero_grad(set_to_none=True)
+    v = est.interventional_reward(torch.zeros(2), 1, fit.prior, n_samples=256)
+    assert v.requires_grad, "sample(do=) target lost its gradient"
+    v.backward()
+    total = sum(
+        float(p.grad.norm()) for p in est.model.parameters() if p.grad is not None
+    )
+    assert total > 0.0, "no gradient reached the model parameters"
+
+
+def test_the_readonly_sweep_is_not_differentiable_and_says_so():
+    """The counterpart contract: interventional_sweep is for L4's bound
+    evaluation and read-only quantities. It must NOT quietly serve as a target.
+    The substantive contract is that NO GRADIENT REACHES THE MODEL through it,
+    which is what would silently break an optimiser fed this value by mistake.
+
+    Note what is NOT asserted: the amendment notes that inference-mode tensors
+    raise when used in a differentiable op, but this method does arithmetic on
+    the engine's output before returning, and the result is an ordinary
+    gradient-free tensor rather than an inference-mode one. So the loud failure
+    does not survive to the caller here -- only the missing gradient does, which
+    is precisely why it is worth pinning."""
+    est, fit, _ = _fitted(n_ep=80, T=8)
+    states = torch.zeros(4, 2)
+    est.model.zero_grad(set_to_none=True)
+    out = est.interventional_sweep(states, [0, 1, 0, 1], fit.prior)
+    assert out.shape == (4,)
+    assert not out.requires_grad, "the read-only sweep must not carry a gradient"
+    probe = (out.sum() * torch.ones(1, requires_grad=True)).sum()
+    probe.backward()
+    assert all(
+        p.grad is None or float(p.grad.norm()) == 0.0 for p in est.model.parameters()
+    ), "a gradient reached the model through the read-only sweep"
+
+
+def test_both_interventional_paths_agree():
+    """The fast read-only path and the differentiable one must not drift: they
+    answer the same question by different machinery, so a disagreement means one
+    of them is wrong. Measured 0.998/1.812 (sample) against 0.999/1.808
+    (query_batch) for do(a=0)/do(a=1) on the fixture."""
+    est, fit, _ = _fitted()
+    s = torch.zeros(2)
+    sweep = est.interventional_sweep(torch.zeros(2, 2), [0, 1], fit.prior)
+    for i, a in enumerate((0, 1)):
+        looped = float(
+            est.interventional_reward(s, a, fit.prior, n_samples=2048).detach()
+        )
+        assert abs(looped - float(sweep[i])) < 0.1, (a, looped, float(sweep[i]))
+
+
+def test_the_sweep_is_per_row_and_refuses_a_mismatch():
+    est, fit, _ = _fitted(n_ep=60, T=6)
+    with pytest.raises(ValueError, match="per-row"):
+        est.interventional_sweep(torch.zeros(4, 2), [0, 1], fit.prior)
