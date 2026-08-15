@@ -137,3 +137,21 @@ is still recorded as a diagnostic.
 This keeps the invariant that matters: a dataset that *claims* a confounding
 signature must exhibit one, while a dataset that declares itself signature-free
 is not asked to prove a signature it does not have.
+
+
+---
+
+## Addendum (2026-08-15) — NBN v0.14.0 supersedes the M-step workaround
+
+The C1 splitting design above is unchanged. One implementation note attached to
+it is now obsolete: the plan assumed GRACE would own a hand-written weighted
+M-step loop because NBN had no sample weights. **v0.14.0 delivers
+`fit(..., weights=)`** with a `supports_weights` capability flag, verified exact
+against replication (weighted == replicated to 4.8e-07 for LinearGaussian;
+zero-weighted rows fully excluded for MDN). The EM M-step should therefore call
+the library, keeping a GRACE-side loop only for a mechanism that refuses.
+
+Two constraints this introduces are recorded in `docs/grace_v2.md`: weighted
+*incremental* updates are unsupported (so the online refresh refits), and KDE's
+bandwidth rule stays unweighted (so the weighted EM path should use MDN, flow,
+or LinearGaussian).

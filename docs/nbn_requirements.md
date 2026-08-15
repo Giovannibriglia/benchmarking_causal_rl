@@ -3,9 +3,16 @@
 **Audience:** the NBN library author. **Scope:** what GRACE v2 needs from NBN
 that it cannot get GRACE-side without compromising correctness.
 
-**Headline: nothing here is blocking.** After upstream `a91d8f9`, every
-GRACE-side need is either satisfied or has a measured workaround. The list
-below is two requirements, one of which is a *guarantee about existing
+> **STATUS: BOTH REQUIREMENTS DELIVERED in NBN v0.14.0 (`4784b8e`).** R1 is
+> pinned by upstream tests; R2 shipped with a `supports_weights` capability
+> flag checked before any node is fitted. The fallback sections below are
+> **superseded** and kept only as the record of what was traded away had they
+> not landed. Verification of the delivered behaviour is in
+> `nbn/NOTICE.md` and `docs/grace_v2.md`.
+
+**Headline: nothing here was blocking.** After upstream `a91d8f9`, every
+GRACE-side need was either satisfied or had a measured workaround. The list
+below is two requirements, one of which was a *guarantee about existing
 behaviour* rather than new code.
 
 This is deliberately shorter than anticipated. Requirements that were expected
@@ -16,7 +23,7 @@ each one.
 
 ---
 
-## R1 — Pin parent-tensor gradient transparency as a tested contract
+## R1 — Pin parent-tensor gradient transparency as a tested contract ✅ DELIVERED (v0.14.0)
 
 **Statement.** Guarantee, and test, that mechanisms do not detach their
 `parents` argument: gradients must flow from `log_prob(x, parents)` and from
@@ -66,16 +73,19 @@ assert abs(float(v.grad) - 1.0) < 0.1      # analytic dR/dB = 1 for R = B + A
 **Measured today:** `log_prob` → encoder grad-norm `0.0103` (flows);
 `sample(do=)` → grad `0.971` vs analytic `1.0`. Both pass.
 
-**Priority.** Not blocking (it already works) — but the **highest-value** item
-here, because it is the assumption the rest of the design rests on.
+**Priority.** Not blocking (it already worked) — but the **highest-value** item
+here, because it is the assumption the rest of the design rests on. **Delivered:**
+upstream now pins `mechanism.log_prob`, `model.log_prob` and `model.sample(±do)`
+as differentiable through caller tensors, with `query`/`query_batch` explicitly
+non-differentiable by design.
 
-**Fallback if dropped.** None needed while the behaviour holds. If it ever
+**Fallback if dropped (SUPERSEDED — R1 landed).** None needed while the behaviour holds. If it ever
 regressed, GRACE would have to reimplement conditional densities outside NBN,
 which would eliminate most of the reason to use the library.
 
 ---
 
-## R2 — Per-sample weights in mechanism fitting
+## R2 — Per-sample weights in mechanism fitting ✅ DELIVERED (v0.14.0)
 
 **Statement.** Accept an optional `weights: Tensor | None` of shape `(N,)` in
 `Mechanism.fit_local` and in `fit(...)`, contributing a weighted objective
@@ -118,9 +128,9 @@ mean = m(pa[:1]).mean.item()
 assert abs(mean - 0.0) < 0.1        # 0.0, NOT the unweighted 5.0
 ```
 
-**Priority.** Nice-to-have.
+**Priority.** Nice-to-have. **Delivered** in v0.14.0.
 
-**Fallback.** GRACE owns the M-step loop (already measured and planned). Cost:
+**Fallback (SUPERSEDED — R2 landed).** GRACE owns the M-step loop (already measured and planned). Cost:
 GRACE duplicates minibatching and optimiser setup, and mechanisms whose
 `fit_local` does non-gradient work — `LinearGaussianMechanism`'s closed-form
 ridge solve, the KDE/kNN memorisation — cannot be weighted at all by that
