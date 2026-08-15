@@ -72,8 +72,49 @@ selection must report the estimated view k-ranks alongside the likelihood
 curve**, so the two criteria are visible together and a likelihood-preferred `K`
 that violates the rank condition is caught rather than silently adopted.
 
+### The covariate-conditional reading costs a second assumption
+
+Because the views are conditionally independent given `U` **together with**
+the `(S, A)` at the measurement times, the three-way array is a **family
+indexed by covariates**, and Kruskal's condition holds *per configuration*.
+With continuous `S` there is no finite set of strata, so the argument
+identifies the latent structure **pointwise in `(s, a)`** — sound as
+identification, but a different statement from a single global one.
+
+**The real gap is cross-stratum label linking.** Applying Kruskal at each
+`(s, a)` fixes the latent only up to a relabelling *at that configuration*.
+Nothing in the argument forces "class 1 at `(s, a)`" to be the same class as
+"class 1 at `(s′, a′)`". The obvious linking assumption — `U` independent of
+the covariates — is **false here**: `S_t` descends from `U` through past
+actions, which is precisely the `P(U|X) ≠ P(U)` asymmetry that drove the q2
+derivation.
+
+What actually links the labels is the **shared parametric mechanism family**:
+one `P(R | S, A, U)` fitted across all configurations forces a consistent
+labelling. That is an assumption of the **model class, not of the diagram** —
+exactly the category v2 exists to name rather than absorb. It is declared as
+`cross_stratum_label_linking` on D-B and D-B′, with `testable_shadow=None`:
+the canonicalization convention detects permutation *within* a fit, but
+consistency of the latent's *meaning* across configurations has at best a weak
+observable shadow, and `None` is the truthful entry.
+
+**D-D does not need it**, and this is part of why it is the clean point-ID
+case: its declared proxies are **covariate-free** (`parents(Z) = parents(W) =
+{U}`), so `P(Z|U)` and `P(W|U)` are global and pin the labelling globally.
+Verified in code and asserted in the test suite.
+
+Two consequences that travel with the per-configuration reading:
+
+1. **Proxy informativeness must hold where the data actually is**, not on
+   average. Regions the behaviour policy rarely visits have neither informative
+   proxies nor enough data to check them — which connects directly to the R4
+   curve, since those are exactly the regions a *better* logged policy creates.
+2. **Any pooling used to make the per-configuration argument tractable is
+   itself an assumption**, not a free approximation. If the implementation
+   pools across configurations, it must say so.
+
 **Verdict for the D-B entry: the condition HOLDS ONLY UNDER THE STATED
-PROXY-INFORMATIVENESS** — concretely, at least three `a_bad` transitions per
+PROXY-INFORMATIVENESS *AND* THE MODEL-CLASS LINKING ASSUMPTION** — concretely, at least three `a_bad` transitions per
 episode. That is checkable per episode, so D-B's q2 gate stays **conditional and
 shut by default** rather than permanently shut: GRACE counts informative
 transitions and degrades the estimate to bounds when the count is short.

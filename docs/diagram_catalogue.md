@@ -149,6 +149,16 @@ So D-B's sequential answer is *not* "Q1 point-ID, Q2 bounds-only" — but it is 
 
 **Written proof required in Phase 2** (per R5), covering both the completeness step and this sequential argument. **Literature to check rather than reconstruct** — all `TODO-verify` (venue/year unverified from this repo): Ying, Miao, Shi & Tchetgen Tchetgen on proximal causal inference for complex longitudinal studies; and the confounded-POMDP OPE line (Bennett & Kallus; Shi, Uehara, Huang & Jiang; Uehara et al.), whose premise — that the sequential case needs bridge machinery rather than per-step adjustment — is precisely what Step 2 above reproduces from this diagram.
 
+**What opening the gate would mean.** Not "point-ID under proxy
+informativeness" alone. The lagged views are covariate-conditional, so
+Kruskal applies per `(s, a)` and identifies the latent only up to a
+relabelling at each configuration; the labels are linked by the **shared
+mechanism family**, a model-class assumption declared as
+`cross_stratum_label_linking` (untestable). D-D needs no such assumption — its
+proxies are covariate-free. So the honest reading is: **point-ID under proxy
+informativeness *plus* a model-class linking assumption.** Still defensible;
+just not free. See `docs/grace_v2_conditions.md`.
+
 **Consequence if this survives review:** the existing confounded cells were **identifiable all along**, and the taxonomy's identifiability axis must relabel them from "non-ID" to "point-ID (proximal, conditional on completeness)". As the addendum says, this strengthens the paper. It also means D-B and D-D differ not in *whether* point-ID is available but in whether the proxies are **explicit and clean** (D-D) or **implicit and conditional** (D-B) — which is itself the more interesting scientific statement.
 
 **Fallback if review rejects the derivation:** D-B is bounds-only and D-D is the sole point-ID cell. **I recommend implementing L2 so that D-B's point-ID verdict is gated on a `proximal_lagged` declaration that is off by default**, so the conservative reading ships unless the derivation is explicitly accepted.

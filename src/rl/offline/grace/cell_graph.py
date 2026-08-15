@@ -360,6 +360,30 @@ _A_EP_LEN = Assumption(
     ),
     testable_shadow="episode-length distribution is directly observable",
 )
+_A_CROSS_STRATUM_LINKING = Assumption(
+    name="cross_stratum_label_linking",
+    statement=(
+        "The latent's LABELLING is consistent across covariate configurations. "
+        "The lagged-proxy views are conditionally independent given U only "
+        "TOGETHER WITH the (S, A) at the measurement times, so Kruskal's "
+        "condition applies per configuration and identifies the latent "
+        "structure only up to a relabelling AT EACH (s, a). Nothing in the "
+        "diagram forces 'class 1 at (s,a)' to be 'class 1 at (s',a')': the "
+        "obvious linking assumption -- U independent of the covariates -- is "
+        "FALSE here, since S_t is a descendant of U through past actions "
+        "(the same P(U|X) != P(U) asymmetry that drives the q2 derivation). "
+        "The linking is supplied instead by the SHARED MECHANISM FAMILY: one "
+        "P(R | S, A, U) fitted across all configurations forces a consistent "
+        "labelling. That is an assumption of the MODEL CLASS, not of the "
+        "graph. Note D-D does NOT need it: its declared proxies are "
+        "covariate-free (parents = {U}), so P(Z|U) and P(W|U) are global and "
+        "pin the labelling globally."
+    ),
+    # The canonicalization convention detects permutation WITHIN a fit, but
+    # consistency of the latent's MEANING across covariate configurations has
+    # at best a weak observable shadow. None is the truthful entry.
+    testable_shadow=None,
+)
 _A_PROXY_SIGNAL = Assumption(
     name="proxy_informativeness",
     statement=(
@@ -440,6 +464,7 @@ def _build() -> Dict[str, CellGraph]:
                     "episode_length_ge_3",
                     "proxy_informativeness",
                     "completeness",
+                    "cross_stratum_label_linking",
                 ),
                 gated_off_by_default=True,
                 note=(
@@ -456,6 +481,7 @@ def _build() -> Dict[str, CellGraph]:
                     "episode_length_ge_3",
                     "proxy_informativeness",
                     "completeness",
+                    "cross_stratum_label_linking",
                     "finite_K_latent_class",
                 ),
                 gated_off_by_default=True,
@@ -471,6 +497,7 @@ def _build() -> Dict[str, CellGraph]:
                 _A_EP_LEN,
                 _A_PROXY_SIGNAL,
                 _A_COMPLETENESS,
+                _A_CROSS_STRATUM_LINKING,
                 _A_FINITE_K,
             ),
             testable_implications=("rank <= K on cross-time moment matrices",),
@@ -495,6 +522,7 @@ def _build() -> Dict[str, CellGraph]:
                     "episode_length_ge_3",
                     "proxy_informativeness",
                     "completeness",
+                    "cross_stratum_label_linking",
                 ),
                 note=(
                     "The EXCLUSIONS survive drift (conditioning on U_t blocks the "
@@ -512,9 +540,15 @@ def _build() -> Dict[str, CellGraph]:
                     "episode_length_ge_3",
                     "proxy_informativeness",
                     "completeness",
+                    "cross_stratum_label_linking",
                 ),
             ),
-            assumptions=(_A_EP_LEN, _A_PROXY_SIGNAL, _A_COMPLETENESS),
+            assumptions=(
+                _A_EP_LEN,
+                _A_PROXY_SIGNAL,
+                _A_COMPLETENESS,
+                _A_CROSS_STRATUM_LINKING,
+            ),
             testable_implications=(
                 "rank <= K on cross-time moment matrices (ill-conditioned with drift)",
             ),

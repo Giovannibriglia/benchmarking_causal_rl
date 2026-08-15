@@ -321,6 +321,12 @@ def _identify_per_step(g: CellGraph, x: str, y: str) -> IdentificationResult:
                 "episode_length_ge_3",
                 "proxy_informativeness",
                 "completeness",
+                # The lagged views are covariate-CONDITIONAL, so Kruskal applies
+                # per (s,a) and the labelling is linked only by the shared
+                # mechanism family -- a model-class assumption, not a graphical
+                # one. Declared proxies (D-D) are covariate-free and need no
+                # such linking.
+                "cross_stratum_label_linking",
             ),
             gated=True,
             reason=(

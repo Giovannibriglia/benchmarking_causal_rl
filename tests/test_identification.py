@@ -118,3 +118,35 @@ def test_catalogue_sweep_is_complete():
     out = identify_catalogue(CATALOGUE)
     assert set(out) == set(CATALOGUE)
     assert all(set(v) == {"q1", "q2"} for v in out.values())
+
+
+def test_cross_stratum_linking_is_cited_where_the_views_are_covariate_conditional():
+    """The lagged-proxy views are conditionally independent given U only
+    TOGETHER WITH the (S, A) at the measurement times, so Kruskal applies per
+    configuration and identifies the latent only up to a relabelling AT EACH
+    (s, a). Nothing in the diagram links those labels -- U is NOT independent
+    of the covariates here (S_t descends from U through past actions) -- so the
+    linking comes from the shared mechanism family, a MODEL-CLASS assumption.
+
+    D-D is the contrast: its declared proxies are covariate-FREE (parents =
+    {U}), so P(Z|U) and P(W|U) are global and pin the labelling globally. It
+    therefore does not need the assumption, which is part of why it is the
+    clean point-ID case."""
+    from src.rl.offline.grace.identify import _parents
+
+    for eid in ("D-B", "D-B-prime"):
+        g = catalogue_entry(eid)
+        assert "cross_stratum_label_linking" in g.q1.assumptions, eid
+        assert "cross_stratum_label_linking" in g.q2.assumptions, eid
+        # ...and it is honestly recorded as having no observable shadow.
+        assert g.assumption("cross_stratum_label_linking").untestable
+    # L2 names it too, for the same criterion.
+    assert (
+        "cross_stratum_label_linking"
+        in identify(catalogue_entry("D-B"), "q1").assumptions
+    )
+
+    d_d = catalogue_entry("D-D")
+    assert "cross_stratum_label_linking" not in d_d.q1.assumptions
+    for proxy in d_d.proxy_nodes:  # the reason why
+        assert sorted(_parents(d_d, proxy)) == ["U"], "proxy must be covariate-free"
