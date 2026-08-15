@@ -99,6 +99,21 @@ class ConfoundedCollectionWrapper:
                 f"u_drift is a per-step flip probability in [0, 0.5]; 0.5 is full "
                 f"refresh (U_t independent of U_{{t-1}}). Got {self.u_drift}."
             )
+        # Proxies measure the latent as it stood when they were drawn (episode
+        # reset). Under drift that is the episode-INITIAL U, not the U each
+        # transition actually shares -- an unannounced measurement error that
+        # would look like weak proxies rather than a bug. D-D declares static U
+        # and D-B' declares no explicit proxies, so nothing needs the
+        # combination; refuse it rather than let it pass quietly.
+        if self.proxy_strength is not None and self.u_drift > 0.0:
+            raise NotImplementedError(
+                "proxy_strength with u_drift > 0 is not supported: the proxies are "
+                "drawn once per episode and would measure the episode-INITIAL U "
+                "while the reward uses the drifted U. D-D declares a static latent "
+                "(u_drift = 0); D-B' uses lagged views, not declared proxies. A "
+                "drifting-latent proxy arm needs per-step proxy draws and a "
+                "catalogue entry to declare them."
+            )
         self._aux_gen = None
         if seed is not None and (
             self.proxy_strength is not None

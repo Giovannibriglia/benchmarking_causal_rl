@@ -1,0 +1,40 @@
+# D-B' — the PERSISTENT-latent arm. Where the lagged-proxy argument breaks.
+#
+# D-B's implicit lagged proxies (W = R_{t-1}, Z = A_{t-2}) are views of an
+# EPISODE-STATIC U. Let U drift within the episode and each lagged view measures
+# a different latent from the one the current transition shares, so the channel
+# degrades continuously in rho -- it does not fail with an error, it fails by
+# returning a confidently wrong number. This arm is what makes that visible, and
+# it is why L2 refuses the lagged route outright when persistent_latent is set.
+#
+# u_drift is a per-step FLIP probability; the realised lag-1 autocorrelation of
+# U is 1 - 2*rho. Preflight measures it against that closed form rather than
+# trusting the knob: rho = 0 / 0.1 / 0.25 / 0.5 gave 1.000 / 0.797 / 0.501 /
+# 0.001. rho = 0.5 is full refresh (U_t independent of U_{t-1}), the far end of
+# the axis, and rho = 0 consumes no randomness so it reproduces D-B bit for bit.
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-B-prime
+
+max_workers: 4
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+u_drift: 0.1               # measured lag-1 autocorr 0.797 against 1-2*rho = 0.80
+
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25, 0.50, 1.00] }
+
+critics:
+  basic:      [observational, proximal, oracle_u]
+  confounded: [observational, proximal, oracle_u]

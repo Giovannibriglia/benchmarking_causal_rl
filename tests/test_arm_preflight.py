@@ -100,8 +100,15 @@ def test_proxies_are_covariate_free_and_excluded():
         episode_ids=d["E"],
     )
     assert rep.covariate_free, rep.summary()
-    assert rep.max_abs_corr_proxy_state < 0.05
     assert rep.exclusions_hold, rep.reasons
+    # The verdict rests on the z against the episode-level null, NOT on the raw
+    # correlation. On the REAL generator the marginal corr(proxy, S) reaches
+    # 0.226 at this strength -- U drives the action, the action drives the next
+    # state, so a proxy of U is marginally correlated with the state BY DESIGN.
+    # Asserting a small marginal here would re-enshrine the bug that finding
+    # exposed; the conditional statement is what covariate-freeness means.
+    assert rep.null_sds["proxy_vs_state_given_u"] < 3.0, rep.summary()
+    assert rep.null_sds["z_vs_w_given_u"] < 3.0
     assert abs(rep.corr_z_u) > 0.5 and abs(rep.corr_w_u) > 0.5  # actually informative
 
 
@@ -159,10 +166,35 @@ def test_instrument_is_exogenous_relevant_and_excluded():
     """A leaking instrument would invalidate the Balke-Pearl anchor -- L4's
     only exact reference -- while still looking plausible."""
     d = _rollout(instrument=0.5)
-    rep = check_instrument(i=d["I"], u=d["U"], action=d["A"], reward=d["R"])
-    assert rep.independent_of_u and rep.relevant and rep.exclusion_holds, rep.summary()
-    assert abs(rep.corr_i_u) < 0.05
-    assert abs(rep.corr_i_reward_given_action_and_u) < 0.05
+    rep = check_instrument(
+        i=d["I"], u=d["U"], action=d["A"], reward=d["R"], episode_ids=d["E"]
+    )
+    assert rep.independent_of_u and rep.relevant, rep.summary()
+    assert rep.exclusion_holds or not rep.exclusion_testable, rep.reasons
+    # Exogeneity is "inside the null", relevance is "outside it" -- an
+    # instrument that fails to move A is useless, so for relevance a null result
+    # IS the failure. Judging both by one magnitude tolerance got this backwards.
+    assert rep.null_sds["i_vs_u"] < 3.0, rep.summary()
+    assert rep.null_sds["i_vs_a"] >= 3.0, rep.summary()
+
+
+def test_exclusion_reports_when_it_cannot_be_tested_rather_than_passing():
+    """On an env whose reward is a DETERMINISTIC function of (A, U) -- CartPole
+    with the action gate, r = 1 + c_r*U*1[a=a_bad] -- residualising on (A, U)
+    leaves no variance, so the exclusion statistic is identically zero for the
+    observed data and every permutation. That is a measurement of nothing, and
+    it must not read as a verified pass."""
+    n = 4000
+    rng = np.random.default_rng(0)
+    ep = np.repeat(np.arange(n // 10), 10)
+    u = np.repeat(rng.integers(0, 2, n // 10).astype(float), 10)
+    i = np.repeat(rng.integers(0, 2, n // 10).astype(float), 10)
+    a = (rng.random(n) < (0.5 + 0.2 * (i - 0.5))).astype(float)
+    r = 1.0 + u * a  # deterministic given (A, U)
+    rep = check_instrument(i=i, u=u, action=a, reward=r, episode_ids=ep)
+    assert not rep.exclusion_testable, rep.summary()
+    assert not rep.exclusion_holds, "an untestable exclusion must not claim a pass"
+    assert any("NOT TESTABLE" in s for s in rep.reasons), rep.reasons
 
 
 def test_drift_matches_the_declared_rho_and_zero_is_static():

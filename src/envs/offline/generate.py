@@ -137,13 +137,21 @@ def build_rollout_env(
     strength=None,
     c_r=None,
     a_bad=1,
+    proxy_strength=None,
+    instrument_strength=None,
+    u_drift=0.0,
 ):
     """Build the rollout env, wrapped in the confounder iff bias_confounded[_action].
 
     ``c_r`` (action-dependent path only) is the FIXED U->R reward-shift magnitude,
     decoupled from ``strength`` (sigma): sigma scales the U->A edge via the behavior
     policy, while c_r on U->R is invariant across the sigma sweep (default 1.0). The
-    additive path ignores c_r and keeps ``c_r = c_a = sigma`` (byte-frozen)."""
+    additive path ignores c_r and keeps ``c_r = c_a = sigma`` (byte-frozen).
+
+    ``proxy_strength`` / ``instrument_strength`` / ``u_drift`` are the GRACE v2
+    diagram-arm channels (D-D / D-E / D-B'). All default off and are drawn from
+    the wrapper's dedicated auxiliary generator, so an arm that leaves them off
+    consumes exactly the RNG it always did."""
     from src.envs.registry import build_env
 
     env = build_env(env_id=env_id, n_envs=n_envs, device=device, seed=seed)
@@ -165,7 +173,15 @@ def build_rollout_env(
             (1.0 if c_r is None else float(c_r)) if kind == "action_gated" else sig
         )
         env = ConfoundedCollectionWrapper(
-            env, c_a=sig, c_r=c_r_val, seed=seed, confounder_kind=kind, a_bad=int(a_bad)
+            env,
+            c_a=sig,
+            c_r=c_r_val,
+            seed=seed,
+            confounder_kind=kind,
+            a_bad=int(a_bad),
+            proxy_strength=proxy_strength,
+            instrument_strength=instrument_strength,
+            u_drift=u_drift,
         )
     return env
 
@@ -202,7 +218,13 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     from minari.data_collector.episode_buffer import EpisodeBuffer
 
     confounded = hasattr(env, "current_u")
+    # GRACE v2 diagram channels, present only on the arms that enable them.
+    # Read at the SAME point as U (before the step), so a row's (U, Z, W, I) is
+    # the tuple that this transition's action and reward actually shared.
+    _has_proxy = getattr(env, "current_z", None) is not None
+    _has_instr = getattr(env, "current_i", None) is not None
     sig_a, sig_r, sig_u, sig_iv, sig_ps = [], [], [], [], []
+    sig_z, sig_w, sig_i, sig_ep = [], [], [], []
     # The action-dependent gate needs the per-transition pi_basic(a_bad|s). The
     # marginally-matched policy exposes it via ``_base_action_probs`` (a READ of
     # pi_basic — no behavior change, and DQN's argmax path draws no RNG, so the
@@ -230,6 +252,9 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             []
         )  # per-transition intervened flag (when the policy emits it)
         ep_cmin: list[float] = []  # per-transition min_a p_b(a|s) (arms only)
+        ep_z: list[float] = []  # D-D proxy Z (episode-constant, logged per row)
+        ep_w: list[float] = []  # D-D proxy W
+        ep_i: list[float] = []  # D-E instrument I
         done = False
         steps = 0
         while not done and steps < max_steps:
@@ -246,6 +271,11 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 if (confounded and _ps_fn is not None)
                 else None
             )
+            if _has_proxy:
+                ep_z.append(float(env.current_z.reshape(-1)[0].item()))
+                ep_w.append(float(env.current_w.reshape(-1)[0].item()))
+            if _has_instr:
+                ep_i.append(float(env.current_i.reshape(-1)[0].item()))
             act_out = collection_policy.act(obs)
             action = act_out.action
             # intervened: emitted only by the marginally-matched confounded policy
@@ -266,6 +296,12 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             terms.append(bool(term.reshape(-1)[0].item()))
             truncs.append(bool(trunc.reshape(-1)[0].item()))
             if confounded:
+                sig_ep.append(ep)
+                if _has_proxy:
+                    sig_z.append(ep_z[-1])
+                    sig_w.append(ep_w[-1])
+                if _has_instr:
+                    sig_i.append(ep_i[-1])
                 # Scalar action: the index (discrete) or L2 norm (continuous).
                 sig_a.append(
                     float(a[0])
@@ -303,6 +339,13 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         # / confounded); absent for the clean 'agent' + additive paths (byte-frozen).
         if ep_cmin:
             infos["coverage_min"] = np.asarray(ep_cmin, dtype=np.float32)
+        # D-D / D-E channels. Written only when the arm enables them, so every
+        # pre-existing dataset's infos block is unchanged key-for-key.
+        if ep_z:
+            infos["proxy_z"] = np.asarray(ep_z, dtype=np.float32)
+            infos["proxy_w"] = np.asarray(ep_w, dtype=np.float32)
+        if ep_i:
+            infos["instrument_i"] = np.asarray(ep_i, dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(
@@ -321,6 +364,15 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             "u": np.asarray(sig_u, dtype=np.float64),
             "intervened": np.asarray(sig_iv, dtype=np.float64),  # empty for additive
             "p_s": np.asarray(sig_ps, dtype=np.float64),  # empty for additive
+            # Diagram-arm channels + the episode index, flat over transitions.
+            # ``episode`` is what makes the preflight's permutation null
+            # EPISODE-level: U and the proxies are episode-constant, so a
+            # step-level shuffle shatters the blocks and the null comes out far
+            # too tight (a zero-signal view was called rank 2).
+            "z": np.asarray(sig_z, dtype=np.float64),
+            "w": np.asarray(sig_w, dtype=np.float64),
+            "i": np.asarray(sig_i, dtype=np.float64),
+            "episode": np.asarray(sig_ep, dtype=np.int64),
         }
         if confounded
         else None
@@ -357,6 +409,8 @@ def _rollout_vectorized(
     from minari.data_collector.episode_buffer import EpisodeBuffer
 
     confounded = hasattr(env, "current_u")
+    _has_proxy = getattr(env, "current_z", None) is not None
+    _has_instr = getattr(env, "current_i", None) is not None
     # Same optional per-transition readers as the scalar path (pure reads, no RNG).
     _ps_fn = getattr(collection_policy, "_base_action_probs", None)
     _ps_a_bad = int(getattr(collection_policy, "a_bad", 1))
@@ -375,6 +429,9 @@ def _rollout_vectorized(
             "u": [],
             "iv": [],
             "cmin": [],
+            "z": [],
+            "w": [],
+            "i": [],
             "sig_a": [],
             "sig_r": [],
             "sig_u": [],
@@ -421,6 +478,12 @@ def _rollout_vectorized(
             _ps_fn(obs)[:, _ps_a_bad].detach().cpu().numpy()
             if (confounded and _ps_fn is not None)
             else None
+        )
+        # Diagram channels, read at the same point as U (before the step).
+        z_t = env.current_z.reshape(-1).detach().cpu().numpy() if _has_proxy else None
+        w_t = env.current_w.reshape(-1).detach().cpu().numpy() if _has_proxy else None
+        i_t_aux = (
+            env.current_i.reshape(-1).detach().cpu().numpy() if _has_instr else None
         )
         act_out = collection_policy.act(obs)
         action = act_out.action
@@ -475,6 +538,11 @@ def _rollout_vectorized(
                 b["iv"].append(bool(iv_t[i]))
             if cmin_t is not None:
                 b["cmin"].append(float(cmin_t[i]))
+            if z_t is not None:
+                b["z"].append(float(z_t[i]))
+                b["w"].append(float(w_t[i]))
+            if i_t_aux is not None:
+                b["i"].append(float(i_t_aux[i]))
 
             if bool(term_np[i]) or bool(trunc_np[i]):
                 done_eps[slot_ep[i]] = b
@@ -497,6 +565,10 @@ def _rollout_vectorized(
     sig_u: list = []
     sig_iv: list = []
     sig_ps: list = []
+    sig_z: list = []
+    sig_w: list = []
+    sig_i: list = []
+    sig_ep: list = []
     for ep_idx in range(n_episodes):
         b = done_eps[ep_idx]
         infos: dict = {}
@@ -506,6 +578,11 @@ def _rollout_vectorized(
             infos["intervened"] = np.asarray(b["iv"], dtype=bool)
         if b["cmin"]:
             infos["coverage_min"] = np.asarray(b["cmin"], dtype=np.float32)
+        if b["z"]:
+            infos["proxy_z"] = np.asarray(b["z"], dtype=np.float32)
+            infos["proxy_w"] = np.asarray(b["w"], dtype=np.float32)
+        if b["i"]:
+            infos["instrument_i"] = np.asarray(b["i"], dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(
@@ -522,6 +599,13 @@ def _rollout_vectorized(
         sig_u.extend(b["sig_u"])
         sig_iv.extend(b["sig_iv"])
         sig_ps.extend(b["sig_ps"])
+        sig_z.extend(b["z"])
+        sig_w.extend(b["w"])
+        sig_i.extend(b["i"])
+        # The episode INDEX, not a running counter: the preflight's permutation
+        # null must shuffle whole episodes (U and the proxies are
+        # episode-constant), and it needs these blocks to do it.
+        sig_ep.extend([ep_idx] * len(b["sig_a"]))
 
     samples = (
         {
@@ -530,6 +614,10 @@ def _rollout_vectorized(
             "u": np.asarray(sig_u, dtype=np.float64),
             "intervened": np.asarray(sig_iv, dtype=np.float64),
             "p_s": np.asarray(sig_ps, dtype=np.float64),
+            "z": np.asarray(sig_z, dtype=np.float64),
+            "w": np.asarray(sig_w, dtype=np.float64),
+            "i": np.asarray(sig_i, dtype=np.float64),
+            "episode": np.asarray(sig_ep, dtype=np.int64),
         }
         if confounded
         else None
@@ -600,9 +688,64 @@ def compute_confounding_signature(
             "gate_test_passed": gate_passed,
             "behavior_strength_sigma": float(sigma) if sigma is not None else None,
         }
+    if gate.get("type") == "instrument":
+        return _instrument_signature(samples, float(sigma or 0.0), gate, int(a_bad))
     return _action_dependent_signature(
         samples, float(sigma or 0.0), gate, int(a_bad), bool(is_online)
     )
+
+
+def _instrument_signature(samples: dict, sigma: float, gate: dict, a_bad: int) -> dict:
+    """Gate for the D-E arm: certify the IV CONDITIONS, not the U->A point check.
+
+    The action-gated gate's A2 identity
+    ``mean((1[a=a_bad] - p_s)(2U-1)) == sigma * mean(p_s(1-p_s))`` was derived for
+    the un-instrumented swap policy. An exogenous action override breaks it in
+    two ways at once: it removes the U-conditional draw on a lambda fraction of
+    in-pair steps, AND it changes which states get visited, which the derivation
+    holds fixed. A tempting (1 - lambda) correction does NOT rescue it -- measured
+    against it, the realised dilution was 0.951 / 0.827 / 0.233 at
+    lambda = 0.1 / 0.3 / 0.6 versus the predicted 0.9 / 0.7 / 0.4, missing by 1.0,
+    2.4 and 2.6 standard errors and erring in BOTH directions. Shipping that
+    would have been a fabricated closed form dressed as a point check.
+
+    So D-E certifies what its verdict actually rests on: I independent of U,
+    I relevant for A, I excluded from R given (A, U) -- the same three
+    statements the preflight measures, at the same EPISODE granularity, since I
+    is drawn once per episode.
+    """
+    from src.envs.offline.arm_preflight import check_instrument
+
+    i = samples.get("i")
+    ep = samples.get("episode")
+    if i is None or i.size == 0 or ep is None or ep.size != i.size:
+        raise ValueError(
+            "instrument gate requires per-transition i and episode ids; the "
+            "generator did not log them."
+        )
+    rep = check_instrument(
+        i=i, u=samples["u"], action=samples["a"], reward=samples["r"], episode_ids=ep
+    )
+    # Exclusion is credited when it holds OR when the env makes it untestable
+    # (deterministic reward given (A,U)); the metadata records which, so a reader
+    # can tell "verified" from "not applicable" -- never silently conflated.
+    exclusion_ok = rep.exclusion_holds or not rep.exclusion_testable
+    return {
+        "gate_type": "instrument",
+        "gate_test_passed": bool(
+            rep.independent_of_u and rep.relevant and exclusion_ok
+        ),
+        "behavior_strength_sigma": sigma,
+        "instrument_strength": float(gate.get("instrument_strength", 0.0) or 0.0),
+        "corr_i_u": rep.corr_i_u,
+        "corr_i_action": rep.corr_i_action,
+        "corr_i_reward_given_action_and_u": rep.corr_i_reward_given_action_and_u,
+        "null_sds": dict(rep.null_sds),
+        "check_i_exogenous": rep.independent_of_u,
+        "check_i_relevant": rep.relevant,
+        "check_i_excluded": rep.exclusion_holds,
+        "exclusion_testable": rep.exclusion_testable,
+    }
 
 
 def _action_dependent_signature(
@@ -801,6 +944,9 @@ def generation_fingerprint(
     rollout_device: str,
     rollout_n_envs: int,
     legacy_rollout: bool,
+    proxy_strength=None,
+    instrument_strength=None,
+    u_drift: float = 0.0,
 ) -> str:
     """Hash of EVERY input that determines a generated dataset's contents (S4).
 
@@ -839,6 +985,19 @@ def generation_fingerprint(
         ("rollout_n_envs", 1 if legacy_rollout else int(rollout_n_envs)),
         ("legacy_rollout", bool(legacy_rollout)),
     ]
+    # The GRACE v2 diagram channels are appended ONLY when enabled. Appending
+    # them unconditionally would change every existing dataset's fingerprint and
+    # force a full regeneration for no change in contents; appending them never
+    # would let a D-D dataset be reused to serve a D-A request, which is the
+    # dangerous direction. Conditional append gives new arms a distinct key and
+    # leaves the frozen ones bit-for-bit.
+    for key, val, off in (
+        ("proxy_strength", proxy_strength, None),
+        ("instrument_strength", instrument_strength, None),
+        ("u_drift", float(u_drift), 0.0),
+    ):
+        if val != off:
+            parts.append((key, val))
     h = hashlib.sha256()
     for k, v in parts:
         h.update(f"{k}={v!r};".encode())
@@ -948,6 +1107,9 @@ def generate_offline_dataset(
     rollout_device: str | None = "cpu",
     rollout_n_envs: int = 1,
     legacy_rollout: bool = False,
+    proxy_strength: float | None = None,
+    instrument_strength: float | None = None,
+    u_drift: float = 0.0,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -1037,6 +1199,9 @@ def generate_offline_dataset(
         behavior_strength,
         c_r=confounder_c_r,
         a_bad=a_bad,
+        proxy_strength=proxy_strength,
+        instrument_strength=instrument_strength,
+        u_drift=u_drift,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
     # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +
@@ -1123,6 +1288,11 @@ def generate_offline_dataset(
         # than testing for a signature the dataset deliberately lacks.
         if _gate.get("type") == "action_dependent" and not confounder_c_r:
             _gate["expect_gated_reward"] = False
+        # D-E certifies through the IV conditions, NOT through the action-gated
+        # closed form. Derived from the arm rather than declared in YAML, for the
+        # same reason the channels are: the diagram decides.
+        if instrument_strength is not None and gate is None:
+            _gate = {"type": "instrument", "instrument_strength": instrument_strength}
         signature = compute_confounding_signature(
             sig_samples, behavior_strength, gate=_gate, a_bad=a_bad, is_online=False
         )
@@ -1155,6 +1325,9 @@ def generate_offline_dataset(
         rollout_device=str(roll_dev),
         rollout_n_envs=n_slots,
         legacy_rollout=legacy_rollout,
+        proxy_strength=proxy_strength,
+        instrument_strength=instrument_strength,
+        u_drift=u_drift,
     )
     ds.storage.update_metadata(signature)
     return ds

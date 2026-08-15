@@ -31,10 +31,23 @@ __all__ = [
     "check_drift",
 ]
 
-# Correlation below this counts as "independent" for the exclusion checks. It
-# is a measurement tolerance on a finite sample, not a calibration constant:
-# with N ~ 4e4 the standard error of a correlation is ~5e-3, so 0.05 is ~10 SE.
-_INDEP_TOL = 0.05
+# How far outside its own permutation null a statistic has to sit before we call
+# it a real association. This is a DISTRIBUTIONAL cutoff -- "outside the null" --
+# not a calibrated magnitude: the null is re-estimated from the data at hand for
+# every check, so nothing here has to be tuned per environment or sample size.
+#
+# It replaces a fixed correlation tolerance of 0.05, which was wrong in a way
+# only the real generator exposed. That number was justified as "~10 SE at
+# N ~ 4e4 transitions" -- but U, the proxies and the instrument are all
+# EPISODE-CONSTANT, so their effective sample size is the number of EPISODES.
+# At 600 episodes the true SE of these correlations is ~0.04, not 0.005, and the
+# fixed tolerance was condemning correct generators: an instrument drawn
+# independently of U by construction measured corr(I, U) = +0.086 and was
+# reported "not exogenous", with the sign flipping across strengths exactly as
+# noise would. Same granularity lesson as the k-rank null, the C1 splitter and
+# the L5 bootstrap.
+_NULL_SDS = 3.0
+_N_PERM = 200
 
 
 def _residualise(x: np.ndarray, *by: np.ndarray) -> np.ndarray:
@@ -106,6 +119,56 @@ def _sv_ratio(matrix: np.ndarray) -> float:
     return float(sv[1] / sv[0])
 
 
+def _episode_view(x: np.ndarray, episode_ids: np.ndarray) -> np.ndarray:
+    """One row per episode for a quantity that is constant within the episode."""
+    ids = np.asarray(episode_ids).reshape(-1)
+    uniq = np.unique(ids)
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    return np.array([x[ids == e][0] for e in uniq])
+
+
+def _episode_permutation_z(
+    statistic,
+    block: np.ndarray,
+    episode_ids: np.ndarray,
+    strata: np.ndarray | None = None,
+    n_perm: int = _N_PERM,
+    seed: int = 0,
+) -> tuple[float, float]:
+    """``(observed, z)`` for a statistic of an EPISODE-CONSTANT variable.
+
+    ``block`` is the episode-constant series (broadcast over transitions);
+    ``statistic`` takes a broadcast series and returns a scalar. The null is
+    built by permuting whole episodes' values -- optionally only WITHIN strata
+    of ``strata`` (also episode-constant), which preserves ``P(block | stratum)``
+    while destroying every other association. That is what makes it a test of a
+    CONDITIONAL independence rather than a marginal one.
+
+    Returning a z against a re-estimated null, instead of comparing a raw
+    correlation to a fixed number, is what lets the same check work at any
+    episode count without a per-environment constant.
+    """
+    ids = np.asarray(episode_ids).reshape(-1)
+    uniq, inv = np.unique(ids, return_inverse=True)
+    per_ep = _episode_view(block, ids)
+    strat_ep = (
+        _episode_view(strata, ids) if strata is not None else np.zeros_like(per_ep)
+    )
+
+    rng = np.random.default_rng(seed)
+    observed = float(statistic(np.asarray(block, dtype=np.float64).reshape(-1)))
+    null = []
+    for _ in range(n_perm):
+        shuffled = per_ep.copy()
+        for s in np.unique(strat_ep):  # permute only within a stratum
+            m = strat_ep == s
+            shuffled[m] = rng.permutation(per_ep[m])
+        null.append(float(statistic(shuffled[inv])))
+    sd = float(np.std(null))
+    z = 0.0 if sd < 1e-12 else abs(observed - float(np.mean(null))) / sd
+    return observed, z
+
+
 def _corr(a: np.ndarray, b: np.ndarray) -> float:
     a = np.asarray(a, dtype=np.float64).reshape(-1)
     b = np.asarray(b, dtype=np.float64).reshape(-1)
@@ -128,10 +191,14 @@ class ProxyReport:
     k_ranks: Dict[str, int] = field(default_factory=dict)
     singular_values: Dict[str, Sequence[float]] = field(default_factory=dict)
     condition_numbers: Dict[str, float] = field(default_factory=dict)
+    null_sds: Dict[str, float] = field(default_factory=dict)
     covariate_free: bool = False
     exclusions_hold: bool = False
     kruskal_ok: bool = False
     reasons: tuple = ()
+
+    def _rounded_null_sds(self) -> dict:
+        return {k: round(v, 1) for k, v in self.null_sds.items()}
 
     def _rounded_margins(self) -> dict:
         return {k: round(v, 2) for k, v in self.condition_numbers.items()}
@@ -140,6 +207,7 @@ class ProxyReport:
         return (
             f"n={self.n} corr(Z,U)={self.corr_z_u:+.3f} corr(W,U)={self.corr_w_u:+.3f} "
             f"max|corr(proxy,S)|={self.max_abs_corr_proxy_state:.4f} "
+            f"nullSDs={self._rounded_null_sds()} "
             f"corr(Z,W|U)={self.corr_z_w_given_u:+.4f} "
             f"max|corr(proxy,A)|={self.max_abs_corr_proxy_action:.4f} "
             f"k_ranks={self.k_ranks} margin={self._rounded_margins()} "
@@ -218,43 +286,87 @@ def check_proxies(
     action = np.asarray(action, dtype=np.float64).reshape(-1)
     reasons: list[str] = []
 
-    corr_state = [
-        max(abs(_corr(z, state[:, j])), abs(_corr(w, state[:, j])))
-        for j in range(state.shape[1])
-    ]
-    max_state = max(corr_state) if corr_state else 0.0
-    covariate_free = max_state < _INDEP_TOL
+    if episode_ids is None:
+        raise ValueError(
+            "check_proxies needs episode_ids: Z, W and U are episode-constant, so "
+            "every independence check here has an EPISODE-level null. Without the "
+            "blocks the null is computed at transition granularity and is far too "
+            "tight -- it condemns correct generators."
+        )
+    episode_ids = np.asarray(episode_ids).reshape(-1)
+
+    # 1. COVARIATE-FREE: Z indep S | U. This is a CONDITIONAL statement and the
+    #    marginal shadow is nonzero BY DESIGN -- U drives the action, the action
+    #    drives the next state, so the state carries information about U and a
+    #    proxy that measures U is marginally correlated with it. Measured on the
+    #    real generator at strength 1.5: max|corr(proxy, S)| = 0.226 marginally,
+    #    which the earlier marginal check reported as "the proxies are NOT
+    #    covariate-free" -- a confident false alarm about a generator whose proxy
+    #    noise provably never reads obs. Permuting proxies BETWEEN EPISODES OF
+    #    THE SAME U stratum holds P(Z|U) fixed and destroys only the state link,
+    #    which is exactly the null this claim needs.
+    state_z = []
+    for j in range(state.shape[1]):
+        col = state[:, j]
+        for proxy in (z, w):
+            _, zz = _episode_permutation_z(
+                lambda b, c=col: _corr(_residualise(b, u), _residualise(c, u)),
+                proxy,
+                episode_ids,
+                strata=u,
+            )
+            state_z.append(zz)
+    max_state_z = max(state_z) if state_z else 0.0
+    max_state = max(
+        (
+            max(abs(_corr(z, state[:, j])), abs(_corr(w, state[:, j])))
+            for j in range(state.shape[1])
+        ),
+        default=0.0,
+    )
+    covariate_free = max_state_z < _NULL_SDS
     if not covariate_free:
         reasons.append(
-            f"proxy correlates with a state dimension at {max_state:.3f} — the "
-            "proxies are NOT covariate-free, so their measurement matrices are "
-            "not global and the labelling is not pinned across configurations"
+            f"a proxy is associated with a state dimension GIVEN U at "
+            f"{max_state_z:.1f} null SDs -- the proxies are not covariate-free, so "
+            "their measurement matrices are not global and the labelling is not "
+            "pinned across configurations"
         )
 
-    # Z indep W | U: residualise on the U-conditional mean, then correlate.
-    zr, wr = z.copy(), w.copy()
-    for c in np.unique(u):
-        m = u == c
-        zr[m] -= z[m].mean()
-        wr[m] -= w[m].mean()
-    corr_zw_u = _corr(zr, wr)
-    # "Neither proxy is affected by A" is the CONDITIONAL statement
-    # `proxy indep A | U`. The marginal correlation is nonzero BY DESIGN --
-    # a proxy measures U and A depends on U -- so testing it marginally
-    # reports a violation that is not there (measured +0.50 marginal vs
-    # +0.003 given U).
+    # 2. Z indep W | U, and proxy indep A | U. Both are conditional, and both
+    #    involve episode-constant proxies, so both get the same episode-level
+    #    within-stratum null. The transition-level version reported a residual
+    #    corr(Z, W | U) of +0.054 at EVERY proxy strength including 0.0, where Z
+    #    and W are independent noise by construction -- the constancy across the
+    #    sweep was the tell that it was measuring episode-count noise.
+    corr_zw_u, zw_z = _episode_permutation_z(
+        lambda b: _corr(_residualise(b, u), _residualise(w, u)),
+        z,
+        episode_ids,
+        strata=u,
+    )
     a_resid = _residualise(action, u)
+    action_zs = []
+    for proxy in (z, w):
+        _, zz = _episode_permutation_z(
+            lambda b: _corr(_residualise(b, u), a_resid), proxy, episode_ids, strata=u
+        )
+        action_zs.append(zz)
+    max_action_z = max(action_zs)
     max_action = max(
         abs(_corr(_residualise(z, u), a_resid)),
         abs(_corr(_residualise(w, u), a_resid)),
     )
-    exclusions = abs(corr_zw_u) < _INDEP_TOL and max_action < _INDEP_TOL
-    if abs(corr_zw_u) >= _INDEP_TOL:
+    exclusions = zw_z < _NULL_SDS and max_action_z < _NULL_SDS
+    if zw_z >= _NULL_SDS:
         reasons.append(
-            f"Z and W are dependent given U (residual corr {corr_zw_u:+.3f})"
+            f"Z and W are dependent given U ({zw_z:.1f} null SDs, residual corr "
+            f"{corr_zw_u:+.3f})"
         )
-    if max_action >= _INDEP_TOL:
-        reasons.append(f"a proxy correlates with A at {max_action:.3f}")
+    if max_action_z >= _NULL_SDS:
+        reasons.append(
+            f"a proxy is associated with A given U at {max_action_z:.1f} null SDs"
+        )
 
     views = {"Z": z, "W": w}
     if reward is not None:
@@ -283,6 +395,11 @@ def check_proxies(
         max_abs_corr_proxy_state=max_state,
         corr_z_w_given_u=corr_zw_u,
         max_abs_corr_proxy_action=max_action,
+        null_sds={
+            "proxy_vs_state_given_u": max_state_z,
+            "z_vs_w_given_u": zw_z,
+            "proxy_vs_action_given_u": max_action_z,
+        },
         k_ranks=k_ranks,
         singular_values=svs,
         condition_numbers=conds,
@@ -299,22 +416,34 @@ class InstrumentReport:
     corr_i_u: float
     corr_i_action: float
     corr_i_reward_given_action_and_u: float
-    independent_of_u: bool
-    relevant: bool
-    exclusion_holds: bool
+    null_sds: Dict[str, float] = field(default_factory=dict)
+    exclusion_testable: bool = False
+    independent_of_u: bool = False
+    relevant: bool = False
+    exclusion_holds: bool = False
     reasons: tuple = ()
+
+    def _rounded_null_sds(self) -> dict:
+        return {k: round(v, 1) for k, v in self.null_sds.items()}
 
     def summary(self) -> str:
         return (
             f"n={self.n} corr(I,U)={self.corr_i_u:+.4f} corr(I,A)={self.corr_i_action:+.3f} "
             f"corr(I,R|A,U)={self.corr_i_reward_given_action_and_u:+.4f} "
+            f"nullSDs={self._rounded_null_sds()} "
             f"indep_U={self.independent_of_u} relevant={self.relevant} "
-            f"exclusion={self.exclusion_holds}"
+            f"exclusion={self.exclusion_holds} "
+            f"exclusion_testable={self.exclusion_testable}"
         )
 
 
 def check_instrument(
-    *, i: np.ndarray, u: np.ndarray, action: np.ndarray, reward: np.ndarray
+    *,
+    i: np.ndarray,
+    u: np.ndarray,
+    action: np.ndarray,
+    reward: np.ndarray,
+    episode_ids: np.ndarray,
 ) -> InstrumentReport:
     """Validate D-E's instrument against ground truth.
 
@@ -328,24 +457,67 @@ def check_instrument(
     r = np.asarray(reward, dtype=np.float64).reshape(-1)
     reasons: list[str] = []
 
-    c_iu = _corr(i, u)
-    c_ia = _corr(i, a)
+    # I is drawn ONCE PER EPISODE, so every claim about it has an episode-level
+    # null. Judged against a fixed correlation tolerance instead, a provably
+    # exogenous instrument measured corr(I, U) = +0.086 at lambda = 0.1 and was
+    # reported "not exogenous"; the sign flipped across strengths (+0.086,
+    # +0.018, -0.036), which is what episode-count noise looks like and what a
+    # real dependence never does.
+    episode_ids = np.asarray(episode_ids).reshape(-1)
+    c_iu, z_iu = _episode_permutation_z(lambda b: _corr(b, u), i, episode_ids)
+    c_ia, z_ia = _episode_permutation_z(lambda b: _corr(b, a), i, episode_ids)
     # The exclusion restriction is `I indep R | (A, U)`, NOT `I indep R | A`.
     # A is a COLLIDER on I -> A <- U, so conditioning on A alone opens a path
     # from I to U and hence to R: measured -0.048 given A, versus -0.003 given
     # (A, U). Testing the wrong one condemns a perfectly valid instrument.
-    c_ir_a = _corr(_residualise(i, a, u), _residualise(r, a, u))
+    # Permuted WITHIN U strata, so the null keeps P(I | U) and destroys only the
+    # reward link -- the conditional statement, not its marginal shadow.
+    c_ir_a, z_ir = _episode_permutation_z(
+        lambda b: _corr(_residualise(b, a, u), _residualise(r, a, u)),
+        i,
+        episode_ids,
+        strata=u,
+    )
 
-    indep_u = abs(c_iu) < _INDEP_TOL
-    relevant = abs(c_ia) > _INDEP_TOL
-    exclusion = abs(c_ir_a) < _INDEP_TOL
+    # DEGENERACY GUARD. On CartPole the reward is r = 1 + c_r*U*1[a = a_bad], a
+    # DETERMINISTIC function of (A, U) -- so residualising on (A, U) annihilates
+    # it and the exclusion statistic is identically zero for the observed data
+    # AND for every permutation. That reads as a clean pass and is actually a
+    # measurement of nothing. The structural argument still holds (the wrapper
+    # never reads I when perturbing the reward), but this check must not be
+    # allowed to claim it verified it.
+    r_resid_var = float(np.var(_residualise(r, a, u)))
+    exclusion_testable = r_resid_var > 1e-12
+    if not exclusion_testable:
+        reasons.append(
+            "exclusion NOT TESTABLE on this env: R is a deterministic function of "
+            "(A, U), so conditioning on them leaves no residual variance for I to "
+            "correlate with. The restriction holds by construction, but no "
+            "evidence for it is available here -- it needs an env with stochastic "
+            "reward given (A, U)"
+        )
+
+    # Note the asymmetry, which is deliberate: independence and exclusion must
+    # sit INSIDE the null (nothing to detect), relevance must sit OUTSIDE it (an
+    # instrument that does not move A is useless, and "no detectable effect" is
+    # exactly the failure).
+    indep_u = z_iu < _NULL_SDS
+    relevant = z_ia >= _NULL_SDS
+    exclusion = exclusion_testable and z_ir < _NULL_SDS
     if not indep_u:
-        reasons.append(f"I correlates with U at {c_iu:+.3f} — not exogenous")
+        reasons.append(
+            f"I is associated with U at {z_iu:.1f} null SDs (corr {c_iu:+.3f}) — "
+            "not exogenous"
+        )
     if not relevant:
-        reasons.append(f"I barely moves A ({c_ia:+.3f}) — a weak/irrelevant instrument")
+        reasons.append(
+            f"I barely moves A ({c_ia:+.3f}, {z_ia:.1f} null SDs) — a weak or "
+            "irrelevant instrument"
+        )
     if not exclusion:
         reasons.append(
-            f"I correlates with R given (A,U) at {c_ir_a:+.3f} — the exclusion "
+            f"I is associated with R given (A,U) at {z_ir:.1f} null SDs "
+            f"(corr {c_ir_a:+.3f}) — the exclusion "
             "restriction fails, so the Balke-Pearl anchor would be invalid"
         )
     return InstrumentReport(
@@ -353,6 +525,8 @@ def check_instrument(
         corr_i_u=c_iu,
         corr_i_action=c_ia,
         corr_i_reward_given_action_and_u=c_ir_a,
+        null_sds={"i_vs_u": z_iu, "i_vs_a": z_ia, "i_vs_r_given_a_u": z_ir},
+        exclusion_testable=exclusion_testable,
         independent_of_u=indep_u,
         relevant=relevant,
         exclusion_holds=exclusion,

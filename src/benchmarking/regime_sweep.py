@@ -28,7 +28,7 @@ import shutil
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -293,6 +293,35 @@ class SweepSpec:
     beta_arm: Tuple[float, ...] = BETA_ARM
     sigma_arm: Tuple[float, ...] = SIGMA_ARM
     include_basic: bool = True
+    # GRACE v2 diagram arm. None = the historical cells, which declare no
+    # diagram and get exactly the generator kwargs they always did. Set to a
+    # catalogue id (D-D, D-E, D-B-prime, D-A-null) to collect that diagram's
+    # channels; WHICH channels exist is derived from the catalogue entry, and
+    # only their strengths come from the YAML (see envs/offline/diagram_arms).
+    diagram: Optional[str] = None
+    proxy_strength: Optional[float] = None
+    instrument_strength: Optional[float] = None
+    u_drift: Optional[float] = None
+
+    def arm_generator_kwargs(self, sigma: float) -> Dict:
+        """The diagram channels for a sweep point, or {} for a historical cell."""
+        if self.diagram is None:
+            return {}
+        from src.envs.offline.diagram_arms import arm_knobs
+
+        k = arm_knobs(
+            self.diagram,
+            sigma=sigma,
+            confounder_c_r=self.confounder_c_r,
+            proxy_strength=self.proxy_strength,
+            instrument_strength=self.instrument_strength,
+            u_drift=self.u_drift,
+        )
+        return {
+            "proxy_strength": k.proxy_strength,
+            "instrument_strength": k.instrument_strength,
+            "u_drift": k.u_drift,
+        }
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
@@ -364,7 +393,15 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         beta_arm=beta_arm,
         sigma_arm=sigma_arm,
         include_basic=include_basic,
+        diagram=pick("diagram", None),
+        proxy_strength=_opt_float(pick("proxy_strength", None)),
+        instrument_strength=_opt_float(pick("instrument_strength", None)),
+        u_drift=_opt_float(pick("u_drift", None)),
     )
+
+
+def _opt_float(v):
+    return None if v is None else float(v)
 
 
 def _as_float_list(val) -> List[float]:
@@ -684,6 +721,7 @@ def _run_point(
         behavior_strength=strength,
         pi_basic_epsilon=spec.pi_basic_epsilon,
         confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+        **spec.arm_generator_kwargs(sigma),
         mask_indices=(spec.mask_indices.get(env) if recurrent else None),
     )
     # offline_grad_steps (feat/offline-budget-key): the offline learner's total
@@ -777,6 +815,7 @@ def _run_point_classical(
         behavior_strength=strength,
         pi_basic_epsilon=spec.pi_basic_epsilon,
         confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+        **spec.arm_generator_kwargs(sigma),
         mask_indices=(spec.mask_indices.get(env) if recurrent else None),
     )
     _ogs = spec.budgets.get("offline_grad_steps")
@@ -872,6 +911,7 @@ def _run_point_online_ablation(
             behavior_strength=strength,
             pi_basic_epsilon=spec.pi_basic_epsilon,
             confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+            **spec.arm_generator_kwargs(sigma),
             mask_indices=(spec.mask_indices.get(env) if recurrent else None),
         )
         train_cfg = TrainingConfig(
@@ -971,6 +1011,7 @@ def _reusable_dataset_hash(
             behavior_policy=behavior_policy,
             behavior_strength=strength,
             confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+            **spec.arm_generator_kwargs(sigma),
             pi_basic_epsilon=spec.pi_basic_epsilon,
             a_bad=1,
             rollout_episodes=spec.budget("rollout_episodes", 30),
@@ -1153,6 +1194,7 @@ def run_cell(
                     behavior_strength=strength,
                     pi_basic_epsilon=spec.pi_basic_epsilon,
                     confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
+                    **spec.arm_generator_kwargs(sigma),
                     rollout_episodes=spec.budget("rollout_episodes", 30),
                     seed=seed,
                     dataset_id=did,

@@ -691,12 +691,51 @@ class MarginallyMatchedConfoundedBehaviorPolicy(BehaviorPolicy):
         w = torch.where(u > 0.5, pbar * (2.0 - pbar), pbar * pbar)
         in_pair = (a0 == self.a_bad) | (a0 == self.a_good)
         redraw = coin & in_pair
+        # D-E instrument. Absent (``current_i is None``) on every existing arm, so
+        # this whole block is dead code there and those datasets are byte-frozen.
+        # When present it is an exogenous shove on the SAME within-pair channel:
+        # drawn independently of U by the wrapper, so I indep U; it moves A, which
+        # is the RELEVANCE the IV needs; and the wrapper's reward perturbation
+        # never reads it, so the exclusion restriction I -> R holds by
+        # construction rather than by tuning. Marginal matching to pi_basic is
+        # deliberately given up here -- shifting the action distribution is the
+        # instrument's entire job, and D-E is scored as bounds, not as a
+        # marginally-matched arm.
         pair_action = torch.where(
             torch.rand(b, device=obs.device) < w,
             torch.full_like(a0, self.a_bad),
             torch.full_like(a0, self.a_good),
         )
         action = torch.where(redraw, pair_action, a0)
+        # D-E instrument. ``current_i`` is absent on every existing arm, so this
+        # block is dead code there and those datasets stay byte-frozen.
+        #
+        # It is a SEPARATE coin layered on top of the finished action, never a
+        # shift of w: with probability lambda the instrument dictates the
+        # within-pair action (a_bad if I else a_good), otherwise the (coin, U)
+        # machinery above is left exactly as it was. That gives the three IV
+        # properties by construction rather than by tuning -- I is drawn
+        # independently of U by the wrapper (independence), it moves A on a
+        # lambda fraction of in-pair steps (relevance), and the wrapper's reward
+        # perturbation never reads it (exclusion) -- and it cannot clamp, which
+        # an additive shift of w does at eps-greedy's extreme pbar, biasing the
+        # gate statistic in a way that depends on U.
+        #
+        # It DOES dilute the U->A channel by roughly (1 - lambda), because that
+        # fraction of in-pair actions no longer comes from the U-conditional
+        # draw. The gate's predicted A2 target is scaled to match; the residual
+        # is measured, not assumed (see docs/diagram_catalogue.md, D-E).
+        i_t = getattr(self.env, "current_i", None)
+        if i_t is not None:
+            lam = float(getattr(self.env, "instrument_strength", 0.0) or 0.0)
+            i_flat = i_t.to(obs.device).reshape(-1)
+            fires = (torch.rand(b, device=obs.device) < lam) & in_pair
+            forced = torch.where(
+                i_flat > 0.5,
+                torch.full_like(a0, self.a_bad),
+                torch.full_like(a0, self.a_good),
+            )
+            action = torch.where(fires, forced, action)
         return ActionOutput(action=action, intervened=self._intervened(coin))
 
 
