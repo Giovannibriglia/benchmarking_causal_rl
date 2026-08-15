@@ -23,12 +23,14 @@ from typing import Dict, Sequence
 import numpy as np
 
 __all__ = [
+    "NullArmReport",
     "ProxyReport",
     "InstrumentReport",
     "DriftReport",
     "check_proxies",
     "check_instrument",
     "check_drift",
+    "check_null_arm",
 ]
 
 # How far outside its own permutation null a statistic has to sit before we call
@@ -573,4 +575,89 @@ def check_drift(
         realised_autocorr=realised,
         n_pairs=len(lhs),
         matches=abs(realised - predicted) < tol,
+    )
+
+
+@dataclass
+class NullArmReport:
+    """D-A-null: is there genuinely NOTHING for L5 to find?"""
+
+    n: int
+    n_episodes: int
+    null_sds: Dict[str, float] = field(default_factory=dict)
+    u_inert: bool = False
+    reasons: tuple = ()
+
+    def _rounded(self) -> dict:
+        return {k: round(v, 1) for k, v in self.null_sds.items()}
+
+    def summary(self) -> str:
+        return (
+            f"n={self.n} episodes={self.n_episodes} "
+            f"nullSDs={self._rounded()} "
+            f"inert={self.u_inert}"
+        )
+
+
+def check_null_arm(
+    *,
+    u: np.ndarray,
+    action: np.ndarray,
+    reward: np.ndarray,
+    episode_ids: np.ndarray,
+) -> NullArmReport:
+    """Certify that the logged U is INERT — it touches neither A nor R.
+
+    This is the arm L5's FALSE-POSITIVE RATE is read from, so its validity is
+    the thing that makes a refutation there interpretable as a false alarm. If
+    U were not actually inert, every "false positive" measured here would be
+    partly a true detection and the rate would be silently understated — in the
+    flattering direction, which is the one that needs guarding.
+
+    It matters that this is a distinct check rather than the confounded gate
+    with the dial at zero. The gate asks "is the declared confounding present at
+    the declared strength"; this asks "is there any association at all", which
+    is a different question and the only one that licenses the null arm's use.
+
+    Episode-level null throughout (S1): U is drawn once per episode.
+    """
+    u = np.asarray(u, dtype=np.float64).reshape(-1)
+    a = np.asarray(action, dtype=np.float64).reshape(-1)
+    r = np.asarray(reward, dtype=np.float64).reshape(-1)
+    episode_ids = np.asarray(episode_ids).reshape(-1)
+    reasons: list[str] = []
+
+    _, z_ua = _episode_permutation_z(lambda b: _corr(b, a), u, episode_ids)
+    _, z_ur = _episode_permutation_z(lambda b: _corr(b, r), u, episode_ids)
+    # Also the gated contrast the confounded arms rely on: within a == a_bad,
+    # is the reward associated with U? That is the exact channel c_r opens, so
+    # it is the one that must be dead here.
+    gated = a == 1.0
+    if int(gated.sum()) > 1:
+        _, z_gated = _episode_permutation_z(
+            lambda b: _corr(b[gated], r[gated]), u, episode_ids
+        )
+    else:
+        z_gated = 0.0
+
+    inert = max(z_ua, z_ur, z_gated) < _NULL_SDS
+    if z_ua >= _NULL_SDS:
+        reasons.append(
+            f"U is associated with A at {z_ua:.1f} null SDs — not a null arm"
+        )
+    if z_ur >= _NULL_SDS:
+        reasons.append(
+            f"U is associated with R at {z_ur:.1f} null SDs — not a null arm"
+        )
+    if z_gated >= _NULL_SDS:
+        reasons.append(
+            f"U is associated with R within a = a_bad at {z_gated:.1f} null SDs — "
+            "the gated reward channel is live, so c_r did not reach zero"
+        )
+    return NullArmReport(
+        n=int(u.size),
+        n_episodes=int(np.unique(episode_ids).size),
+        null_sds={"u_vs_a": z_ua, "u_vs_r": z_ur, "u_vs_r_gated": z_gated},
+        u_inert=inert,
+        reasons=tuple(reasons),
     )

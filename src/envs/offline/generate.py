@@ -627,6 +627,146 @@ def _rollout_vectorized(
     return buffers, samples
 
 
+def _preflight_certification(
+    samples: dict,
+    buffers,
+    *,
+    proxy_strength,
+    instrument_strength,
+    u_drift,
+    max_episodes: int,
+    null_arm: bool = False,
+) -> dict:
+    """Run the ground-truth preflight and flatten it into metadata keys.
+
+    Direction, restated because it is the whole point: this validates the
+    GENERATOR against ground truth -- the logged U and the declared parameters.
+    It never consults GRACE's estimator or L5. L5 is validated against the
+    generator afterwards, never the reverse.
+    """
+    from src.envs.offline.arm_preflight import (
+        check_drift,
+        check_instrument,
+        check_null_arm,
+        check_proxies,
+    )
+
+    ep = samples.get("episode")
+    if ep is None or ep.size == 0:
+        return {"preflight_ran": False, "preflight_reason": "no episode index"}
+    keep = ep < int(max_episodes)
+    ep_k = ep[keep]
+    out: dict = {
+        "preflight_ran": True,
+        "preflight_episodes": int(np.unique(ep_k).size),
+        "preflight_transitions": int(keep.sum()),
+    }
+    reasons: list = []
+    passed = True
+
+    if proxy_strength is not None:
+        states = np.concatenate(
+            [b.observations[:-1] for b in buffers[: int(max_episodes)]], axis=0
+        )
+        rep = check_proxies(
+            z=samples["z"][keep],
+            w=samples["w"][keep],
+            u=samples["u"][keep],
+            state=states[: int(keep.sum())],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+        )
+        ok = rep.covariate_free and rep.exclusions_hold and rep.kruskal_ok
+        passed &= ok
+        reasons += list(rep.reasons)
+        out.update(
+            {
+                "preflight_proxy_corr_z_u": rep.corr_z_u,
+                "preflight_proxy_k_ranks": dict(rep.k_ranks),
+                # The MARGIN, not just the verdict: Kruskal is exactly tight at
+                # |U| = 2, so an arm near the boundary is fragile to sample size
+                # and that has to be visible without rerunning anything (R5).
+                "preflight_proxy_margins": {
+                    k: float(v) for k, v in rep.condition_numbers.items()
+                },
+                "preflight_proxy_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_proxy_covariate_free": bool(rep.covariate_free),
+                "preflight_proxy_kruskal_ok": bool(rep.kruskal_ok),
+            }
+        )
+
+    if instrument_strength is not None:
+        rep = check_instrument(
+            i=samples["i"][keep],
+            u=samples["u"][keep],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+        )
+        # Untestable is credited but RECORDED AS SUCH, never conflated with
+        # verified (R2/R4).
+        ok = (
+            rep.independent_of_u
+            and rep.relevant
+            and (rep.exclusion_holds or not rep.exclusion_testable)
+        )
+        passed &= ok
+        reasons += list(rep.reasons)
+        out.update(
+            {
+                "preflight_instrument_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_instrument_exogenous": bool(rep.independent_of_u),
+                "preflight_instrument_relevant": bool(rep.relevant),
+                "preflight_instrument_excluded": bool(rep.exclusion_holds),
+                "preflight_instrument_exclusion_testable": bool(rep.exclusion_testable),
+            }
+        )
+
+    if u_drift:
+        by_ep = [samples["u"][keep][ep_k == e] for e in np.unique(ep_k)]
+        rep = check_drift(u_by_episode=by_ep, rho=float(u_drift))
+        passed &= rep.matches
+        if not rep.matches:
+            reasons.append(
+                f"realised autocorr {rep.realised_autocorr:+.3f} != predicted "
+                f"{rep.predicted_autocorr:+.3f} for rho={u_drift}"
+            )
+        out.update(
+            {
+                "preflight_drift_rho": float(u_drift),
+                "preflight_drift_realised_autocorr": float(rep.realised_autocorr),
+                "preflight_drift_predicted_autocorr": float(rep.predicted_autocorr),
+            }
+        )
+
+    if null_arm:
+        rep = check_null_arm(
+            u=samples["u"][keep],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+        )
+        passed &= rep.u_inert
+        reasons += list(rep.reasons)
+        out.update(
+            {
+                "preflight_null_arm_u_inert": bool(rep.u_inert),
+                "preflight_null_arm_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+            }
+        )
+
+    out["preflight_passed"] = bool(passed)
+    out["preflight_reasons"] = list(reasons)
+    return out
+
+
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
     # Guard against a constant series (zero variance -> undefined corr -> 0).
     if x.std() == 0 or y.std() == 0:
@@ -1115,6 +1255,7 @@ def generate_offline_dataset(
     instrument_strength: float | None = None,
     u_drift: float = 0.0,
     gate_probs=None,
+    preflight_episodes: int = 600,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -1313,6 +1454,32 @@ def generate_offline_dataset(
     # arms of a cell were collected under one pi_basic (refuse a cell whose arms
     # differ). Stamped on every dataset — internal-build or pre-built agent alike.
     signature["generator_checkpoint_hash"] = generator_checkpoint_hash(agent)
+    # V-B: the arm's PREFLIGHT CERTIFICATION travels with the dataset, in the same
+    # metadata block as the confounding signature and for the same reason -- a
+    # dataset should carry its own validity proof rather than depend on a
+    # verification someone remembers having run. Capped at
+    # ``preflight_episodes`` because the permutation nulls are O(n_perm * n) and
+    # a production rollout is far larger than these statistics need; the cap is
+    # recorded so a reader knows what was actually certified.
+    if sig_samples is not None and (
+        proxy_strength is not None
+        or instrument_strength is not None
+        or u_drift
+        # The NULL arm is certified too: c_r = 0 means U must be provably inert,
+        # and that is exactly the claim L5's false-positive rate rests on.
+        or not confounder_c_r
+    ):
+        signature.update(
+            _preflight_certification(
+                sig_samples,
+                buffers,
+                proxy_strength=proxy_strength,
+                instrument_strength=instrument_strength,
+                u_drift=u_drift,
+                max_episodes=preflight_episodes,
+                null_arm=not confounder_c_r,
+            )
+        )
     # S4: stamp the input fingerprint so a later run can PROVE that regenerating
     # this dataset would reproduce it, and reuse it instead (see
     # generation_fingerprint + regime_sweep's reuse check).
