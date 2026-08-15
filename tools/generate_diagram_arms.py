@@ -22,6 +22,50 @@ from pathlib import Path
 CELLS = Path("reproducibility/rl_regimes/diagrams")
 
 
+def dataset_id_for(cell: str, k, env_id: str, seed: int, sigma: float) -> str:
+    """THE id for one grid point — the single place identity is constructed.
+
+    Every field that distinguishes a grid point must appear here. ``dataset_name``
+    carries env, tier, policy and sigma but NOT the seed, and that omission cost
+    an entire V-B run: all five seeds resolved to one id, and because the
+    FINGERPRINT does include the seed, each seed saw the previous one's data as
+    stale, deleted it and regenerated. 27 report rows collapsed to 8 datasets,
+    silently.
+
+    Factored out so ``test_diagram_arm_ids_are_injective`` can enumerate the
+    whole grid and assert injectivity without generating anything — which makes
+    this bug class unreachable rather than merely fixed.
+    """
+    from src.envs.offline.generate import dataset_name
+
+    return (
+        dataset_name(env_id, "medium", k.behavior_policy, sigma)
+        .replace("generated/", f"grace-v2/{cell}-")
+        .replace("-v0", f"-seed{seed}-v0")
+    )
+
+
+def grid_ids(cell: str, spec) -> list:
+    """Every id this cell's driver run can produce, in order."""
+    from src.envs.offline.diagram_arms import arm_knobs
+
+    out = []
+    for env_id in spec.envs:
+        for seed in spec.seeds:
+            for _, sigma in spec.points():
+                k = arm_knobs(
+                    spec.diagram,
+                    sigma=sigma,
+                    confounder_c_r=spec.confounder_c_r,
+                    proxy_strength=spec.proxy_strength,
+                    instrument_strength=spec.instrument_strength,
+                    u_drift=spec.u_drift,
+                    gate_probs=spec.gate_probs,
+                )
+                out.append(dataset_id_for(cell, k, env_id, seed, sigma))
+    return out
+
+
 def _row_from(ds, cell, spec, env_id, seed, sigma, did, ghash, seconds) -> dict:
     """One report row, built identically whether the dataset was just generated
     or reused — so a resumed run's report is not a different shape."""
@@ -72,9 +116,14 @@ def main() -> int:
 
     from src.benchmarking.regime_sweep import load_sweep_spec
     from src.benchmarking.registry import register_default_algorithms
+
+    # NOTE: dataset_name is deliberately NOT imported here. Identity is
+    # constructed in exactly one place (dataset_id_for) so that the injectivity
+    # test covers the path the driver actually takes -- the previous spelling
+    # left an inline construction in main() that the helper-level test could not
+    # see, and it collided across seeds while the test passed.
     from src.envs.offline.generate import (
         build_generator_agent,
-        dataset_name,
         generate_offline_dataset,
         generation_fingerprint,
     )
@@ -124,9 +173,7 @@ def main() -> int:
                         u_drift=spec.u_drift,
                         gate_probs=spec.gate_probs,
                     )
-                    did = dataset_name(
-                        env_id, "medium", k.behavior_policy, sigma
-                    ).replace("generated/", f"grace-v2/{cell}-")
+                    did = dataset_id_for(cell, k, env_id, seed, sigma)
                     # Idempotent: a partial or interrupted V-B run must be
                     # resumable, and Minari refuses to overwrite an existing id.
                     # --resume keeps a dataset whose generation_fingerprint
@@ -212,6 +259,36 @@ def main() -> int:
                         flush=True,
                     )
                     (out / "report.json").write_text(json.dumps(report, indent=1))
+
+    # COMPLETION INVARIANT. surviving datasets == report rows == expected grid.
+    # "27 rows against 8 datasets" was a contradiction the driver was in a
+    # position to notice and did not, so it ran for 1h39m before the collision
+    # surfaced. A mismatch is now a loud failure, never a success report.
+    import minari
+
+    expected = sum(
+        len(grid_ids(c, load_sweep_spec(CELLS / f"{c}.yaml"))) for c in args.cells
+    )
+    if args.envs or args.seeds:
+        expected = None  # a restricted sub-grid; the row/dataset check still holds
+    produced = {r["dataset_id"] for r in report}
+    local = set(minari.list_local_datasets())
+    problems = []
+    if len(produced) != len(report):
+        problems.append(
+            f"{len(report)} report rows collapsed to {len(produced)} distinct ids "
+            "— dataset ids are COLLIDING and runs are overwriting each other"
+        )
+    missing = produced - local
+    if missing:
+        problems.append(f"{len(missing)} generated ids are absent from the store")
+    if expected is not None and len(report) != expected:
+        problems.append(f"{len(report)} rows against an expected grid of {expected}")
+    if problems:
+        print("\n=== COMPLETION INVARIANT VIOLATED ===")
+        for x in problems:
+            print("  !", x)
+        return 2
 
     failed = [r for r in report if not r.get("ok")]
     print(

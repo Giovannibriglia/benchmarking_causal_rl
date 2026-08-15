@@ -213,6 +213,46 @@ One Phase-2 check: `enforce_confounding_gate` may object to a σ=0 arm whose sig
 
 Construction: two conditionally-independent noisy measurements of `U` emitted into `infos` (`W = U + ε_W`, `Z = U + ε_Z`, independent noise). Because neither *causes* anything, requirements (i) and (ii) hold **by construction** rather than by the delicate lag argument of D-B.
 
+### ⚠ D-D's Kruskal triple includes the REWARD view, whose informativeness is policy-dependent
+
+A documented property, not a defect, and deliberately **not** engineered away.
+
+The triple is `{Z, W, R}`. `Z` and `W` are covariate-free and σ-independent, but
+`R`'s informativeness about `U` depends on `a_bad` actually being taken — the
+reward channel is action-gated, so a logged policy that rarely takes `a_bad`
+starves the third view. Since Kruskal is exactly tight at |U| = 2, losing `R` to
+k-rank 1 drops the sum to 5 < 6 and D-D is not identified.
+
+**Measured, and not currently binding.** At σ = 0, P(a = a_bad) is 0.389 on
+Acrobot (3 actions) against 0.485 on CartPole (2 actions) — lower, as the
+3-action space predicts, but nowhere near binding. All three views reach k-rank
+2, and `R` is in fact the **strongest** view:
+
+| view | Acrobot margin | CartPole margin |
+|---|---|---|
+| Z | 12.50 | 11.05 |
+| W | 9.81 | 9.07 |
+| **R** | **21.82** | **15.96** |
+
+(margin = observed singular-value ratio over the largest of 200 episode-level
+permutation nulls; 9.81 for `R` at the 600-episode certification cap.)
+
+**Why this is left in place.** The dependence on `P(a_bad)` is a *measurable
+coupling*, and R4 sweeps exactly the quantity it depends on. If D-D's
+identifiability degrades as the logged policy improves, that is a **result** —
+R4's policy-quality tension reappearing in the cell that was supposed to be free
+of it, where even explicit proxies do not save you if the third view is the
+reward. Adding a third covariate-free proxy would engineer the phenomenon away
+before it could be observed.
+
+**Remedy held in reserve.** If R4 shows the coupling binding, the fix is
+structural rather than a tuning change: add a third covariate-free proxy `V`, so
+the triple is `{Z, W, V}` with all three parented by `U` alone, decoupling D-D's
+finite-mixture identifiability from `P(a_bad)` entirely. That change would then
+be evidence-driven rather than precautionary, and would go through catalogue
+review like any other entry change. The reward-view triple stays for D-B, where
+the lagged construction genuinely requires it.
+
 ### ⭐ Why D-D is the clean case: its proxies are COVARIATE-FREE
 
 The distinction that does the work is **not** explicit-versus-implicit proxies. It is **covariate-free versus covariate-conditional**:

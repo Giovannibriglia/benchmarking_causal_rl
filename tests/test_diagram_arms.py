@@ -100,3 +100,69 @@ def test_historical_cells_declare_no_diagram_and_pass_no_channels():
     )
     assert spec.diagram is None
     assert spec.arm_generator_kwargs(0.5) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Identity discipline. Three bugs in the V-B driver in one session were all the #
+# same species -- identity and collision -- so the fix is a test that makes the #
+# class unreachable, not a third careful launch.                                #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("cell", sorted(p.stem for p in CELLS.glob("*.yaml")))
+def test_diagram_arm_ids_are_injective(cell):
+    """Every (cell, env, seed, sigma) must get its OWN dataset id.
+
+    The seed omission that cost a full V-B run would have been caught the moment
+    this was written: dataset_name carries env, tier, policy and sigma but not
+    the seed, so all five seeds collided on one id, and because the fingerprint
+    DOES include the seed each run deleted the previous one's data and
+    regenerated. Pure and instant -- no generation involved.
+    """
+    from tools.generate_diagram_arms import grid_ids
+
+    spec = load_sweep_spec(CELLS / f"{cell}.yaml")
+    ids = grid_ids(cell, spec)
+    expected = len(spec.envs) * len(spec.seeds) * len(spec.points())
+    assert len(ids) == expected, (len(ids), expected)
+    dupes = {i for i in ids if ids.count(i) > 1}
+    assert not dupes, f"{len(dupes)} colliding ids, e.g. {sorted(dupes)[:2]}"
+
+
+def test_ids_are_injective_across_cells_too():
+    """Two cells sharing an env/seed/sigma must not share an id either -- they
+    carry different channels, so serving one for the other would be silent."""
+    from tools.generate_diagram_arms import grid_ids
+
+    seen: dict = {}
+    for p_ in sorted(CELLS.glob("*.yaml")):
+        for i in grid_ids(p_.stem, load_sweep_spec(p_)):
+            assert i not in seen, f"{i} produced by both {seen[i]} and {p_.stem}"
+            seen[i] = p_.stem
+
+
+def test_the_id_distinguishes_every_grid_axis():
+    """Each axis must actually move the id -- an axis absent from it is exactly
+    the seed bug in another coordinate."""
+    from src.envs.offline.diagram_arms import arm_knobs
+    from tools.generate_diagram_arms import dataset_id_for
+
+    k = arm_knobs("D-D", sigma=0.5, proxy_strength=1.5)
+    base = dataset_id_for("d_d", k, "CartPole-v1", 0, 0.5)
+    assert base != dataset_id_for("d_d", k, "CartPole-v1", 1, 0.5), "seed"
+    assert base != dataset_id_for("d_d", k, "Acrobot-v1", 0, 0.5), "env"
+    assert base != dataset_id_for("d_d", k, "CartPole-v1", 0, 0.25), "sigma"
+    assert base != dataset_id_for("d_e", k, "CartPole-v1", 0, 0.5), "cell"
+
+
+def test_the_driver_constructs_ids_only_through_the_shared_helper():
+    """The injectivity tests above cover ``dataset_id_for``. They are worthless
+    if ``main()`` builds ids some other way -- which it did: an inline
+    ``dataset_name(...)`` call omitted the seed and collided across seeds while
+    every helper-level test passed. Identity must have exactly one construction
+    site, so this pins that ``main()`` cannot reach ``dataset_name`` at all."""
+    src = Path("tools/generate_diagram_arms.py").read_text()
+    body = src[src.index("def main(") :]
+    assert "dataset_name(" not in body, (
+        "main() constructs a dataset id outside dataset_id_for; the injectivity "
+        "tests cannot see that path"
+    )
+    assert "dataset_id_for(" in body
