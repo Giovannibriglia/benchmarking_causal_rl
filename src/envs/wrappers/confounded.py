@@ -44,6 +44,7 @@ class ConfoundedCollectionWrapper:
         proxy_strength: float | None = None,
         instrument_strength: float | None = None,
         u_drift: float = 0.0,
+        gate_probs: tuple[float, float] | None = None,
     ):
         self.env = env
         self.c_a = float(c_a)
@@ -93,6 +94,37 @@ class ConfoundedCollectionWrapper:
         )
         # D-B' persistence: per-step flip probability. 0.0 = episode-static
         # (D-B) and consumes NO draws, so D-B is reproduced byte-for-byte.
+        # D-E (R2 route (a)): make U shift the PROBABILITY of the gated bonus
+        # rather than its magnitude --
+        #     r += c_r * 1[a = a_bad] * Bernoulli(q_U),   q_1 > q_0
+        # -- instead of the deterministic r += c_r * U * 1[a = a_bad].
+        #
+        # This resolves BOTH halves of R2 at once, which a continuous noise term
+        # could not:
+        #   * R stays BINARY-valued in {r_base, r_base + c_r}, so L4's
+        #     Balke-Pearl anchor keeps the binary closed form. Continuous noise
+        #     would have forced either a discretisation (which v2 forbids) or an
+        #     LP solved numerically in place of the formula.
+        #   * R is now genuinely STOCHASTIC given (A, U), so residualising on
+        #     them leaves variance and the exclusion check acquires real power
+        #     instead of measuring nothing.
+        # The declared diagram is unchanged: R's parents are still (S, A, U) and
+        # the Bernoulli draw is R's exogenous term, which every diagram already
+        # has. The U->R edge magnitude becomes c_r * (q_1 - q_0).
+        self.gate_probs = None if gate_probs is None else tuple(map(float, gate_probs))
+        if self.gate_probs is not None:
+            q0, q1 = self.gate_probs
+            if not (0.0 <= q0 <= 1.0 and 0.0 <= q1 <= 1.0):
+                raise ValueError(f"gate_probs must be in [0,1], got {self.gate_probs}.")
+            if q1 <= q0:
+                raise ValueError(
+                    f"gate_probs = (q0, q1) needs q1 > q0 or there is no U->R edge "
+                    f"left to identify; got {self.gate_probs}."
+                )
+            if confounder_kind != "action_gated":
+                raise ValueError(
+                    "gate_probs is meaningful only for the action_gated confounder."
+                )
         self.u_drift = float(u_drift)
         if not 0.0 <= self.u_drift <= 0.5:
             raise ValueError(
@@ -119,6 +151,7 @@ class ConfoundedCollectionWrapper:
             self.proxy_strength is not None
             or self.instrument_strength is not None
             or self.u_drift > 0.0
+            or self.gate_probs is not None
         ):
             self._aux_gen = torch.Generator(device=self.device)
             self._aux_gen.manual_seed(int(seed) + 8_675_309)
@@ -222,7 +255,17 @@ class ConfoundedCollectionWrapper:
             reward = reward + self.c_r * self.current_u  # cells 7/8 — BYTE-FROZEN
         else:  # action_gated (discrete-only): shift ONLY on the a_bad transitions
             gate = (action == self.a_bad).to(reward.dtype)
-            reward = reward + self.c_r * self.current_u * gate
+            if self.gate_probs is None:
+                reward = reward + self.c_r * self.current_u * gate  # BYTE-FROZEN
+            else:
+                q0, q1 = self.gate_probs
+                q = torch.where(
+                    self.current_u > 0.5,
+                    torch.full_like(reward, q1),
+                    torch.full_like(reward, q0),
+                )
+                bonus = torch.bernoulli(q, generator=self._aux_gen)
+                reward = reward + self.c_r * bonus * gate
         info = {**info, "confounder_u": self.current_u.clone(), **self._aux_info()}
         # D-B' drift: U evolves WITHIN the episode, after the reward that this
         # transition's U produced. At u_drift = 0 this is a no-op consuming no

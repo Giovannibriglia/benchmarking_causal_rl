@@ -238,3 +238,24 @@ def test_real_confounding_is_still_gated():
     assert sig["gated_reward_expected"] is True
     assert sig["check_a4_gated_reward"] is True
     assert sig["corr_r_u_gated"] > 0.1
+
+
+def test_every_untestable_assumption_is_listed_in_the_consolidated_section():
+    """R4. The untestable set IS the paper's limitations section, so it must not
+    be possible to add an assumption with no observable shadow and quietly leave
+    it out of the one place a reviewer will look."""
+    doc = Path("docs/diagram_catalogue.md").read_text()
+    start = doc.index("## ⭐ Assumptions with NO observable shadow")
+    section = doc[start : doc.index("\n## ", start + 10)]
+    untestable = {
+        a.name
+        for g in CATALOGUE.values()
+        for a in (getattr(g, "assumptions", ()) or ())
+        if a.testable_shadow is None
+    }
+    assert untestable, "expected some untestable assumptions to exist"
+    missing = {n for n in untestable if n not in section}
+    assert not missing, (
+        f"assumptions with no observable shadow are missing from the consolidated "
+        f"section of docs/diagram_catalogue.md: {sorted(missing)}"
+    )

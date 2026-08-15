@@ -302,6 +302,7 @@ class SweepSpec:
     proxy_strength: Optional[float] = None
     instrument_strength: Optional[float] = None
     u_drift: Optional[float] = None
+    gate_probs: Optional[Sequence[float]] = None
 
     def arm_generator_kwargs(self, sigma: float) -> Dict:
         """The diagram channels for a sweep point, or {} for a historical cell."""
@@ -316,11 +317,13 @@ class SweepSpec:
             proxy_strength=self.proxy_strength,
             instrument_strength=self.instrument_strength,
             u_drift=self.u_drift,
+            gate_probs=self.gate_probs,
         )
         return {
             "proxy_strength": k.proxy_strength,
             "instrument_strength": k.instrument_strength,
             "u_drift": k.u_drift,
+            "gate_probs": k.gate_probs,
         }
 
     def budget(self, key: str, default: int) -> int:
@@ -397,6 +400,7 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         proxy_strength=_opt_float(pick("proxy_strength", None)),
         instrument_strength=_opt_float(pick("instrument_strength", None)),
         u_drift=_opt_float(pick("u_drift", None)),
+        gate_probs=pick("gate_probs", None),
     )
 
 

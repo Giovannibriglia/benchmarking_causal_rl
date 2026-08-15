@@ -41,6 +41,7 @@ class ArmKnobs:
     proxy_strength: float | None = None
     instrument_strength: float | None = None
     u_drift: float = 0.0
+    gate_probs: tuple | None = None
 
     def generator_kwargs(self) -> Dict:
         return {
@@ -50,6 +51,7 @@ class ArmKnobs:
             "proxy_strength": self.proxy_strength,
             "instrument_strength": self.instrument_strength,
             "u_drift": self.u_drift,
+            "gate_probs": self.gate_probs,
         }
 
 
@@ -72,6 +74,7 @@ def arm_knobs(
     proxy_strength: float | None = None,
     instrument_strength: float | None = None,
     u_drift: float | None = None,
+    gate_probs=None,
 ) -> ArmKnobs:
     """Resolve a diagram id plus config strengths into generator knobs.
 
@@ -98,6 +101,26 @@ def arm_knobs(
                 f"would give L2 a verdict the data cannot support."
             )
 
+    # R2, route (a). An arm that declares an instrument MUST make its exclusion
+    # restriction testable, because that restriction is what its whole verdict
+    # rests on. Under the deterministic gate R is a function of (A, U), so
+    # residualising on them leaves no variance and the check measures nothing
+    # while reporting a pass. Requiring gate_probs here is what stops D-E being
+    # declared without the property that lets it be checked.
+    if ch["instrument"] and gate_probs is None:
+        raise ValueError(
+            f"{diagram} declares an instrument, so its reward must be stochastic "
+            "given (A, U) or the exclusion restriction cannot be tested at all. "
+            "Supply gate_probs = (q0, q1): U shifts the PROBABILITY of the gated "
+            "bonus, which keeps R binary (so L4's Balke-Pearl anchor keeps its "
+            "closed form) while giving the exclusion check real power."
+        )
+    if gate_probs is not None and not ch["instrument"]:
+        raise ValueError(
+            f"{diagram} declares no instrument; gate_probs exists to make the "
+            "exclusion restriction testable and has no other arm to serve."
+        )
+
     if not ch["latent"]:
         # No latent at all (D-A / D-A-null). Collect through the same
         # action-dependent policy so the code path is shared, but at sigma = 0
@@ -118,4 +141,5 @@ def arm_knobs(
         proxy_strength=proxy_strength,
         instrument_strength=instrument_strength,
         u_drift=0.0 if u_drift is None else float(u_drift),
+        gate_probs=None if gate_probs is None else tuple(map(float, gate_probs)),
     )

@@ -23,6 +23,61 @@ and `Verdict.label()` makes that travel with each number produced.
 
 ---
 
+## Standing statistical rules
+
+Two rules, each promoted from repeated independent rediscovery. **A new
+statistic must argue against these, not rediscover them.**
+
+### S1 — Nulls are built at EPISODE granularity, never transition granularity
+
+Whenever a statistic is computed over data carrying an **episode-static latent**,
+its null must be constructed by resampling or permuting **whole episodes**. `U`
+is drawn once per episode; so are the D-D proxies and the D-E instrument. Their
+effective sample size is the number of *episodes*, and step-level resampling
+destroys exactly the block dependence being measured — producing a null far
+tighter than the statistic's own sampling law, which then reports associations
+that are not there.
+
+Four independent instances before it was written down:
+
+| site | step-level null said | truth |
+|---|---|---|
+| C1's splitter | leakage across the split | blocks straddled the boundary |
+| L5's bootstrap | intervals far too narrow | resamples broke episode blocks |
+| k-rank permutation | a zero-signal view is rank 2 | rank 1 (obs 0.031 vs null max 0.035 step-level, 0.105 episode-level) |
+| every preflight independence check | `corr(I,U) = +0.086` → "not exogenous" | fixed tolerance justified at transition *n*; true SE ≈ 0.04, sign flipped across strengths |
+
+The practical consequence: **a fixed magnitude tolerance is almost always the
+wrong instrument.** The preflight now compares each statistic to a null
+re-estimated from the data at hand by permuting whole episodes — optionally only
+*within* strata of `U`, so the null preserves `P(· | U)` and destroys only the
+association under test. Nothing needs calibrating per environment or per sample
+size, which is also what keeps it inside v2's no-calibration-constants rule.
+
+### S2 — Test the CONDITIONAL claim, never its marginal shadow
+
+Nearly every assumption in the catalogue is a conditional independence, and the
+marginal version is routinely nonzero *by design*. Testing the marginal produces
+confident, wrong verdicts about correct generators:
+
+| claim | marginal | why nonzero by design | conditional |
+|---|---|---|---|
+| proxy ⟂ A | +0.50 | proxy measures `U`, `A` is driven by `U` | +0.003 given `U` |
+| proxy ⟂ S | +0.226 | `U → A → S` | 0.9 null SDs given `U` |
+| I ⟂ R | −0.048 given `A` | `A` is a **collider** on `I → A ← U`, so conditioning on it *opens* the path | +0.005 given `(A, U)` |
+
+The collider row is the sharp one: conditioning on *more* made the test wrong.
+Read the conditioning set off the graph, and check whether each member is a
+collider or a descendant of one before adding it.
+
+### The corollary both rules share
+
+Three of these were caught only against the **real** generator, after passing a
+synthetic harness — the harness's states carried no `U → A → S` path, so its
+marginals happened to equal its conditionals. Validate against real generated
+data, and validate the generator against **ground truth** (logged `U`, declared
+parameters), never against the estimator that will later consume it.
+
 ## Constraints imposed by NBN v0.14.0
 
 These are properties of the library, verified on the vendored copy. Each has a

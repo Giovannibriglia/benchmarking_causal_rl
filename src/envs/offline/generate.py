@@ -140,6 +140,7 @@ def build_rollout_env(
     proxy_strength=None,
     instrument_strength=None,
     u_drift=0.0,
+    gate_probs=None,
 ):
     """Build the rollout env, wrapped in the confounder iff bias_confounded[_action].
 
@@ -182,6 +183,7 @@ def build_rollout_env(
             proxy_strength=proxy_strength,
             instrument_strength=instrument_strength,
             u_drift=u_drift,
+            gate_probs=gate_probs,
         )
     return env
 
@@ -947,6 +949,7 @@ def generation_fingerprint(
     proxy_strength=None,
     instrument_strength=None,
     u_drift: float = 0.0,
+    gate_probs=None,
 ) -> str:
     """Hash of EVERY input that determines a generated dataset's contents (S4).
 
@@ -995,6 +998,7 @@ def generation_fingerprint(
         ("proxy_strength", proxy_strength, None),
         ("instrument_strength", instrument_strength, None),
         ("u_drift", float(u_drift), 0.0),
+        ("gate_probs", gate_probs, None),
     ):
         if val != off:
             parts.append((key, val))
@@ -1110,6 +1114,7 @@ def generate_offline_dataset(
     proxy_strength: float | None = None,
     instrument_strength: float | None = None,
     u_drift: float = 0.0,
+    gate_probs=None,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -1202,6 +1207,7 @@ def generate_offline_dataset(
         proxy_strength=proxy_strength,
         instrument_strength=instrument_strength,
         u_drift=u_drift,
+        gate_probs=gate_probs,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
     # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +
@@ -1328,6 +1334,7 @@ def generate_offline_dataset(
         proxy_strength=proxy_strength,
         instrument_strength=instrument_strength,
         u_drift=u_drift,
+        gate_probs=gate_probs,
     )
     ds.storage.update_metadata(signature)
     return ds

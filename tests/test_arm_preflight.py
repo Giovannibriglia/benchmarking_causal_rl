@@ -178,6 +178,34 @@ def test_instrument_is_exogenous_relevant_and_excluded():
     assert rep.null_sds["i_vs_a"] >= 3.0, rep.summary()
 
 
+def test_the_exclusion_check_rejects_a_real_leak():
+    """R2. A check that never rejects proves nothing, so the passing result is
+    only worth something once the failing one is demonstrated. Measured on the
+    real generator under the stochastic gate: residual var(R | A, U) = 0.101,
+    the clean instrument passes at z = 0.94, and an injected I -> R leak of just
+    0.05 is caught at z = 8.0. Under the OLD deterministic gate the residual
+    variance was exactly 0, so none of these leaks were detectable at all."""
+    n, block = 6000, 10
+    rng = np.random.default_rng(1)
+    ep = np.repeat(np.arange(n // block), block)
+    u = np.repeat(rng.integers(0, 2, n // block).astype(float), block)
+    i = np.repeat(rng.integers(0, 2, n // block).astype(float), block)
+    a = (rng.random(n) < (0.5 + 0.2 * (i - 0.5))).astype(float)
+    # Stochastic given (A, U) -- U shifts the PROBABILITY of the bonus, so R
+    # stays binary and the residual variance is real.
+    q = np.where(u > 0.5, 0.8, 0.2)
+    clean = 1.0 + a * (rng.random(n) < q).astype(float)
+
+    ok = check_instrument(i=i, u=u, action=a, reward=clean, episode_ids=ep)
+    assert ok.exclusion_testable and ok.exclusion_holds, ok.summary()
+
+    leaked = clean + 0.05 * i
+    bad = check_instrument(i=i, u=u, action=a, reward=leaked, episode_ids=ep)
+    assert bad.exclusion_testable
+    assert not bad.exclusion_holds, "a leaking instrument must be caught"
+    assert bad.null_sds["i_vs_r_given_a_u"] > 3.0, bad.summary()
+
+
 def test_exclusion_reports_when_it_cannot_be_tested_rather_than_passing():
     """On an env whose reward is a DETERMINISTIC function of (A, U) -- CartPole
     with the action gate, r = 1 + c_r*U*1[a=a_bad] -- residualising on (A, U)

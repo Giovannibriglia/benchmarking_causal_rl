@@ -300,17 +300,92 @@ test. Nothing is calibrated per environment or per sample size.
 The zero-signal row is the one that matters: a generated proxy with k-rank 1
 means D-D is not identified either, and the check finds that in one line.
 
+**R5 — production strength pinned at 1.5, with its margin.** "It passes" is not
+enough when Kruskal is exactly tight: an arm sitting near the boundary makes
+every D-D result fragile to sample size, and D-D exists precisely to be the case
+with no excuses. Margin below is the observed singular-value ratio divided by the
+largest of 200 episode-level permutation nulls, so 1.0 is the boundary:
+
+| strength | corr(Z,U) | margin Z | margin W | margin R |
+|---|---|---|---|---|
+| 0.25 | +0.259 | 1.59 | 1.56 | 9.65 |
+| 0.50 | +0.461 | 2.74 | 2.53 | 9.65 |
+| 1.00 | +0.714 | 4.12 | 3.62 | 9.65 |
+| **1.50** | **+0.836** | **3.99** | **4.26** | **9.65** |
+| 2.00 | +0.897 | 3.97 | 4.55 | 9.65 |
+
+k-rank 2 is reached by 0.25, but at a margin of only ~1.6 — that is the fragile
+configuration, and it is why the pin is not simply "the smallest value that
+passes". The margin plateaus at ~4 from strength 1.0 onward (raising it to 2.0
+buys nothing on Z), so **1.5 sits on the plateau rather than on the cliff**. The
+reward view carries a much larger margin throughout and is never the binding
+constraint; the proxies are.
+
 **D-E instrument** (λ = 0.1 / 0.3 / 0.6): exogenous (2.0 / 0.4 / 0.8 null SDs),
 relevant (8.1 / 17.1 / 22.1 null SDs, corr(I,A) = +0.12 / +0.31 / +0.62).
-Exclusion is reported **NOT TESTABLE** on CartPole and says so: with
-`r = 1 + c_r·U·1[a=a_bad]` the reward is a *deterministic* function of `(A, U)`,
-so residualising on them leaves no variance for `I` to correlate with. The
-restriction holds by construction, but no evidence for it exists on this env —
-and an untestable check must never be allowed to read as a verified pass.
+Exclusion **was** reported NOT TESTABLE, and is now testable — see below.
+
+**D-E's exclusion restriction — resolved via R2 route (a), made testable.**
+Under the original deterministic gate `r = 1 + c_r·U·1[a=a_bad]` the reward is a
+*function* of `(A, U)`, so residualising on them left **exactly zero** variance:
+the statistic was identically zero for the data and for every permutation, a
+measurement of nothing that read as a clean pass.
+
+The fix has `U` shift the **probability** of the gated bonus rather than its
+magnitude — `r += c_r · 1[a=a_bad] · Bernoulli(q_U)` with `q = (0.2, 0.8)`. This
+resolves both halves of the ruling at once, which continuous noise could not:
+
+* `R` stays **binary** in `{r_base, r_base + c_r}`, so L4's Balke–Pearl anchor
+  keeps its binary closed form. A continuous noise term would have forced either
+  a discretisation (which v2 forbids) or an LP solved numerically in place of the
+  formula — the discreteness question is what decided the route.
+* `R` is now genuinely **stochastic given (A, U)**, so the exclusion check has
+  real power.
+
+The declared diagram is unchanged: `R`'s parents are still `(S, A, U)` and the
+Bernoulli draw is `R`'s exogenous term. The U→R edge magnitude becomes
+`c_r·(q₁ − q₀) = 0.6·c_r`.
+
+**And the check was shown to reject, not merely to pass** — a check that never
+rejects establishes nothing:
+
+| | residual var(R \| A,U) | clean instrument | injected leak 0.05 | 0.10 | 0.20 |
+|---|---|---|---|---|---|
+| deterministic gate | 0.000 | vacuous | **undetectable** | undetectable | undetectable |
+| stochastic gate | 0.101 | passes, z = 0.94 | **caught, z = 8.0** | z = 13.1 | z = 18.5 |
+
+An instrument arm declared without `gate_probs` is refused at resolve time, so
+the untestable configuration cannot be reintroduced by a future config.
 
 **D-B′ drift**: realised lag-1 autocorrelation 1.000 / 0.804 / 0.507 / −0.014 at
 ρ = 0 / 0.1 / 0.25 / 0.5, against the closed form `1 − 2ρ`. ρ = 0 consumes no
 randomness and reproduces D-B bit for bit.
+
+### ⚠ R3 — σ DOES NOT MEAN THE SAME THING ON D-E. Do not compare arms at matched σ.
+
+On every other arm σ is the rate at which the latent acts on the action, and the
+exact identity `mean((1[a=a_bad] − p_s)(2U−1)) = σ·mean(p_s(1−p_s))` says so. On
+D-E the instrument overrides a λ fraction of in-pair actions **and** shifts the
+state distribution, so the realised U→A channel is weaker than σ advertises —
+and not by any tidy factor. Measured realised dilution against the naive
+`(1 − λ)`:
+
+| λ | predicted (1 − λ) | **realised** |
+|---|---|---|
+| 0.1 | 0.90 | 0.951 |
+| 0.3 | 0.70 | 0.827 |
+| 0.6 | 0.40 | **0.233** |
+
+It errs in *both* directions and collapses non-linearly at λ = 0.6. So:
+
+> **A D-E point at σ = 0.5 is not the same confounding regime as a D-B point at
+> σ = 0.5.** Any cross-arm comparison, figure axis, or table row that lines the
+> arms up at matched σ and includes D-E is invalid.
+
+D-E is scored on its IV conditions, not on σ, so nothing inside the arm depends
+on this. The hazard is entirely downstream: a shared σ axis is the obvious way
+to plot these arms together, and it would produce a figure whose D-E curve is
+mislabelled with no error anywhere to reveal it.
 
 ### D-E does not certify through the action-gated gate
 
@@ -358,6 +433,42 @@ This entry alone justifies the addendum's insistence on stating both queries —
 **Recommendation:** label D-G **bounds-only for Q1, non-ID for Q2** in the shipped catalogue, and treat any stronger claim as a research extension. This is the entry where over-claiming would be easiest and least defensible.
 
 ---
+
+## ⭐ Assumptions with NO observable shadow — the limitations section, in draft
+
+Every verdict in this catalogue carries the assumptions it rests on, and
+`Verdict.label()` makes them travel with each number produced. Most have a
+testable shadow: a constraint the data could contradict. **These do not.** They
+are collected here in one place, deliberately, because scattering them across
+entries is how a limitations section ends up understating itself.
+
+The claim this table supports is *not* "our assumptions are testable". It is the
+stronger and more defensible one: **here is exactly which of ours are, which are
+not, and why** — with the untestable ones named rather than absorbed into prose.
+
+| assumption | where | why it has no shadow | what it would take |
+|---|---|---|---|
+| `completeness` | D-B, D-B′, D-D | The proxy-to-latent map being injective is a statement about a map to a **latent** variable. Every distribution over observables is consistent with *some* non-injective map plus a compensating relabelling, so no observable constraint separates the two. | Nothing observational. Only a stronger parametric commitment, or an external measurement of `U`. |
+| `cross_stratum_label_linking` | D-B, D-B′ | The lagged views are conditionally independent given `U` only *together with* the `(S, A)` at the measurement times, so Kruskal applies per configuration and pins the latent only up to a relabelling **at each `(s,a)`**. The obvious linking assumption — `U ⟂ covariates` — is **false here**, since `S_t` descends from `U` through past actions. Linking is supplied by the shared mechanism family: one `P(R \| S,A,U)` fitted across configurations forces consistency. That is a property of the **model class**, not of the graph, and the data cannot arbitrate it. | Covariate-**free** proxies, which is exactly what D-D has — this is why D-D does not carry the assumption. |
+| M2's spurious edge | misspecification suite | An **added** edge removes constraints rather than imposing them. A diagram with a superfluous edge implies a strict subset of the conditional independences of the correct one, so no observed distribution can contradict it. Undetectable **in principle**, not merely by our test. | Nothing. This is a genuine ceiling on L5, and V3's detection curve is reported with M2 excluded and the exclusion stated. |
+| `finite_K_latent_class` | every q2 with a surviving latent | `K` itself is partly testable (a too-small `K` leaves structure in the residuals), but that the latent is *finite-cardinality at all* is not: a continuum latent can be approximated arbitrarily well by a finite mixture at any fixed sample size. | Nothing at fixed `n`. Reported as a modelling commitment. |
+
+Three further honesty notes, which belong here rather than in a footnote:
+
+1. **D-E's exclusion restriction is testable — but only because the arm was
+   changed to make it so.** Under the original deterministic reward gate it had
+   no shadow at all (zero residual variance given `(A, U)`), and the check
+   reported a vacuous pass. It is now established by evidence, with demonstrated
+   power to reject (see D-E above). Had that not been possible, it would belong
+   in this table as construction-verified, not above it.
+2. **KDE's unweighted bandwidth rule biases toward false negatives** (N3): it
+   makes latent classes look *less* separable than they are, so it degrades L5's
+   detection power while leaving the false-positive rate intact. A KDE-induced
+   failure therefore looks like "the diagram was not refuted" — the quiet
+   direction. The mechanism choice is constrained rather than left to taste for
+   exactly this reason.
+3. **The gated D-B q2 route** is not listed as an assumption because it is not
+   claimed: it degrades to bounds by default and does not serve point values.
 
 ## Misspecified diagrams (drive V3 / V6)
 
