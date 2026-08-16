@@ -239,6 +239,65 @@ the projection would come out *low* and a V-D scope chosen against it would be
 under-budgeted. Any reordering has to answer this, not just note the
 dependency.
 
+### GATE FAILURES — diagnosed (2026-08-16). Two clusters, both CHECK defects.
+
+The gate asks "is the declared confounding present at the declared strength",
+which is a different claim from the preflight's "is the arm valid" — so a gate
+failure is not automatically a defect. Diagnosed rather than assumed; **neither
+cluster turned out to be an arm property.**
+
+#### Cluster B — D-E, 15 failures (14 CartPole + 1 Acrobot): a STALE STAMP
+
+`_instrument_signature` derives `gate_test_passed` from `check_instrument` — the
+same function the collider bug lived in. The re-certification pass only
+re-stamped `preflight_*` keys, so the gate carried the pre-fix verdict.
+Recomputed from stored samples with the fixed check: **all 15 flip to pass, D-E
+is 40/40**, and `corr(I, U)` on the flipped rows is −0.070 … +0.054. Re-stamped.
+
+**D-E CartPole goes from 6/20 usable to 20/20**, which was the priority: D-E is
+L4's only exact anchor via Balke–Pearl, and six datasets was a thin basis for the
+reference that validates the bound engine.
+
+*Generalisable lesson:* a re-certification must re-stamp **every** derived key,
+not the ones named after the layer being fixed. Two metadata blocks were computed
+by one function and only one of them was refreshed.
+
+#### Cluster A — Acrobot D-D and D-B′, 14 failures: the A2 identity is the TWO-ACTION SPECIAL CASE
+
+Derived from the policy's own swap rule (redraw w.p. σ when `a0 ∈ {a_good,
+a_bad}`; within-pair `P(a_bad) = pbar(2−pbar)` if `U` else `pbar²`, `pbar =
+p/(p+g)`):
+
+> `E[(1{a=a_bad} − p_s)(2U−1)] = σ · mean( p_s·g_s / (p_s+g_s) )`
+
+The gate predicts `σ · mean( p_s(1−p_s) )`. **These agree iff `p + g = 1`, i.e.
+iff the action space is binary.** On a 3-action env the gate over-predicts by
+`(p+g)(1−p)/g`. Simulated against ground truth: ratio 1.00 at 2 actions, **0.69–
+0.72 at 3** — and V-B measured **0.60–0.78 across all 14 Acrobot rows, stable in
+σ**. CartPole (2 actions) passes at every σ, as the derivation requires.
+
+**Compounded by an absolute tolerance.** `corr_tolerance = 0.03` is both a tuned
+constant (an **A2-rule violation** that survived the v1 purge) and absolute, so a
+*constant relative* error passes at σ = 0.25 and fails at σ = 1.0. That is the
+only reason the failures looked σ-dependent and read as "the mechanism does not
+bite at high σ on Acrobot". It does; the check is wrong at every σ.
+
+**Consequence, in the direction that matters.** The 26 Acrobot rows that *passed*
+passed for lack of absolute magnitude, not because the check was right — so the
+A2 gate has been **uninformative on Acrobot throughout**, in both directions. The
+arms themselves are fine: the preflight certifies them and the derivation above
+plus its simulation establish the generator does what it declares.
+
+**Fix, NOT yet applied — it needs a decision.** The correct target needs
+`g_s = π_basic(a_good|s)` logged alongside `p_s`; a one-line generator change,
+but an exact re-stamp then needs the 40 Acrobot datasets re-rolled (`g_s` is not
+recoverable from `p_s` alone — at 3 actions the same `p_s` is consistent with two
+different `g_s`). Options: (a) log `g_s` and regenerate Acrobot only; (b) log it
+and leave existing stamps marked "A2 not evaluated on >2 actions"; (c) replace
+the absolute tolerance with a relative one, which would make the existing rows
+pass but on a formula still known to be wrong. **(c) is not recommended** — it
+converts a visible failure into an invisible one.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.

@@ -539,3 +539,60 @@ def test_null_arm_reports_an_untestable_reward_channel_rather_than_passing():
         episode_ids=ep,
     )
     assert live.reward_testable and not live.u_inert, live.summary()
+
+
+def test_the_a2_gate_target_is_the_TWO_ACTION_special_case():
+    """The action-dependent gate's A2 identity is derived for a binary action
+    space and silently over-predicts on any env with more than two actions.
+
+    From the policy's own swap rule -- redraw with probability sigma when
+    ``a0 in {a_good, a_bad}``, within-pair ``P(a_bad) = pbar(2-pbar)`` if U else
+    ``pbar^2``, with ``pbar = p/(p+g)``:
+
+        E[1{a=a_bad} | s, U] = (1-sigma) p + sigma (p+g) w(U)
+        =>  E[(1{a=a_bad} - p)(2U-1)] = sigma * p*g/(p+g)
+
+    The gate predicts ``sigma * p*(1-p)``. The two agree **iff p + g == 1**, i.e.
+    iff the action space is binary. On Acrobot (3 actions) the gate over-predicts
+    by ``(p+g)(1-p)/g``, and V-B measured exactly that: observed/predicted ran
+    0.60-0.78 across all 14 Acrobot d_d and d_b_prime datasets, stable in sigma.
+
+    Compounding it, ``corr_tolerance`` is an ABSOLUTE 0.03. A constant RELATIVE
+    error therefore passes at sigma = 0.25 and fails at sigma = 1.0, which is why
+    the failures looked sigma-dependent and read as an arm property. They are not:
+    the same wrong formula was applied at every sigma, so the Acrobot datasets
+    that PASSED passed for lack of absolute magnitude, not because the check was
+    right.
+
+    Simulated against ground truth rather than against another estimator (S4).
+    """
+    rng = np.random.default_rng(0)
+    for n_act, sigma, expect_gate_ok in ((2, 1.0, True), (3, 1.0, False)):
+        N, eps = 200_000, 0.5
+        greedy = rng.integers(0, n_act, N)
+        probs = np.full((N, n_act), eps / n_act)
+        probs[np.arange(N), greedy] += 1 - eps
+        a_bad, a_good = 1, 0
+        p, g = probs[:, a_bad], probs[:, a_good]
+        pbar = p / (p + g)
+        u = rng.integers(0, 2, N).astype(float)
+        coin = rng.random(N) < sigma
+        a0 = (rng.random((N, 1)) < probs.cumsum(1)).argmax(1)
+        in_pair = (a0 == a_bad) | (a0 == a_good)
+        w = np.where(u > 0.5, pbar * (2 - pbar), pbar**2)
+        pair_action = np.where(rng.random(N) < w, a_bad, a_good)
+        a = np.where(coin & in_pair, pair_action, a0)
+
+        observed = float(np.mean(((a == a_bad) - p) * (2 * u - 1)))
+        gate_target = sigma * float(np.mean(p * (1 - p)))
+        derived_target = sigma * float(np.mean(p * g / (p + g)))
+
+        # The DERIVED target is right in both cases...
+        assert abs(observed / derived_target - 1.0) < 0.05, (
+            n_act,
+            observed,
+            derived_target,
+        )
+        # ...while the gate's is right only for two actions.
+        gate_ok = abs(observed - gate_target) < 0.03
+        assert gate_ok is expect_gate_ok, (n_act, observed, gate_target)
