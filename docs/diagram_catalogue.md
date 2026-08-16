@@ -276,21 +276,35 @@ length-weighting had *inflated* `R`'s apparent informativeness. It **deflated**
 it: transition-level AUC 0.68–0.74 against 1.0000 per episode. The error ran in
 the safe direction.
 
-**Why this is left in place.** The dependence on `P(a_bad)` is a *measurable
-coupling*, and R4 sweeps exactly the quantity it depends on. If D-D's
-identifiability degrades as the logged policy improves, that is a **result** —
-R4's policy-quality tension reappearing in the cell that was supposed to be free
-of it, where even explicit proxies do not save you if the third view is the
-reward. Adding a third covariate-free proxy would engineer the phenomenon away
-before it could be observed.
+### DECISION — the third proxy is RETIRED (2026-08-16)
 
-**Remedy held in reserve.** If R4 shows the coupling binding, the fix is
-structural rather than a tuning change: add a third covariate-free proxy `V`, so
-the triple is `{Z, W, V}` with all three parented by `U` alone, decoupling D-D's
-finite-mixture identifiability from `P(a_bad)` entirely. That change would then
-be evidence-driven rather than precautionary, and would go through catalogue
-review like any other entry change. The reward-view triple stays for D-B, where
-the lagged construction genuinely requires it.
+Formally retired, on evidence measured at the right granularity. The basis, so
+that nobody re-derives the retired proposal from the withdrawn numbers:
+
+1. **`R` is the strongest view, in 40/40 datasets** (AUC 1.0000 Acrobot / 0.9999
+   CartPole against Z 0.982, W 0.984) — not the weakest, which is what a third
+   proxy would have been added to compensate for.
+2. **All three views clear k-rank 2 at ≈5× their own permutation nulls**, and
+   `R` is the minimum-margin view in only 13/40. Nothing is near binding.
+3. **The recorded coupling was a granularity artefact.** It was a property of the
+   per-step reward view, not of the reward channel.
+4. **Length-weighting DEFLATED `R`, it did not inflate it** (transition AUC
+   0.68–0.74 against 1.0000 per episode). The worry on record pointed the wrong
+   way, and the error ran in the safe direction. Preserved here deliberately —
+   the intuition that produced it is a natural one and will be produced again.
+
+The remedy is **withdrawn, not held in reserve**: adding a covariate-free `V`
+would compensate for a weakness that does not exist. What survives is R4's
+question — how `R` degrades as the logged policy improves — now correctly posed
+against `P(a_bad) × E[T]` rather than `P(a_bad)`.
+
+**The concern that replaces it, and outranks it: D-D may be TOO EASY.** If `R`
+alone recovers `U` at AUC 1.0000 per episode, `U` is effectively *observed* — an
+estimator can recover it from the reward channel, condition on it, and the
+confounding disappears. D-D would then be a **back-door cell wearing proximal
+clothing**, and "the clean point-ID case" would be validating latent recovery
+from a highly separable mixture rather than proximal identification: V-C would
+report success on machinery it never exercised. Open; see the proxy-ablation.
 
 ### ⭐ Why D-D is the clean case: its proxies are COVARIATE-FREE
 
@@ -384,6 +398,24 @@ enough when Kruskal is exactly tight: an arm sitting near the boundary makes
 every D-D result fragile to sample size, and D-D exists precisely to be the case
 with no excuses. Margin below is the observed singular-value ratio divided by the
 largest of 200 episode-level permutation nulls, so 1.0 is the boundary:
+
+> ⚠ **`s2/s1` IS VALID FOR THE RANK VERDICT IT WAS BUILT FOR, AND IS NOT A
+> CROSS-VIEW INFORMATIVENESS SCALE.** It was read as one for several rounds
+> before this surfaced. Two reasons it cannot be. **(a) It depends on the bin
+> count** — measured on one Acrobot D-D seed, `R`'s ratio runs 0.98 / 0.98 /
+> 0.88 / 0.74 across 4 / 8 / 16 / 32 bins while `Z`'s barely moves. **(b) For
+> conditionals with disjoint support the rows are orthogonal**, so
+> `s2/s1 = ‖p₁‖₂ / ‖p₀‖₂` — their relative CONCENTRATION, not their separation.
+> A view that separates the classes *perfectly but diffusely* therefore scores
+> **low**: `R`'s two conditionals sit 20–47 sd apart with zero overlap and score
+> 0.42, against heavily-overlapping `Z` at 0.89.
+> For informativeness use a **binning-free, rank-based** measure — the AUC of the
+> view as a classifier of `U`. The whole R5 table below inherits this caveat: it
+> ranks *conditioning of the measurement matrix*, which is the right quantity for
+> "is this arm fragile to sample size" and the wrong one for "which view carries
+> the most information about `U`". The **within-column** trend across strengths
+> (1.59 → 4.12) is sound, since the view's shape is fixed down a column; the
+> **across-column** comparison of Z/W against R is not.
 
 | strength | corr(Z,U) | margin Z | margin W | margin R |
 |---|---|---|---|---|
