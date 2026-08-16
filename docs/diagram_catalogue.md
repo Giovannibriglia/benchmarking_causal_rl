@@ -605,6 +605,37 @@ This is a structural tension, not an artefact of this benchmark: any action-gate
 
 **Report as a measured curve, not a stated condition** (R4): sweep behaviour-policy quality (the generator's tiers and `pi_basic_epsilon`), and plot against it (a) proxy informativeness — the mutual information between `W` and the logged `U`, evaluation-side only, plus the estimated rank gap — and (b) the L4 interval width and point-estimate error. The predicted shape is monotone decay of (a) with a matching widening of (b).
 
+#### ⚠ Two corrections to this design, from the D-D re-measurement (2026-08-16)
+
+**1. Sweep against `P(a_bad) × E[T]`, not `P(a_bad)`.** For the reward view,
+averaging over the episode is what recovers `U`, so what governs informativeness
+is the number of *informative* steps an episode contains — gated steps per
+episode — not the per-step rate. Measured across V-B: the product ranges
+**5.5 → 239** with `R`'s AUC ≥ 0.9974 throughout, so degradation needs it near
+**~1**. That is a two-orders-of-magnitude gap and it tells the sweep where it has
+to reach before it can show anything: a sweep over `P(a_bad)` alone that never
+drives the product below ~10 will report a flat line and be read as "no
+coupling", when it simply never entered the regime.
+
+**2. BOTH environments are required, and neither settles it alone — they move the
+governing quantity in OPPOSITE directions.** As the logged policy improves,
+`P(a_bad)` falls in both, but `E[T]` does not:
+
+| env | policy improves ⇒ | effect on `P(a_bad) × E[T]` |
+|---|---|---|
+| CartPole | survives longer, `E[T]` ↑ | the two terms **offset** — the product may barely move |
+| Acrobot | reaches the goal sooner, `E[T]` ↓ | the two terms **compound** — the product falls fast |
+
+A single-environment R4 would generalise wrongly whichever one it picked:
+CartPole alone would report the coupling as benign, Acrobot alone as severe. The
+sign disagreement is the result, not an inconvenience — it says the coupling is
+mediated by the env's termination structure, which is exactly the kind of
+sequential-setting dependence the proximal literature never has to confront.
+
+**Corollary for the measure.** Report informativeness with a **binning-free,
+rank-based** statistic (AUC of the view against the logged `U`), never `s2/s1` —
+see the caution at R5. A curve plotted in `s2/s1` would move with the bin grid.
+
 If it holds, it is a genuine finding about lagged-proxy identification in RL, and it bears directly on the practical question of when proximal methods are worth reaching for offline. It also implies a caution for D-B's use in practice: the cells where proximal identification is *easiest* to demonstrate are the ones whose data is least like deployment data.
 
 ---
