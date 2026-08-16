@@ -872,6 +872,8 @@ class NullArmReport:
     null_p: Dict[str, float] = field(default_factory=dict)
     null_sds: Dict[str, float] = field(default_factory=dict)
     gated_episodes: int = 0
+    reward_testable: bool = False
+    gated_testable: bool = False
     u_inert: bool = False
     reasons: tuple = ()
 
@@ -882,6 +884,8 @@ class NullArmReport:
         return (
             f"n={self.n} episodes={self.n_episodes} "
             f"nullP={self._rounded()} gated_episodes={self.gated_episodes} "
+            f"reward_testable={self.reward_testable} "
+            f"gated_testable={self.gated_testable} "
             f"inert={self.u_inert}"
         )
 
@@ -927,6 +931,22 @@ def check_null_arm(
     _, p_ua, z_ua = _signed_permutation_test(u_ep, lambda b: _corr(b, a_ep))
     _, p_ur, z_ur = _signed_permutation_test(u_ep, lambda b: _corr(b, r_ep))
 
+    # DEGENERACY GUARD on the reward channel -- the same S8 trap check_instrument
+    # already guards, in the arm where it matters most. On CartPole with c_r = 0
+    # the reward is 1.0 at EVERY step, so var(R) is exactly zero: the statistic
+    # is identically zero for the observed data and for all 200 permutations,
+    # the p-value comes back at 1.000, and "U is inert in the reward channel"
+    # reads as the cleanest pass in the table while resting on no evidence at
+    # all. Measured across the 10 D-A-null datasets: var(episode-mean R) = 0.0e0
+    # on all five CartPole seeds and ~1e-8 on two of the five Acrobot seeds.
+    #
+    # Inertness still HOLDS there -- a constant reward cannot depend on anything
+    # -- and it is credited, exactly as an untestable exclusion is. What must not
+    # happen is crediting it as a measured result: this arm is where L5's
+    # FALSE-POSITIVE RATE is read from, so an unverified inertness claim
+    # understates that rate in the flattering direction.
+    reward_testable = float(np.var(r_ep)) > 1e-12
+
     # Also the gated contrast the confounded arms rely on: within a == a_bad,
     # is the reward associated with U? That is the exact channel c_r opens, so
     # it is the one that must be dead here.
@@ -934,30 +954,53 @@ def check_null_arm(
     gated_counts = np.bincount(inv[gated], minlength=n_ep)
     has_gated = gated_counts > 0
     n_gated_ep = int(has_gated.sum())
+    gated_testable = False
     if n_gated_ep > 2:
         gated_sum = np.bincount(inv[gated], weights=r[gated], minlength=n_ep)
         r_gated_ep = gated_sum[has_gated] / gated_counts[has_gated]
         u_gated_ep = u_ep[has_gated]
+        gated_testable = float(np.var(r_gated_ep)) > 1e-12
         _, p_gated, z_gated = _signed_permutation_test(
             u_gated_ep, lambda b, c=r_gated_ep: _corr(b, c)
         )
     else:
         p_gated, z_gated = 1.0, 0.0
 
-    inert = min(p_ua, p_ur, p_gated) >= _NULL_ALPHA
+    # An untestable channel is CREDITED but recorded as such, never conflated
+    # with a verified one (S8) -- the same treatment D-E's exclusion gets.
+    inert = (
+        p_ua >= _NULL_ALPHA
+        and (p_ur >= _NULL_ALPHA or not reward_testable)
+        and (p_gated >= _NULL_ALPHA or not gated_testable)
+    )
     if p_ua < _NULL_ALPHA:
         reasons.append(
             f"U is associated with A at permutation p={p_ua:.4f} -- not a null arm"
         )
-    if p_ur < _NULL_ALPHA:
+    if reward_testable and p_ur < _NULL_ALPHA:
         reasons.append(
             f"U is associated with R at permutation p={p_ur:.4f} -- not a null arm"
         )
-    if p_gated < _NULL_ALPHA:
+    if gated_testable and p_gated < _NULL_ALPHA:
         reasons.append(
             f"U is associated with R within a = a_bad at permutation "
             f"p={p_gated:.4f} -- the gated reward channel is live, so c_r did not "
             "reach zero"
+        )
+    if not reward_testable:
+        reasons.append(
+            "U-vs-R NOT TESTABLE on this env: the reward has no variance across "
+            "episodes (CartPole with c_r = 0 pays exactly 1.0 every step), so the "
+            "statistic is identically zero for the data AND for every "
+            "permutation. Inertness holds by construction -- a constant reward "
+            "cannot depend on U -- but NO evidence for it was gathered here, and "
+            "L5's false-positive rate rests on this arm. It needs an env whose "
+            "reward varies under c_r = 0"
+        )
+    if n_gated_ep > 2 and not gated_testable:
+        reasons.append(
+            "the gated U-vs-R contrast is NOT TESTABLE on this env for the same "
+            "reason: no reward variance within a = a_bad"
         )
     return NullArmReport(
         n=int(np.asarray(u).size),
@@ -965,6 +1008,8 @@ def check_null_arm(
         null_p={"u_vs_a": p_ua, "u_vs_r": p_ur, "u_vs_r_gated": p_gated},
         null_sds={"u_vs_a": z_ua, "u_vs_r": z_ur, "u_vs_r_gated": z_gated},
         gated_episodes=n_gated_ep,
+        reward_testable=reward_testable,
+        gated_testable=gated_testable,
         u_inert=inert,
         reasons=tuple(reasons),
     )

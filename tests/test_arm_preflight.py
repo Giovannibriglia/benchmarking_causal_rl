@@ -488,3 +488,54 @@ def test_no_false_alarms_across_seeds_on_a_provably_clean_arm():
         )
         assert inst.independent_of_u, f"seed {seed}: {inst.summary()}"
         assert inst.relevant, f"seed {seed}: {inst.summary()}"
+
+
+def test_null_arm_reports_an_untestable_reward_channel_rather_than_passing():
+    """S8, in the arm where it matters most. On CartPole with c_r = 0 the reward
+    is exactly 1.0 at every step, so var(R) = 0: the U-vs-R statistic is
+    identically zero for the observed data AND for all 200 permutations, the
+    permutation p comes back at 1.000, and "U is inert in the reward channel"
+    reads as the cleanest pass in the whole certification table while resting on
+    no evidence whatsoever.
+
+    Measured across V-B's 10 D-A-null datasets: var(episode-mean R) = 0.0 on all
+    five CartPole seeds and ~1e-8 on two of five Acrobot seeds. It surfaced only
+    because the p-values of the certification suite were checked for UNIFORMITY
+    -- a check that has stopped firing looks identical to a check that is
+    working, until you look at the distribution.
+
+    This arm is where L5's FALSE-POSITIVE RATE is read from, so an unverified
+    inertness claim understates that rate in the flattering direction."""
+    from src.envs.offline.arm_preflight import check_null_arm
+
+    n_ep = 200
+    rng = np.random.default_rng(0)
+    ep = np.repeat(np.arange(n_ep), 12)
+    u = np.repeat(rng.integers(0, 2, n_ep).astype(float), 12)
+    a = (rng.random(ep.size) < 0.5).astype(float)
+
+    flat = check_null_arm(u=u, action=a, reward=np.ones(ep.size), episode_ids=ep)
+    assert not flat.reward_testable, flat.summary()
+    assert not flat.gated_testable, flat.summary()
+    assert flat.u_inert, "a constant reward cannot depend on U -- credit it"
+    assert any("NOT TESTABLE" in s for s in flat.reasons), flat.reasons
+
+    # With a reward that actually varies the channel IS tested, and passes.
+    varying = check_null_arm(
+        u=u,
+        action=a,
+        reward=1.0 + rng.normal(0, 0.3, ep.size),
+        episode_ids=ep,
+    )
+    assert varying.reward_testable and varying.u_inert, varying.summary()
+    assert not any("NOT TESTABLE" in s for s in varying.reasons), varying.reasons
+
+    # ...and a live U -> R channel is still caught, so the guard has not simply
+    # blinded the check.
+    live = check_null_arm(
+        u=u,
+        action=a,
+        reward=1.0 + 0.4 * u + rng.normal(0, 0.3, ep.size),
+        episode_ids=ep,
+    )
+    assert live.reward_testable and not live.u_inert, live.summary()

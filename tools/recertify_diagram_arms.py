@@ -103,7 +103,18 @@ def _pearson(x, y) -> float:
 
 
 def verify_reconstruction(meta: dict, samples: dict, cell: str) -> list[str]:
-    """Hard checks that the reassembled samples ARE the certified ones."""
+    """Hard checks that the reassembled samples ARE the certified ones.
+
+    ``meta`` MUST come from the archived pre-re-certification baseline, never
+    from the live dataset metadata -- this tool WRITES that metadata, so on a
+    second run the check would be comparing the reconstruction against its own
+    previous output. It bit exactly that way: run 1 re-stamped
+    ``preflight_proxy_corr_z_u`` with the new EPISODE-level value, and run 2
+    then flagged seven datasets because it was recomputing the OLD
+    transition-level quantity and comparing it to an episode-level number. A
+    verification whose reference is mutable, and mutated by the thing it
+    verifies, degrades to a no-op or a false alarm on the second run.
+    """
     problems = []
     n_ep = int(np.unique(samples["episode"]).size)
     n_tr = int(samples["episode"].size)
@@ -129,6 +140,12 @@ def main() -> int:
     ap.add_argument("--out", default="results/vb_recertification/report.json")
     ap.add_argument("--max-episodes", type=int, default=600)
     ap.add_argument(
+        "--baseline",
+        default="results/vb_recertification/pre_recert_metadata.json",
+        help="archived PRE-re-certification metadata; the immutable reference "
+        "the reconstruction check compares against",
+    )
+    ap.add_argument(
         "--no-write",
         action="store_true",
         help="recompute and report without re-stamping dataset metadata",
@@ -141,6 +158,15 @@ def main() -> int:
     from src.envs.offline.generate import _preflight_certification
 
     rows_in = json.loads(Path(args.report).read_text())
+    baseline_path = Path(args.baseline)
+    if not baseline_path.exists():
+        print(
+            f"!! no baseline at {baseline_path}. The reconstruction check needs the "
+            "PRE-re-certification stamps; re-stamped metadata cannot verify itself. "
+            "Archive them first (see the module docstring)."
+        )
+        return 2
+    baseline = json.loads(baseline_path.read_text())
     specs = {
         c: load_sweep_spec(CELLS / f"{c}.yaml") for c in {r["cell"] for r in rows_in}
     }
@@ -159,7 +185,10 @@ def main() -> int:
             continue
         spec = specs[cell]
         ds = minari.load_dataset(did)
-        meta = dict(ds.storage.metadata)
+        meta = baseline.get(did, {})
+        if not meta:
+            recon_failures.append(f"{did}: no baseline stamp to verify against")
+            continue
         samples, buffers = rebuild_samples(ds, args.max_episodes)
 
         bad = verify_reconstruction(meta, samples, cell)

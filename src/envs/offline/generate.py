@@ -796,6 +796,11 @@ def _preflight_certification(
                     k: float(v) for k, v in rep.null_sds.items()
                 },
                 "preflight_null_arm_gated_episodes": int(rep.gated_episodes),
+                # S8: an untestable channel is credited but never reported as a
+                # verified pass -- this is the arm L5's false-positive rate is
+                # read from, so the distinction is the whole point.
+                "preflight_null_arm_reward_testable": bool(rep.reward_testable),
+                "preflight_null_arm_gated_testable": bool(rep.gated_testable),
             }
         )
 
