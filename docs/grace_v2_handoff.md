@@ -298,6 +298,91 @@ the absolute tolerance with a relative one, which would make the existing rows
 pass but on a formula still known to be wrong. **(c) is not recommended** — it
 converts a visible failure into an invisible one.
 
+### L3 — EM SATURATION ON LONG EPISODES, and the four bugs found fixing it
+
+**The failure.** The E-step sums per-row log-likelihoods over the episode, so a
+between-class difference of `d` nats/step becomes `T·d` per episode. At `T=500`
+the class softmax is a step function: responsibilities are 0/1 after the FIRST
+E-step and EM is frozen in whatever basin the initialisation picked. Measured on
+D-D Acrobot: **6/6 fits at chance recovery, every one reporting
+`separability = 1.0000`.** At `T = 18–38` the same code recovers 0.997–1.000.
+
+**It is OPTIMISATION, not identification, and the objective says so.** Same
+model, same data: the proxy warm start reaches `ll = +24k…+42k` at recovery
+0.99, random starts sit at `−15k…−35k` at 0.53. The likelihood ranks the correct
+solution far higher and EM cannot reach it. That is also what makes the proxies
+"load-bearing" in D-D **through initialisation only** — an optimiser-dependent
+property of this implementation, not of the identification problem. A better
+optimiser could make them decorative again.
+
+**Fixed by deterministic annealing (τ₀ = mean episode length, a derivation:
+at τ = T the tempered episode log-lik IS the per-step average). Re-validated on
+the real data that exhibited it:**
+
+| env | T | τ=1 (pre-fix) | annealed |
+|---|---|---|---|
+| CartPole s0 | 16 | 0.917 | 0.847 *(one seed 0.77→0.54; see the seed sweep)* |
+| Acrobot s0 | 150 | 0.783 | **0.923** |
+| Acrobot s1 | 500 | **0.563** | **0.990** |
+
+#### Four bugs found *inside* the fix — three of them silent
+
+1. **The guard compared objectives ACROSS a temperature change.** τ=500 against
+   τ=63 is not a comparison; it read as a catastrophic decrease, exhausted the
+   backtracks on iteration 1, and stopped the fit before it ever reached τ=1.
+   **Annealing present in the code and absent in effect, reporting an ordinary
+   fit.** The reference is now re-evaluated at the new τ.
+2. **Mid-anneal exhaustion terminated the run**, leaving the fit maximising a
+   surrogate it was only meant to pass through — a do-effect of 1.22 against a
+   true 0.75 with every other diagnostic ordinary. Exhaustion during the anneal
+   now advances to the next temperature; only τ=1 exhaustion stops the run.
+   `reached_tau_one` is what caught it and is now propagated under C3.
+3. **A plausible constant that would have been wrong on real data.** The first
+   version gated annealing on `initial_saturation ≥ 0.99`, justified as "the
+   statistic is bimodal, so any cut decides identically". Asserted from two
+   observations and **false** — measured 0.41 / 0.93 / 0.99 across T = 16 / 150 /
+   500, a graded statistic. **A 0.99 cut would have declared T=150 unaffected,
+   and a third of the pre-fix fits failed there.** Worth reading next to A2: the
+   constant was not merely unjustified, it was wrong. The anneal is now extra
+   iterations rather than a slice of `max_iter`, which removes the conflict that
+   made a gate look necessary; nothing in the control path reads the detector.
+4. **`_canonicalise` was silently resetting fields, and had been all along.** It
+   rebuilt the fit member-by-member and defaulted everything it did not list, so
+   **any fit whose classes happened to need swapping reported `backtracks = 0`
+   and `backtrack_exhausted = False` however badly it had struggled — the C3
+   labels were lying on roughly half of all runs, at random, for as long as that
+   function has existed.** Now `dataclasses.replace`: it copies by construction,
+   so the bug class is unreachable rather than fixed, and every field added since
+   (and hence) is carried automatically.
+
+#### Diagnostics, and why `separability` had to go
+
+`separability` is a function of the responsibilities ALONE, so it measures the
+posterior's confidence and nothing about whether it is right — **1.0000 at 0.53
+recovery**. It is retained as telemetry and labelled as such. The correctness
+diagnostic is now `separation_per_step` (nats/step between the best and
+second-best class), which is length-normalised.
+
+`separation_per_step` is **unbounded above, so a very large value means
+DEGENERACY, not confidence** — one fit reported 287,155 nats/step. The two are
+distinguished by a **floor detector, never by magnitude**: a continuous
+mechanism declares `min_scale`, which bounds its log-density at
+`−log(min_scale·√(2π))` per dimension (5.99 nats at the 1e-3 default). That
+ceiling is *derived* from the library's own parameter, so it introduces no
+constant — a magnitude cut-off on `separation_per_step` would have been an
+A2 constant wearing a diagnostic's clothes.
+
+#### Blocking consequence for L4 and L5
+
+Every bootstrap replicate is an EM fit. A saturated replicate's statistic is a
+draw from the **initialiser**, not from the sampling distribution, so a null
+built from them measures initialisation variance — while looking impeccable:
+narrow, smooth, and about the wrong thing. Since L4's compatible set and L5's
+thresholds are both read off these nulls, that would propagate into every
+calibrated number without ever presenting as an error. Saturated and
+stopped-while-tempered replicates are therefore **failed** replicates, in the
+same category as an exhausted backtrack budget, counted in `diagnostics()`.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.

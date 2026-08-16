@@ -37,6 +37,7 @@ Written against NBN v0.14.0 the library's own way, per ``docs/nbn_requirements``
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Sequence
 
@@ -55,6 +56,11 @@ __all__ = ["EpisodeData", "Estimate", "LatentClassFit", "LatentClassEstimator"]
 
 # Mechanisms whose weighted fit is exact. KDE is excluded deliberately (N3).
 _WEIGHTED_SAFE = (MDNMechanism, LinearGaussianMechanism, NeuralCategoricalMechanism)
+
+
+def stacked_rows(stacked: Dict[str, torch.Tensor]) -> int:
+    """Row count of a stacked M-step frame — K copies of every transition."""
+    return int(next(iter(stacked.values())).shape[0])
 
 
 def _posterior_mean(out) -> torch.Tensor:
@@ -168,9 +174,14 @@ class Estimate:
     initial_saturation: float = 0.0
     saturated_at_init: bool = False
     reached_tau_one: bool = True
+    degenerate_mechanism: bool = False
+    mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
 
     def label(self) -> str:
         bits = [f"sep/step={self.separation_per_step:.3f}"]
+        if self.degenerate_mechanism:
+            worst = max(self.mechanism_degeneracy.items(), key=lambda kv: kv[1])
+            bits.append(f"DEGENERATE-SCALE({worst[0]}:{worst[1]:.2f})")
         if not self.reached_tau_one:
             # Stopped while still tempered: the parameters maximise a smoothed
             # surrogate, not the likelihood. Louder than NOT-CONVERGED, because
@@ -218,6 +229,7 @@ class LatentClassFit:
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
+    mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
 
     def estimate(self, value: torch.Tensor) -> "Estimate":
         """Wrap a value with this fit's conditions — the ONLY way estimates are
@@ -233,7 +245,20 @@ class LatentClassFit:
             initial_saturation=self.initial_saturation,
             saturated_at_init=self.saturated_at_init,
             reached_tau_one=self.reached_tau_one,
+            degenerate_mechanism=self.degenerate_mechanism,
+            mechanism_degeneracy=dict(self.mechanism_degeneracy),
         )
+
+    @property
+    def degenerate_mechanism(self) -> bool:
+        """Has any channel's fitted scale collapsed onto its declared floor?
+
+        Detected against the mechanism's own ``min_scale``, not against a
+        magnitude of ``separation_per_step`` — which is unbounded above, so a
+        huge value there means degeneracy rather than confidence and cannot
+        itself be the test.
+        """
+        return any(v > 0.0 for v in self.mechanism_degeneracy.values())
 
     @property
     def reached_tau_one(self) -> bool:
@@ -498,6 +523,56 @@ class LatentClassEstimator:
         obj = float(temperature) * float(torch.logsumexp(tempered, dim=1).sum())
         return resp, float(marginal.sum()), obj, sat
 
+    def _density_ceiling(self, name: str) -> float:
+        """The largest per-row log-density this mechanism can legally produce.
+
+        A continuous mechanism declares a ``min_scale`` floor, so its density is
+        bounded above by the value a Gaussian of exactly that scale attains at
+        its mode: ``-log(min_scale * sqrt(2*pi))`` per dimension. For a mixture
+        the bound still holds, since the component weights sum to one.
+
+        **This introduces no constant.** The ceiling is DERIVED from the
+        library's own declared parameter, which is what makes it an admissible
+        detector under A2 — a magnitude cut-off on ``separation_per_step`` would
+        have been a tuned threshold wearing a diagnostic's clothes.
+        """
+        mech = dict(getattr(self.model, "mechanisms", {}) or {}).get(name)
+        ms = float(getattr(mech, "min_scale", 0.0) or 0.0)
+        if ms <= 0.0:
+            return float("inf")  # no declared floor: nothing to detect against
+        var = getattr(self.model, "variables", {}).get(name)
+        dim = int(getattr(var, "dim", 1) or 1)
+        return -math.log(ms * math.sqrt(2.0 * math.pi)) * dim
+
+    def _mechanism_degeneracy(self, data: EpisodeData) -> Dict[str, float]:
+        """Fraction of rows whose fitted density has hit the ``min_scale`` FLOOR.
+
+        A class whose scale collapses onto the floor is a spike, not a fit: it
+        scores its own support astronomically and everything else catastrophically.
+        Observed on D-D Acrobot at T = 500, where one fit reported
+        ``separation_per_step = 287,155`` nats/step alongside
+        ``separability = 1.0000`` and recovery 0.55 — perfect on the old
+        diagnostic, visibly broken on the new one, and neither of them said WHY.
+
+        **``separation_per_step`` is unbounded above, so a very large value means
+        DEGENERACY rather than confidence.** The two are told apart by this
+        detector — the floor — and never by the magnitude.
+        """
+        channels = ["R"] + list(self.proxy_names)
+        out: Dict[str, float] = {}
+        for k in range(self.u_card):
+            u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
+            with torch.no_grad():
+                per_node = self.model.log_prob(self._frame(data, u_k), per_node=True)
+            for c in channels:
+                ceiling = self._density_ceiling(c)
+                if not math.isfinite(ceiling):
+                    continue
+                lp = per_node[c].reshape(-1)
+                frac = float((lp >= ceiling - 1e-6).float().mean())
+                out[c] = max(out.get(c, 0.0), frac)
+        return out
+
     def _separation_per_step(self, data: EpisodeData) -> float:
         """Class separation in NATS PER STEP — the length-normalised replacement
         for ``separability`` as the correctness diagnostic.
@@ -570,6 +645,18 @@ class LatentClassEstimator:
             weights.append(weights_per_row[:, k])
         stacked = {key: torch.cat([f[key] for f in frames], dim=0) for key in frames[0]}
         w = torch.cat(weights, dim=0)
+        # FIXED STEP BUDGET. ``epochs`` makes the M-step cost O(n * epochs), so a
+        # production-scale dataset pays proportionally more per EM iteration for
+        # no extra guarantee -- GEM asks only that the M-step INCREASE the
+        # objective, not that it maximise it, so a fixed number of gradient steps
+        # is admissible and makes the M-step O(steps) instead. ``epochs`` is
+        # derived from it here rather than passed, so the two cannot disagree.
+        budget = fit_kwargs.pop("m_step_budget", None)
+        if budget is not None:
+            bs = int(fit_kwargs.get("batch_size") or 1024)
+            fit_kwargs["batch_size"] = bs
+            steps_per_epoch = max(1, math.ceil(stacked_rows(stacked) / bs))
+            fit_kwargs["epochs"] = max(1, round(int(budget) / steps_per_epoch))
         self.model.fit(stacked, weights=w, **fit_kwargs)
         # Prior from the EPISODE responsibilities, never the row ones.
         return resp.mean(dim=0)
@@ -762,6 +849,7 @@ class LatentClassEstimator:
             initial_saturation=sat0,
             final_saturation=sat,
             separation_per_step=self._separation_per_step(data),
+            mechanism_degeneracy=self._mechanism_degeneracy(data),
         )
         return self._canonicalise(fit, data)
 
