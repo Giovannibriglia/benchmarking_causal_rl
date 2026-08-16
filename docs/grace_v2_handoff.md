@@ -383,6 +383,30 @@ calibrated number without ever presenting as an error. Saturated and
 stopped-while-tempered replicates are therefore **failed** replicates, in the
 same category as an exhausted backtrack budget, counted in `diagnostics()`.
 
+### ⚠ SINGLE-SEED RESULTS AT SHORT T ARE NOT TRUSTWORTHY
+
+The T = 16 anneal question was settled by 10 paired seeds: mean paired difference
+**−0.042 at 0.85 SE**, medians 0.995 vs 0.993, **5 of 10 seeds bit-identical**,
+and the non-zero differences going both ways (−0.457, −0.100, +0.030, +0.113).
+Annealing is a wash at short T and the uniform anneal stands.
+
+**The finding underneath is the more useful one.** Both arms fail on the same
+seeds at the same rate — 2/10 and 3/10 below 0.9, with seed 7 failing
+*identically* in both (0.517, ll = −8144). So this configuration has a
+**multi-modal likelihood at T = 16 regardless of temperature**: two to three
+seeds in ten land in a bad basin whatever you do.
+
+Consequences, both of which apply retroactively:
+
+* a **single-seed** result at short T carries a ~20–30% chance of being a
+  bad-basin draw, and several earlier readings in this project were single-seed;
+* an apparent effect of size ~0.1 between two arms at n = 3 is **within the
+  basin lottery** and means nothing. The n = 3 reading that started this
+  (0.917 → 0.847) was exactly that.
+
+Any L3 comparison from here reports **paired seeds and the median**, not a
+single fit and not a mean over three.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.

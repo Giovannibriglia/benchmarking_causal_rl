@@ -98,11 +98,27 @@ def test_episode_data_refuses_misaligned_arrays():
         )
 
 
-def _fitted(n_ep=200, T=10, seed=0):
+def _fitted(n_ep=200, T=10, seed=0, fit_seeds=(0, 1, 2)):
+    """Best-of-seeds BY LIKELIHOOD, because a single short-T fit is a lottery.
+
+    Measured on the real CartPole arm at T = 16 with 10 paired seeds: 2-3 in 10
+    land in a bad basin whatever the temperature, and the two arms fail on the
+    SAME seeds. A single-seed assertion at short T therefore has a ~20-30%
+    chance of testing the basin draw rather than the estimand -- and this test
+    was one, which is why it started failing when an unrelated change to the
+    anneal schedule perturbed the trajectory.
+
+    Selection is by LIKELIHOOD, never by the quantity under test: picking the
+    fit that gives the expected do-effect would make the assertion vacuous.
+    """
     u_ep, data = _fixture(n_ep=n_ep, T=T, seed=seed, proxy=False)
-    est = LatentClassEstimator(state_dim=2, n_actions=2, u_card=2, seed=seed)
-    fit = est.fit(data, max_iter=6, epochs=40)
-    return est, fit, data
+    best = None
+    for fs in fit_seeds:
+        est = LatentClassEstimator(state_dim=2, n_actions=2, u_card=2, seed=fs)
+        fit = est.fit(data, max_iter=6, epochs=40)
+        if best is None or fit.final_ll > best[1].final_ll:
+            best = (est, fit)
+    return best[0], best[1], data
 
 
 def test_interventional_reward_recovers_the_known_do_effect():
@@ -425,3 +441,83 @@ def test_the_monotone_guard_reads_the_objective_the_m_step_maximises():
     # design, so a legitimate anneal cannot be reported as non-monotone.
     assert isinstance(fit.monotone, bool)
     assert fit.n_anneal == sum(1 for t in fit.temperatures if t > 1.0)
+
+
+def test_the_reward_mechanism_type_is_resolved_from_the_data():
+    """R IS NOT CONTINUOUS ON THESE ARMS, and fitting an MDN to it is a
+    modelling error whose symptom is the ``min_scale`` floor.
+
+    Every arm in this benchmark has a reward that is deterministic given
+    ``(S, A, U)`` -- CartPole pays 1 (+ the gated bonus), Acrobot -1 (+ the
+    bonus) -- so R has finite support and no conditional noise. Measured on the
+    real CartPole D-D arm: support exactly ``{1.0, 2.0}``, 2 distinct values
+    over 5315 rows, and the MDN drove its scale onto the floor across every row.
+
+    That is not cosmetic. Both calibration layers are likelihood-based, so a
+    reward log-density pinned at an arbitrary floor puts ``min_scale`` inside
+    L4's compatible set and L5's likelihood ratios.
+
+    The type is DERIVED, not assumed: a finite-support variable's support does
+    not grow when you look at more of it. The test covers both directions,
+    because a rule that only ever answers one way is not a rule.
+    """
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 40, 10
+    ep = torch.arange(n_ep).repeat_interleave(T)
+    state = torch.randn(n_ep * T, 2, generator=g)
+    action = (torch.rand(n_ep * T, generator=g) < 0.5).long()
+
+    def make(reward):
+        return EpisodeData(state=state, action=action, reward=reward, episode_ids=ep)
+
+    # Finite support -> categorical.
+    discrete = make(1.0 + action.float())
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    est.fit(discrete, max_iter=1, epochs=3, init="random")
+    assert (
+        est.resolved_reward_mechanism == "categorical[2]"
+    ), est.resolved_reward_mechanism
+    assert est._reward_levels.tolist() == [1.0, 2.0]
+
+    # Genuinely continuous -> MDN, so the rule is not just "always discrete".
+    cont = make(1.0 + action.float() + 0.3 * torch.randn(n_ep * T, generator=g))
+    est2 = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    est2.fit(cont, max_iter=1, epochs=3, init="random")
+    assert est2.resolved_reward_mechanism == "mdn", est2.resolved_reward_mechanism
+
+    # And the resolved type rides on every number (C3): a likelihood read
+    # without knowing which mechanism produced it is not comparable to one read
+    # the other way.
+    out = est.fit(discrete, max_iter=1, epochs=3, init="random").estimate(
+        torch.tensor(0.0)
+    )
+    assert "R=categorical[2]" in out.label(), out.label()
+
+
+def test_a_discrete_reward_is_decoded_back_into_reward_units():
+    """The interventional paths must return E[R], not E[class index].
+
+    With a categorical R the model emits indices; averaging them and reporting
+    the result would be a plausible number in the wrong units. Ground truth on
+    this fixture is r = 10 + 10*a, so do(a=1) - do(a=0) = 10 -- a scale that no
+    index average could produce by accident.
+    """
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 60, 10
+    ep = torch.arange(n_ep).repeat_interleave(T)
+    action = (torch.rand(n_ep * T, generator=g) < 0.5).long()
+    data = EpisodeData(
+        state=torch.randn(n_ep * T, 2, generator=g),
+        action=action,
+        reward=10.0 + 10.0 * action.float(),
+        episode_ids=ep,
+    )
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    fit = est.fit(data, max_iter=3, epochs=20, init="random")
+    assert est.resolved_reward_mechanism == "categorical[2]"
+    v0 = float(est.interventional_sweep(torch.zeros(4, 2), [0] * 4, fit).value.mean())
+    v1 = float(est.interventional_sweep(torch.zeros(4, 2), [1] * 4, fit).value.mean())
+    # In reward units both sit in [10, 20]; as indices they would sit in [0, 1].
+    assert 9.0 < v0 < 21.0, v0
+    assert 9.0 < v1 < 21.0, v1
+    assert v1 > v0, (v0, v1)

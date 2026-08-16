@@ -63,19 +63,41 @@ def stacked_rows(stacked: Dict[str, torch.Tensor]) -> int:
     return int(next(iter(stacked.values())).shape[0])
 
 
-def _posterior_mean(out) -> torch.Tensor:
+def _posterior_mean(out, value_fn=None) -> torch.Tensor:
     """Collapse ``query_batch``'s return into a per-row posterior mean.
 
-    For a DISCRETE target it hands back ``[B, K]`` directly. For a CONTINUOUS
-    one — which ``R`` is — the engine returns the likelihood-weighting particle
+    For a DISCRETE target it hands back ``[B, K]`` — a posterior over CLASSES,
+    from which ``E[R] = sum_k p_k * level_k`` needs the level values. For a
+    CONTINUOUS one the engine returns the likelihood-weighting particle
     representation ``(weights [B, N], samples [B, N, D])`` instead, and the
     posterior mean is the weighted average over particles. Documented as
     returning a tensor, so the tuple is worth naming here rather than
     rediscovering at each call site.
     """
     if not isinstance(out, tuple):
-        return out.reshape(out.shape[0], -1).mean(dim=1)
+        probs = out.reshape(out.shape[0], -1)
+        if value_fn is None:
+            # A LATENT BUG UNTIL R BECAME DISCRETE. This branch used to average
+            # the [B, K] posterior, which is not an expectation of anything --
+            # for K = 2 it returns 0.5 for every row regardless of the
+            # distribution, and it did exactly that the first time a categorical
+            # R reached it. Averaging a probability vector is never the answer;
+            # without the level values there IS no answer, so say so.
+            raise ValueError(
+                "query_batch returned a [B, K] categorical posterior but no "
+                "value map was supplied; E[R] = sum_k p_k * level_k needs the "
+                "levels, and averaging the probabilities is meaningless"
+            )
+        levels = value_fn(torch.arange(probs.shape[1], device=probs.device)).reshape(
+            1, -1
+        )
+        return (probs * levels).sum(dim=1)
     w, samples = out
+    if value_fn is not None:
+        # Map particles into reward units BEFORE weighting. Averaging class
+        # indices and mapping afterwards would return the level at the mean
+        # index, which is a different (and meaningless) quantity.
+        samples = value_fn(samples).reshape(samples.shape[0], samples.shape[1], -1)
     # Log-weights (any negative entry) versus raw weights: normalise the right
     # way for each rather than assuming, since an unnormalised exp would silently
     # bias the mean toward whichever particles happen to dominate.
@@ -176,9 +198,16 @@ class Estimate:
     reached_tau_one: bool = True
     degenerate_mechanism: bool = False
     mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
+    reward_mechanism: str = ""
 
     def label(self) -> str:
-        bits = [f"sep/step={self.separation_per_step:.3f}"]
+        # The resolved R mechanism rides on every number: a likelihood read
+        # without knowing whether R was categorical or an MDN is not comparable
+        # to one read the other way.
+        bits = [
+            f"R={self.reward_mechanism or '?'}",
+            f"sep/step={self.separation_per_step:.3f}",
+        ]
         if self.degenerate_mechanism:
             worst = max(self.mechanism_degeneracy.items(), key=lambda kv: kv[1])
             bits.append(f"DEGENERATE-SCALE({worst[0]}:{worst[1]:.2f})")
@@ -230,6 +259,7 @@ class LatentClassFit:
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
     mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
+    reward_mechanism: str = ""
 
     def estimate(self, value: torch.Tensor) -> "Estimate":
         """Wrap a value with this fit's conditions — the ONLY way estimates are
@@ -247,6 +277,7 @@ class LatentClassFit:
             reached_tau_one=self.reached_tau_one,
             degenerate_mechanism=self.degenerate_mechanism,
             mechanism_degeneracy=dict(self.mechanism_degeneracy),
+            reward_mechanism=self.reward_mechanism,
         )
 
     @property
@@ -354,7 +385,7 @@ class LatentClassEstimator:
         u_card: int = 2,
         proxy_names: Sequence[str] = (),
         device: str = "cpu",
-        reward_mechanism: str = "mdn",
+        reward_mechanism: str = "auto",
         seed: int = 0,
     ) -> None:
         if u_card < 2:
@@ -366,11 +397,42 @@ class LatentClassEstimator:
         self.device = device
         self.seed = int(seed)
         self._reward_mechanism = reward_mechanism
+        # Resolved from the DATA at fit time when "auto"; None until then. The
+        # provisional build below lets callers inspect ``self.model`` before
+        # fitting, and ``fit`` rebuilds if the resolution disagrees.
+        self._reward_levels: torch.Tensor | None = None
+        self.resolved_reward_mechanism = (
+            None if reward_mechanism == "auto" else reward_mechanism
+        )
         self.model = self._build()
 
     # ---------------------------------------------------------------- build --
+    @property
+    def _reward_is_discrete(self) -> bool:
+        return self._reward_levels is not None
+
     def _reward_mech(self):
-        if self._reward_mechanism == "mdn":
+        """The mechanism for ``R`` and for the proxies.
+
+        **``R`` IS NOT CONTINUOUS ON THESE ARMS, and fitting an MDN to it is a
+        modelling error whose symptom is the ``min_scale`` floor.** Every arm in
+        this benchmark has a reward that is deterministic given ``(S, A, U)`` --
+        CartPole pays 1 (+ the gated bonus), Acrobot pays -1 (+ the bonus) -- so
+        ``R`` has finite support and zero conditional noise. An MDN fitted to it
+        correctly drives its scale onto the floor, which pins the reward
+        log-density at an arbitrary constant.
+
+        That is not a cosmetic problem. **Both calibration layers are
+        likelihood-based**: L4's compatible set and L5's likelihood-ratio
+        statistics would each be partly measuring ``min_scale`` rather than the
+        data. A categorical mechanism gives proper probabilities over the
+        observed support, no floor, and meaningful likelihood magnitudes.
+        """
+        if self._reward_is_discrete:
+            return NeuralCategoricalMechanism(
+                n_classes=int(self._reward_levels.numel())
+            )
+        if self._reward_mechanism in ("mdn", "auto"):
             return MDNMechanism(num_components=3, hidden=(64, 64))
         if self._reward_mechanism == "linear_gaussian":
             return LinearGaussianMechanism()
@@ -380,6 +442,46 @@ class LatentClassEstimator:
             "bandwidth rule is unweighted and would bias strata toward each "
             "other, costing L5 detection power in the quiet direction"
         )
+
+    def _proxy_mech(self):
+        """Proxies stay continuous: they are Gaussian noise around ``U`` by
+        construction, so the finite-support argument above does not apply."""
+        if self._reward_mechanism == "linear_gaussian":
+            return LinearGaussianMechanism()
+        return MDNMechanism(num_components=3, hidden=(64, 64))
+
+    def _resolve_reward_type(self, data: EpisodeData) -> None:
+        """Decide continuous-vs-discrete for ``R`` FROM THE DATA, and record it.
+
+        The criterion is derived, not a magnitude threshold on the number of
+        distinct values (which would be an A2 constant): **a finite-support
+        variable's support does not grow when you look at more of it.** Compare
+        the distinct values in a half sample against the full sample -- equal
+        means finite support, while a continuous variable roughly doubles.
+
+        Errs toward CONTINUOUS: a discrete variable whose rarest level happens
+        to fall only in the second half is misread as continuous, which merely
+        restores the previous behaviour. The reverse error would be the damaging
+        one.
+        """
+        if self._reward_mechanism != "auto":
+            return
+        r = data.reward.reshape(-1)
+        n = int(r.numel())
+        half = int(torch.unique(r[: max(n // 2, 1)]).numel())
+        levels = torch.unique(r)
+        full = int(levels.numel())
+        discrete = full == half and 1 < full < n
+        new_levels = levels.sort().values if discrete else None
+        changed = (new_levels is None) != (self._reward_levels is None) or (
+            new_levels is not None
+            and self._reward_levels is not None
+            and not torch.equal(new_levels, self._reward_levels)
+        )
+        self._reward_levels = new_levels
+        self.resolved_reward_mechanism = f"categorical[{full}]" if discrete else "mdn"
+        if changed:
+            self.model = self._build()
 
     def _build(self) -> NeuralBayesianNetwork:
         """The two channels, plus any declared covariate-free proxies.
@@ -399,7 +501,11 @@ class LatentClassEstimator:
         variables: Dict[str, object] = {
             "S": ContinuousVariable("S", dim=self.state_dim),
             "A": DiscreteVariable("A", cardinality=self.n_actions),
-            "R": ContinuousVariable("R", dim=1),
+            "R": (
+                DiscreteVariable("R", cardinality=int(self._reward_levels.numel()))
+                if self._reward_is_discrete
+                else ContinuousVariable("R", dim=1)
+            ),
             "U": DiscreteVariable("U", cardinality=self.u_card),
         }
         for p in self.proxy_names:
@@ -421,7 +527,7 @@ class LatentClassEstimator:
         model.set_mechanism("A", NeuralCategoricalMechanism(n_classes=self.n_actions))
         model.set_mechanism("R", self._reward_mech())
         for p in self.proxy_names:
-            model.set_mechanism(p, self._reward_mech())
+            model.set_mechanism(p, self._proxy_mech())
         self._assert_weighted_safe(model)
         return model
 
@@ -447,12 +553,49 @@ class LatentClassEstimator:
         frame = {
             "S": data.state,
             "A": data.action.reshape(-1),
-            "R": data.reward.reshape(-1, 1),
+            "R": self._encode_reward(data.reward),
             "U": u.reshape(-1),
         }
         for name, val in data.proxy.items():
             frame[name] = val.reshape(-1, 1)
         return frame
+
+    def _encode_reward(self, r: torch.Tensor) -> torch.Tensor:
+        """Reward in the units the R node expects: a class INDEX when discrete.
+
+        Exact matching, not bucketing: the levels are the observed values, so a
+        reward that fails to match one is a data/levels mismatch and must raise
+        rather than be snapped to a neighbour.
+        """
+        r = r.reshape(-1)
+        if not self._reward_is_discrete:
+            return r.reshape(-1, 1)
+        levels = self._reward_levels.to(r.device)
+        idx = torch.bucketize(r, levels)
+        idx = idx.clamp(0, levels.numel() - 1)
+        # bucketize returns the insertion point; snap to the nearer neighbour.
+        lo = (idx - 1).clamp_min(0)
+        pick = torch.where((r - levels[lo]).abs() <= (levels[idx] - r).abs(), lo, idx)
+        if not torch.allclose(levels[pick], r, atol=1e-6):
+            raise ValueError(
+                "a reward value does not match any resolved level; the discrete "
+                "R mechanism was resolved on different data than it is being "
+                "scored on"
+            )
+        return pick.long()
+
+    def _decode_reward(self, x: torch.Tensor) -> torch.Tensor:
+        """Model output back into REWARD UNITS.
+
+        Without this the interventional paths would average class INDICES and
+        return a plausible number in the wrong units -- E[index] rather than
+        E[R] -- which is precisely the kind of silently-wrong value the C3
+        discipline exists to keep out.
+        """
+        if not self._reward_is_discrete:
+            return x
+        levels = self._reward_levels.to(x.device)
+        return levels[x.reshape(-1).long().clamp(0, levels.numel() - 1)]
 
     # ---------------------------------------------------------------- E-step --
     def _episode_log_liks(self, data: EpisodeData) -> torch.Tensor:
@@ -663,7 +806,16 @@ class LatentClassEstimator:
         if tau0 <= 1.0:
             return [1.0] * (max_iter + 1)
         if n_anneal is None:
-            n_anneal = max(1, max_iter // 2)
+            # RUNGS ARE DERIVED FROM tau0, NOT FROM THE ITERATION BUDGET. Tying
+            # them to ``max_iter`` was a real bug and the cost run found it: at
+            # ``max_iter = 60`` the anneal claimed 30 rungs, consumed the ENTIRE
+            # 65-minute CartPole fit, and the run died on its first tau = 1
+            # iteration having spent everything getting there. The number of
+            # rungs is a property of how far the temperature has to travel, so
+            # halve it each rung -- ``ceil(log2(tau0))`` reaches 1 by
+            # construction and introduces no free parameter (5 rungs at
+            # tau0 = 18, 9 at tau0 = 500).
+            n_anneal = max(1, math.ceil(math.log2(tau0)))
         n_anneal = max(0, int(n_anneal))
         if n_anneal == 0:
             return [1.0] * (max_iter + 1)
@@ -774,6 +926,10 @@ class LatentClassEstimator:
         ``temperature=1.0`` to force annealing off.
         """
         torch.manual_seed(self.seed)
+        # Resolve R's TYPE from the data before anything is fitted, and rebuild
+        # if it disagrees with the provisional model. Recorded on the fit, so no
+        # likelihood is ever read without knowing which mechanism produced it.
+        self._resolve_reward_type(data)
         resp = self._init_responsibilities(data, init)
         prior = self.m_step(data, resp, **fit_kwargs)
         # The untempered first E-step measures the pathology. It is a PURE
@@ -895,6 +1051,7 @@ class LatentClassEstimator:
             final_saturation=sat,
             separation_per_step=self._separation_per_step(data),
             mechanism_degeneracy=self._mechanism_degeneracy(data),
+            reward_mechanism=str(self.resolved_reward_mechanism),
         )
         return self._canonicalise(fit, data)
 
@@ -1045,7 +1202,7 @@ class LatentClassEstimator:
                     "U": torch.tensor([[k]], device=state.device),
                 },
             )
-            total = total + prior[k] * out["R"].reshape(-1).mean()
+            total = total + prior[k] * self._decode_reward(out["R"]).reshape(-1).mean()
         # C3: the number leaves carrying the conditions it was produced under.
         return fit.estimate(total)
 
@@ -1084,5 +1241,7 @@ class LatentClassEstimator:
             out = self.model.query_batch(
                 ["R"], evidence={"S": states}, do={"A": a.reshape(-1), "U": u_col}
             )
-            total = total + prior[k].item() * _posterior_mean(out)
+            total = total + prior[k].item() * _posterior_mean(
+                out, value_fn=self._decode_reward if self._reward_is_discrete else None
+            )
         return fit.estimate(total)
