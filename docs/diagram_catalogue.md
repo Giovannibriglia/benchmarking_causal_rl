@@ -223,19 +223,58 @@ reward channel is action-gated, so a logged policy that rarely takes `a_bad`
 starves the third view. Since Kruskal is exactly tight at |U| = 2, losing `R` to
 k-rank 1 drops the sum to 5 < 6 and D-D is not identified.
 
-**Measured, and not currently binding.** At σ = 0, P(a = a_bad) is 0.389 on
-Acrobot (3 actions) against 0.485 on CartPole (2 actions) — lower, as the
-3-action space predicts, but nowhere near binding. All three views reach k-rank
-2, and `R` is in fact the **strongest** view:
+**RE-MEASURED at episode granularity (S1b), 40 datasets, 2026-08-16.** The
+earlier numbers in this block were computed at transition level and are
+withdrawn — every quantity in them was length-weighted. The re-measurement
+reverses the reasoning while preserving the conclusion, so both are recorded.
 
-| view | Acrobot margin | CartPole margin |
-|---|---|---|
-| Z | 12.50 | 11.05 |
-| W | 9.81 | 9.07 |
-| **R** | **21.82** | **15.96** |
+*The measure itself had to be replaced first.* The old table ranked views by the
+singular-value ratio `s2/s1` of the binned matrix `P(view | U)`. That statistic
+is **not a valid informativeness scale across views of different shape**, and it
+is not binning-free: on one Acrobot seed `R`'s ratio runs 0.98 → 0.98 → 0.88 →
+0.74 as the grid goes 4 → 8 → 16 → 32 bins, while `Z`'s barely moves. The reason
+is structural — for two conditional distributions with disjoint support the rows
+are orthogonal, so `s2/s1 = ‖p₁‖₂ / ‖p₀‖₂`, which measures their **relative
+concentration**, not their separation. A view that separates the classes
+*perfectly* but diffusely scores **low**. `s2/s1` remains correct for its actual
+job, the rank verdict, and must not be read as informativeness again.
 
-(margin = observed singular-value ratio over the largest of 200 episode-level
-permutation nulls; 9.81 for `R` at the 600-episode certification cap.)
+The binning-free replacement is the **AUC of the view as a classifier of `U`** —
+rank-based, scale-free, invariant to any monotone reparametrisation:
+
+| view | Acrobot AUC | CartPole AUC | (old, withdrawn) Acrobot / CartPole margin |
+|---|---|---|---|
+| Z | 0.9819 | 0.9835 | 12.50 / 11.05 |
+| W | 0.9840 | 0.9838 | 9.81 / 9.07 |
+| **R** (episode mean) | **1.0000** | **0.9999** | 21.82 / 15.96 |
+| R (transition, the old view) | 0.6779 | 0.7448 | — |
+
+**`R` is the STRONGEST view, in 40 of 40 datasets** — the old conclusion, but
+the old evidence was invalid and the correct evidence is far stronger. The least
+separating view is `Z` or `W`, split roughly evenly. All three reach k-rank 2
+with margins ≈ 5× their own nulls, and `R` is the minimum-margin view in only
+13/40, so **`R` is not the binding constraint on the Kruskal triple.**
+
+**The coupling to `P(a_bad)` is an artefact of the per-step view and effectively
+vanishes at episode granularity.** Per step, the reward carries information only
+on gated steps, so its informativeness is mechanically proportional to
+`P(a_bad)` — measured `corr = +0.876`. Averaged over an episode it is not: `R`'s
+AUC is **exactly 1.0000 on all 20 Acrobot datasets** across `P(a_bad)` ranging
+0.19 → 0.48, so the correlation is undefined for want of variation.
+
+**The governing quantity is gated steps per episode, `P(a_bad) × E[T]`, not
+`P(a_bad)`** — averaging is what recovers `U`, so what matters is how many
+informative steps an episode contains. Measured range: **5.5 → 58 on CartPole,
+33 → 239 on Acrobot**, with AUC ≥ 0.9974 throughout. Degradation requires that
+product to approach ~1, and the V-B grid never comes near it. Note the two envs
+push it in opposite directions as the policy improves — CartPole survives longer
+(`E[T]` ↑) while Acrobot terminates sooner (`E[T]` ↓) — so the severity question
+is genuinely env-dependent and cannot be settled by either alone.
+
+**Direction of the earlier worry, corrected.** The concern on record was that
+length-weighting had *inflated* `R`'s apparent informativeness. It **deflated**
+it: transition-level AUC 0.68–0.74 against 1.0000 per episode. The error ran in
+the safe direction.
 
 **Why this is left in place.** The dependence on `P(a_bad)` is a *measurable
 coupling*, and R4 sweeps exactly the quantity it depends on. If D-D's
