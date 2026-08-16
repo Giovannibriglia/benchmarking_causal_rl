@@ -19,7 +19,7 @@ these, not rediscover them.**
 | **A1** | The declared **diagram is the only assumption**. Everything else is derived from it, learned, or named in the catalogue. | If a config can independently switch a channel on, the diagram stops being the assumption surface. `diagram_arms.py` derives *which* channels exist from the catalogue entry; YAML supplies only strengths, and a mismatch either way is refused. |
 | **A2** | **No calibration constants.** No `k`, no `noise_ref`, no tuned tolerance, no discretisation in the estimator. | v1 died of them. Where a threshold seems needed, build a null from the data instead (see S1). |
 | **S1** | **Nulls at EPISODE granularity**, never transition. | `U`, the proxies and the instrument are all episode-constant, so effective *n* is the episode count. Step-level resampling shatters the blocks and gives a null far too tight. Five instances: C1's splitter, L5's bootstrap, the k-rank permutation, and two preflight checks. |
-| **S1b** | **Match the statistic's unit of observation to the unit at which the tested quantity varies.** A quantity constant within an episode (`U`, `Z`, `W`, `I`) enters statistics as **one row per episode**. Quantities that genuinely vary within an episode stay at transition level, with the null still clustered by episode. | **In RL, episode length is an OUTCOME.** Pooling an episode-constant quantity at transition level weights each episode by its length, so the weighting correlates with anything influencing behaviour and manufactures dependence. Measured: `corr(I,U)` = **−0.590** at transition level against **−0.034** at episode level, on an instrument drawn from its own Bernoulli that never reads `U`. The permutation null does not rescue it — permuting whole episodes destroys the length-weighting in the null while the observed statistic keeps it, so it surfaces as a huge z rather than as noise. |
+| **S1b** | **RULE (operational, deliberately broad): match the statistic's unit of observation to the unit at which the tested quantity varies.** A quantity constant within an episode (`U`, `Z`, `W`, `I`) enters statistics as **one row per episode**; a per-step companion is reduced to an episode statistic (the **mean**, never the sum — a sum is proportional to length by construction). Quantities that genuinely vary within an episode stay at transition level, with the null still clustered by episode. | **In RL, episode length is an OUTCOME.** Pooling an episode-constant quantity at transition level weights each episode by its own length. **MECHANISM (see below) — the rule is broader than the mechanism, on purpose.** Measured: `corr(I,U)` = **−0.590** at transition level against **−0.034** at episode level, on an instrument drawn from its own Bernoulli that never reads `U`. The permutation null does not rescue it — permuting whole episodes destroys the length-weighting in the null while the observed statistic keeps it, so it surfaces as a huge z rather than as noise. |
 | **S2** | Test the **conditional** claim, never its marginal shadow. | Marginals are nonzero *by design*: proxy⟂A reads +0.50 marginally vs +0.003 given `U`; proxy⟂S reads 0.226 marginally because `U→A→S`. And conditioning on *more* can be wrong — `A` is a **collider** on `I→A←U`, so conditioning on it alone opens `I→U→R`. |
 | **S3** | A statistic must be compared against **a null that describes the statistic actually computed**. | A *maximum* over 8 tests judged by a per-test 3-SD cutoff runs ~8× the intended false-alarm rate — it fired on provably covariate-free proxies. Build the null of the max. Likewise a *binning failure* (Acrobot's reward is −1 almost everywhere) is not an uninformative view. |
 | **S4** | Validate the **generator against ground truth**, and the estimator against the generator. Never mutually. | If each validated the other, a shared misconception passes in silence. Preflight reads logged `U` and declared parameters only — never L5, never the estimator. |
@@ -53,12 +53,60 @@ these, not rediscover them.**
 | **L4** uncertainty | **Design decided, not implemented** — see `grace_v2_l4_design.md`. Compatible set = LR confidence region with the threshold **bootstrap-calibrated** (shared mechanism with L5, since chi-2 asymptotics fail on the mixture boundary); validation is q1 against Balke-Pearl for exactness and q2 against MC ground truth for **coverage plus width**. `interventional_sweep` is the evaluation seam; the optimiser must use `sample(do=)`. |
 | **L5** falsification | **Not started.** The headline capability. |
 
-### ⚠ S1b — the rule, and what it invalidates
+### ⚠ S1b — the rule, the mechanism, and what it invalidates
 
 S1 (episode-level *nulls*) was necessary and not sufficient. An episode-level
 null over a length-weighted *statistic* is still wrong, and that is what broke
 the D-E arm: mean episode length by `(U, I)` cell was 19.5 / 59.0 / 67.4 / 15.4,
 so the long "disagreeing" episodes dominated the pooled correlation.
+
+#### The mechanism: episode length is a COLLIDER
+
+The earlier statement of this — "length correlates with anything influencing
+behaviour, so it manufactures dependence" — is too loose, and the looseness is
+detectable: a regression fixture built to that description **passed the buggy
+code**. If a quantity is independent of length, length-weighting is unbiased in
+expectation, and no amount of length variation changes that.
+
+What the bias actually requires is that length be a **common descendant** of
+both quantities under test:
+
+> `I → A → L ← A ← U`. Everything that drives the action drives survival, so
+> `L` is a collider. Weighting transitions by `L` is a form of **conditioning on
+> that collider**, and conditioning on a collider manufactures dependence
+> between its causes.
+
+This is the version with predictive content — it says *which* checks are hit and
+*how hard*:
+
+* a **passive** quantity that drives nothing (the D-D proxies: `parents(Z) =
+  {U}`, and `Z` enters no policy) is **barely touched**;
+* an **instrument**, whose entire purpose is to move the action, is hit
+  **hardest**;
+* the bias **peaks when the two interact in the action law**, because then the
+  surviving episodes are systematically the ones where they disagree — which is
+  precisely the 19.5 / 59.0 / 67.4 / 15.4 pattern above.
+
+Reproduced in `tests/test_arm_preflight.py::_length_coupled_arm`, whose per-step
+hazard is a function of the realised action mix: pooled `corr(I,U) = −0.53`
+against `−0.003` per episode, on an instrument drawn from its own Bernoulli. The
+pre-fix module rejects that instrument at **z = 9.01**.
+
+#### ⚠ THE CAVEAT — do not use the mechanism to narrow the rule
+
+The collider condition governs **dependence** tests, and only those. For a
+**marginal** quantity — a proportion, or the mean of an episode-constant
+variable — length-weighting biases the estimate whenever `L` depends on **that
+one variable alone**. No collider, no second variable, no interaction required:
+`E_w[U] = E[L·U]/E[L] ≠ E[U]` the moment `L` and `U` are related at all.
+
+So the operational rule stays **broad**. It is cheap, it is always safe, and it
+needs no case analysis at the point of use. The mechanism explains and predicts;
+it does not license an exemption. A future reader reaching for "the collider
+condition doesn't hold here, so I can pool over transitions" is making the
+marginal mistake, and `P(a = a_bad)` — a proportion of an episode-constant-`U`
+stratum, and the headline number in the D-D coupling note — is exactly the
+quantity it would be made on.
 
 **Do not apply this as a blanket rule.** D-B's lagged-proxy construction is
 *genuinely* per-step — repeated within-episode measurement is the whole
@@ -100,6 +148,50 @@ weighted by a variable that policy quality controls — coupling statistics to
 behaviour-policy quality through an undeclared channel. A close cousin of the R4
 finding, and a trap specific to sequential settings that the proximal literature
 never has to confront.
+
+### PREDICTIONS, recorded before the measurement that resolves them
+
+Written down *before* step 3 was run, so the re-measurement is a **test** of the
+mechanism rather than a confirmation of it. Resolve each explicitly; a miss is
+the more interesting outcome, because it means the mechanism above is
+incomplete.
+
+| # | prediction | why | resolution |
+|---|---|---|---|
+| **P1** | **D-D's k-rank and informativeness numbers largely SURVIVE** the move to episode granularity. | The proxies are passive — `parents(Z) = parents(W) = {U}` and neither enters the policy — so by the collider mechanism they are barely touched. The reward view is the one that could move, since `R` is per-step and genuinely downstream of the action. | *pending step 3/4* |
+| **P1′** | If P1 holds, **the third proxy stays retired** on sound evidence rather than on evidence that merely happened not to be re-measured. If the numbers move materially, **the mechanism is incomplete** and that finding outranks the catalogue question. | — | *pending* |
+| **P2** | **The three Acrobot Kruskal sum-5 cases reclassify as a FAILED MEASUREMENT** (collapsed quantile grid), not an uninformative view. | Acrobot's reward takes two values (−1, and −1 + c_r under the gate); with 8 quantile bins the grid collapses unless >12.5% of steps are gated, which is exactly the seed/σ-dependent boundary those three sit on. At episode granularity the mean reward is continuous, so the grid should not collapse at all. | *pending step 3* |
+| **P2′** | If they instead survive as genuine k-rank-1 views, that is a **real result about Acrobot and D-D**, not a check artifact, and must be treated as one. | — | *pending* |
+
+### A RULE RECORDED IS NOT A RULE APPLIED
+
+S3 was written down, justified, and applied to the *action* family — and never
+reached the *covariate-free* family sitting six lines above it in the same
+function, a max over `dims × proxies = 8` statistics read against a per-test
+cutoff. That is almost certainly the source of the 3.1–3.7 SD cluster in V-B's
+D-D failures.
+
+**Standing task, not a reaction to the next failure:** whenever the statistics
+layer is touched, sweep it for **maxima or minima over families still read
+against per-test cutoffs**. The tell is a `max(...)` or `min(...)` over a list of
+independently-computed test statistics.
+
+**Design constraint on L5 (the headline capability, not yet started).** L5's
+conditional-independence tests will face **both** defects — episode granularity
+*and* family-wise multiplicity — and it is far cheaper to build them right than
+to debug them out of certification failures later. Concretely, L5 must:
+
+1. compute every statistic at the granularity of the quantity tested (S1b),
+   reusing `arm_preflight`'s `_episode_constant` / `_episode_mean` rather than
+   re-deriving them;
+2. judge any family of tests against **the null of the family statistic**
+   (S3) — L5 tests many independences at once, so this is its default case, not
+   an edge case;
+3. read tails as **quantiles of the permutation draws**, never as z-scores, since
+   family maxima are right-skewed.
+
+L5 is where a false-alarm rate becomes a headline number, so a multiplicity bug
+there is not a nuisance — it is the result.
 
 ### NEXT SESSION — start here, in this order
 
