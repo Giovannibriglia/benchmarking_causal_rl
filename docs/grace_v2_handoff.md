@@ -81,8 +81,18 @@ episode-constant quantity — all must be recomputed before they stand:**
 3. **The proxy-strength sweep** (margins 1.59 / 2.74 / 4.12 / 3.99 / 3.97) that
    pinned D-D's production strength at 1.5 — same defect, so the pin is
    provisional.
-4. **The D-B′ drift autocorrelations** are safe: `U` is per-step there by
-   construction, and the statistic is a within-episode lag-1 correlation.
+4. **The D-B′ drift autocorrelations** are safe — but understand the exemption
+   rather than inheriting it, because the reason is narrower than it looks.
+   *Not* simply "`U` is per-step there". Pooling within-episode lag-1 pairs
+   across episodes **does** weight longer episodes more. What makes it sound is
+   that the autocorrelation is **homogeneous across episodes by construction**
+   (a single declared flip probability ρ, identical in every episode), so
+   length-weighting merely reweights an already-unbiased quantity.
+   **This safety would evaporate silently** if a future variant made the drift
+   rate depend on state or policy — ρ would then vary across episodes, longer
+   episodes would carry more weight, and the pooled autocorrelation would drift
+   toward whatever ρ prevails in long episodes with nothing raising an error.
+   Any state- or policy-dependent drift variant must revisit this.
 
 **Worth a line in the paper.** In RL, episode length is an outcome, so any
 transition-level statistic over an episode-constant quantity is implicitly
