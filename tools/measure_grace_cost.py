@@ -38,6 +38,14 @@ def main() -> int:
     ap.add_argument("--m-step-budget", type=int, default=400)
     ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--tol", type=float, default=1e-4)
+    ap.add_argument(
+        "--epochs-baseline",
+        type=int,
+        default=30,
+        help="epoch-based M-step to time against, at the SAME data scale, so "
+        "the fixed-step lever has a MEASURED factor rather than an argued one",
+    )
+    ap.add_argument("--baseline-iters", type=int, default=3)
     ap.add_argument("--envs", nargs="+", default=["CartPole-v1", "Acrobot-v1"])
     ap.add_argument("--out", default="results/cost/grace_fit_cost.json")
     args = ap.parse_args()
@@ -97,6 +105,45 @@ def main() -> int:
             torch.cuda.synchronize()
         wall = time.time() - t0
         hard = fit.hard_assignment().cpu().numpy()
+
+        # THE LEVER, MEASURED. The fixed-step budget has been argued to decouple
+        # per-iteration cost from dataset size; the V-D projection rests on it,
+        # so it gets a measured factor. Timed over a few iterations of the
+        # epoch-based M-step at the SAME scale and scaled to a per-iteration
+        # figure -- running it to convergence would cost exactly what the lever
+        # exists to avoid.
+        est_b = LatentClassEstimator(
+            state_dim=state.shape[1],
+            n_actions=int(s["a"].max()) + 1,
+            proxy_names=("Z", "W"),
+            device=device,
+            seed=0,
+        )
+        if device == "cuda":
+            torch.cuda.synchronize()
+        tb = time.time()
+        fit_b = est_b.fit(
+            data,
+            max_iter=args.baseline_iters,
+            tol=0.0,  # no early stop: we are timing iterations, not converging
+            init="proxy",
+            epochs=args.epochs_baseline,
+        )
+        if device == "cuda":
+            torch.cuda.synchronize()
+        wall_b = time.time() - tb
+        per_iter_b = wall_b / max(fit_b.n_iter, 1)
+        per_iter_f = wall / max(fit.n_iter, 1)
+
+        # THE TRAJECTORY TAIL. "converged: False" at the cap is ambiguous in a
+        # way that matters here: still improving steadily means convergence is
+        # reachable and expensive, while plateaued just above tolerance means
+        # the tolerance or the optimiser needs attention before any cost number
+        # means anything.
+        hist = list(fit.log_likelihood)
+        tail = hist[-6:]
+        deltas = [round(b - a, 4) for a, b in zip(tail, tail[1:])]
+        rel = [round((b - a) / max(abs(b), 1e-12), 8) for a, b in zip(tail, tail[1:])]
         rec = {
             "env": env,
             "device": device,
@@ -121,6 +168,14 @@ def main() -> int:
             "recovery": float(max((hard == u_ep).mean(), (hard != u_ep).mean())),
             "m_step_budget": args.m_step_budget,
             "batch_size": args.batch_size,
+            "seconds_per_iter_fixed_step": round(per_iter_f, 2),
+            "seconds_per_iter_epoch_based": round(per_iter_b, 2),
+            "fixed_step_speedup": round(per_iter_b / max(per_iter_f, 1e-9), 2),
+            "epochs_baseline": args.epochs_baseline,
+            "ll_tail": [round(x, 3) for x in tail],
+            "ll_tail_deltas": deltas,
+            "ll_tail_rel_deltas": rel,
+            "tol": args.tol,
         }
         out.append(rec)
         print(json.dumps(rec, indent=1), flush=True)

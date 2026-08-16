@@ -398,6 +398,7 @@ same category as an exhausted backtrack budget, counted in `diagnostics()`.
 ### Gotchas that cost real time
 
 * **pre-commit reformats and aborts the commit.** Always `git log` after committing; re-`git add -A` and re-commit.
-* **One agent per worktree.** Kill by **PID**, never a bare pattern (`pkill -f regime_sweep` matches `test_regime_sweep.py`).
+* **One agent per worktree.** Kill by **PID**, never a bare pattern (`pkill -f regime_sweep` matches `test_regime_sweep.py`). Note also that `pgrep -f <own pattern>` **matches its own shell**, so "still running" can be entirely self-reference — check `ps -eo args | grep -v grep` before concluding a job survived a kill.
+* **`cd X && ... &` BACKGROUNDS THE `cd` TOO — a silent write into a sibling checkout.** The `&` applies to the whole `&&` chain, so any *following* line in the same tool call runs in the ORIGINAL cwd. A heredoc written that way landed a script in the frozen `benchmarking_causal_rl` checkout instead of this worktree, with no error anywhere. Guards: parenthesise, `(cd X && ...) &`, or use absolute paths in anything backgrounded. **The sharper risk is the one that did not happen this time:** it created an *untracked* file, which was harmless and visible in `git status`. The same slip onto an *existing* path would have been a silent modification to the frozen v1 branch with nothing to signal it. Check the sibling checkout is clean after any backgrounded write.
 * The full test suite exceeds a 10-minute tool timeout; run in chunks with `-k`.
 * Sampling from an **unfitted** model raises `assert self._bias is not None` — that is "sample before fit", unrelated to any do-semantics issue.

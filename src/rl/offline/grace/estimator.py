@@ -544,6 +544,36 @@ class LatentClassEstimator:
         dim = int(getattr(var, "dim", 1) or 1)
         return -math.log(ms * math.sqrt(2.0 * math.pi)) * dim
 
+    def _min_fitted_scale(self, name: str, pa_tensor, n: int):
+        """The SMALLEST scale this mechanism actually emits on the fitted rows.
+
+        Detecting the scale is strictly better than detecting its consequence.
+        ``separation_per_step`` blows up from EITHER direction — the winning
+        class spiking up (bounded by the density ceiling) or the losing class
+        collapsing down (unbounded below, so no ceiling catches it) — but both
+        are the same underlying event: a fitted scale sitting on ``min_scale``.
+        Reading the scale is two-sided by construction and does not depend on
+        which class happens to win at a given row.
+
+        Still no constant: the floor compared against is the mechanism's own
+        declared ``min_scale``.
+        """
+        mech = dict(getattr(self.model, "mechanisms", {}) or {}).get(name)
+        if mech is None:
+            return None
+        # MDN: heteroscedastic, so the scale has to be evaluated ON THE ROWS.
+        params = getattr(mech, "_params_from_parents", None)
+        if callable(params):
+            with torch.no_grad():
+                _, _, scale = params(pa_tensor, (n,))
+            return float(scale.min())
+        # LinearGaussian and friends: homoscedastic, one scale per node.
+        flat = getattr(mech, "_scale", None)
+        if callable(flat):
+            with torch.no_grad():
+                return float(flat().min())
+        return None
+
     def _mechanism_degeneracy(self, data: EpisodeData) -> Dict[str, float]:
         """Fraction of rows whose fitted density has hit the ``min_scale`` FLOOR.
 
@@ -558,13 +588,28 @@ class LatentClassEstimator:
         DEGENERACY rather than confidence.** The two are told apart by this
         detector — the floor — and never by the magnitude.
         """
+        from nbn.core.network import pack_parents
+
         channels = ["R"] + list(self.proxy_names)
         out: Dict[str, float] = {}
         for k in range(self.u_card):
             u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
+            frame = self._frame(data, u_k)
             with torch.no_grad():
-                per_node = self.model.log_prob(self._frame(data, u_k), per_node=True)
+                per_node = self.model.log_prob(frame, per_node=True)
             for c in channels:
+                mech = dict(getattr(self.model, "mechanisms", {}) or {}).get(c)
+                floor = float(getattr(mech, "min_scale", 0.0) or 0.0)
+                # PRIMARY, two-sided: is the emitted scale sitting on the floor?
+                if floor > 0.0:
+                    pa = pack_parents(frame, self.model.dag.parents(c))
+                    smin = self._min_fitted_scale(c, pa, data.n)
+                    if smin is not None and smin <= floor * (1.0 + 1e-6):
+                        out[c] = 1.0
+                        continue
+                # SECONDARY, one-sided: rows sitting at the density ceiling the
+                # floor implies. Two independent detectors for one event are
+                # cheap, and either may see a case the other misses.
                 ceiling = self._density_ceiling(c)
                 if not math.isfinite(ceiling):
                     continue
