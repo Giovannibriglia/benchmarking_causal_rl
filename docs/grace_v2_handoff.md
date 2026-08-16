@@ -118,6 +118,7 @@ never has to confront.
 3. **Re-certify from stored samples** (`~/.minari-grace-v2`, 130 datasets).
    Minutes, not another 8 hours — certification is a stamp, not generation.
 4. **Re-measure the D-D numbers** at episode granularity; update the entry.
+   **This gates step 6 — see the note below.**
 5. **Fix the skewed-tail cutoff** — the null of the maximum is built correctly
    then read with a 3-SD z-score, but a maximum's distribution is right-skewed,
    so use a *quantile* of the permutation draws. Likely secondary to the
@@ -126,6 +127,24 @@ never has to confront.
    legitimate under GEM, symmetric-safe), constraints-per-diagram count
    (measured, not the estimated 4), and the V-D re-projection — on an idle
    machine, since every timing so far is a contended upper bound.
+
+**Why 4 must precede 6, and is not arbitrary sequencing.** The two open
+strategic items — the third-proxy question and the V-D cost projection — look
+independent and are not. They are coupled through the **constraint count per
+diagram**, which is the multiplier in the V-D projection that is already an
+order of magnitude over budget:
+
+> D-D re-measurement → possible third-proxy reinstatement → **a changed
+> declared diagram** (A1: the diagram is the only assumption, so a new proxy
+> channel is a new catalogue entry, not a config knob) → more views, hence more
+> moment constraints per diagram → a larger per-cell cost in the V-D
+> projection.
+
+Re-projecting first would price a diagram set that step 4 may invalidate, and
+the error runs in the expensive direction: a third proxy adds constraints, so
+the projection would come out *low* and a V-D scope chosen against it would be
+under-budgeted. Any reordering has to answer this, not just note the
+dependency.
 
 ### Open threads
 
