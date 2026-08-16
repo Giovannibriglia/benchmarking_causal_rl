@@ -6,6 +6,8 @@ latent is KNOWN, never against another estimator or against L5.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 import torch
 from src.rl.offline.grace.estimator import EpisodeData, LatentClassEstimator
@@ -112,8 +114,15 @@ def test_interventional_reward_recovers_the_known_do_effect():
     v1 = est.interventional_reward(s, 1, fit, n_samples=1024)
     assert abs(float(v0) - 1.0) < 0.15, float(v0)
     assert 0.4 < float(v1) - float(v0) < 1.1, (float(v0), float(v1))
-    # C3: every estimate carries its conditions.
-    assert isinstance(v0.monotone, bool) and "sep=" in v0.label()
+    # C3: every estimate carries its conditions -- now including the two that
+    # the T = 500 failure showed were missing. ``sep=`` was the old label; the
+    # per-step separation replaces it as the correctness diagnostic and the
+    # saturated-at-init flag rides alongside, because a fit frozen at its
+    # initialisation must say so wherever its number goes.
+    assert isinstance(v0.monotone, bool)
+    assert "sep/step=" in v0.label(), v0.label()
+    assert isinstance(v0.saturated_at_init, bool)
+    assert 0.0 <= v0.initial_saturation <= 1.0
 
 
 def test_the_target_path_is_differentiable():
@@ -252,3 +261,167 @@ def test_the_default_proxy_init_runs_on_the_data_device():
     fit = est.fit(data, max_iter=2, epochs=5, init="proxy")
     assert fit.responsibilities.is_cuda
     assert fit.separability() > 0.5
+
+
+# --------------------------------------------------------------------------
+# EM SATURATION ON LONG EPISODES — the failure that made this the critical path.
+#
+# The E-step sums per-row log-likelihoods over the episode, so a between-class
+# difference of d nats per step becomes T*d nats per episode. At T = 500 the
+# softmax over classes is a step function: responsibilities are 0/1 after the
+# FIRST E-step, and EM is frozen in whatever basin its initialisation picked.
+#
+# Measured on the real D-D Acrobot arm before the fix: 6 of 6 fits at chance
+# recovery (0.53-0.59), every one reporting separability 1.0000. At T = 18-38
+# the identical code recovered 0.997-1.000. The grid below is chosen from where
+# it actually breaks.
+# --------------------------------------------------------------------------
+
+
+def _long_episode_fixture(n_ep=120, T=500, seed=0):
+    """The same generative structure as ``_fixture``, at a chosen episode length.
+
+    U drives BOTH channels, so the latent is identified at any T -- which is the
+    point: nothing about the IDENTIFICATION problem changes with episode length,
+    only the optimiser's ability to solve it.
+    """
+    g = torch.Generator().manual_seed(seed)
+    u_ep = (torch.rand(n_ep, generator=g) < 0.5).long()
+    S, A, R, E = [], [], [], []
+    for e in range(n_ep):
+        u = int(u_ep[e])
+        S.append(torch.randn(T, 2, generator=g))
+        a = (torch.rand(T, generator=g) < (0.75 if u else 0.25)).long()
+        A.append(a)
+        R.append(1.0 + 1.5 * u * a.float() + 0.2 * torch.randn(T, generator=g))
+        E.append(torch.full((T,), e, dtype=torch.long))
+    return u_ep, EpisodeData(
+        state=torch.cat(S),
+        action=torch.cat(A),
+        reward=torch.cat(R),
+        episode_ids=torch.cat(E),
+    )
+
+
+def test_saturation_is_detected_and_reported_at_long_episode_length():
+    """(a) The detector. A fit frozen at its initialisation must SAY so.
+
+    Without this the pathology is invisible: the frozen fit reports
+    ``separability = 1.0000``, which reads as the cleanest possible result.
+
+    The assertion is on the ORDERING and on the reporting flag, not on a
+    magnitude. An earlier version asserted ``> 0.99`` on the strength of two
+    observations and the claim that the statistic is bimodal; it measures 0.867
+    here, so the statistic is graded and the magnitude is not something to
+    hard-code.
+    """
+    _, short = _long_episode_fixture(n_ep=60, T=12, seed=0)
+    _, long_ = _long_episode_fixture(n_ep=60, T=500, seed=0)
+
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    f_short = est.fit(short, max_iter=4, epochs=10, init="random", temperature=1.0)
+    est2 = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    f_long = est2.fit(long_, max_iter=4, epochs=10, init="random", temperature=1.0)
+
+    assert f_long.initial_saturation > f_short.initial_saturation, (
+        f_short.initial_saturation,
+        f_long.initial_saturation,
+    )
+    assert not f_short.saturated_at_init, f_short.initial_saturation
+    assert f_long.saturated_at_init, f_long.initial_saturation
+    # And it travels with the number (C3), which is the whole point.
+    out = f_long.estimate(torch.tensor(1.0))
+    assert out.saturated_at_init
+    assert "SATURATED-AT-INIT" in out.label(), out.label()
+
+
+def test_separability_cannot_distinguish_a_confident_wrong_fit():
+    """(c) Why ``separability`` had to be replaced as the correctness diagnostic.
+
+    It is a function of the RESPONSIBILITIES ALONE, so it measures how confident
+    the posterior is and nothing about whether the posterior is right. Hand it
+    hard 0/1 responsibilities that are completely wrong and it still reads
+    1.0000 -- which is exactly what happened on real data: D-D Acrobot at
+    T = 500 reported separability 1.0000 at 0.53 recovery, in six fits out of
+    six.
+
+    An earlier version of this test asserted that ``separation_per_step`` is
+    invariant to episode length. It is not, and should not be: it measures how
+    separated the fitted classes are, so a poorly-fitted short-episode run reads
+    low for a good reason. What it does NOT do is read perfect for a wrong fit,
+    because it is computed from the model's per-step log-likelihoods rather than
+    from the posterior's own confidence.
+    """
+    _, data = _long_episode_fixture(n_ep=40, T=20, seed=0)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    fit = est.fit(data, max_iter=3, epochs=10, init="random")
+
+    n_ep = fit.responsibilities.shape[0]
+    # Hard, and deliberately the WRONG way round for half the episodes.
+    wrong = torch.zeros(n_ep, 2)
+    wrong[: n_ep // 2, 0] = 1.0
+    wrong[n_ep // 2 :, 1] = 1.0
+    confident_wrong = replace(fit, responsibilities=wrong)
+
+    assert confident_wrong.separability() > 0.999, confident_wrong.separability()
+    # ...and the label makes the confidence look like a result, which is the trap.
+    assert "sep(telemetry)=1.00" in confident_wrong.estimate(torch.tensor(0.0)).label()
+    # The replacement is a different quantity entirely: it does not read the
+    # responsibilities, so hand-forging them cannot move it.
+    assert confident_wrong.separation_per_step == fit.separation_per_step
+
+
+def test_a_temperature_change_does_not_exhaust_the_backtrack_guard():
+    """(b), the way this fix could have failed SILENTLY.
+
+    The guard compares the objective before and after the M-step. At a
+    temperature change those are DIFFERENT FUNCTIONS -- an objective at tau = 500
+    against one at tau = 63 is not a comparison -- so the first annealing step
+    read as a catastrophic decrease, the backtrack budget was exhausted on
+    iteration 1, and the fit stopped before ever reaching tau = 1. Annealing
+    present in the code and absent in effect, reported as a normal fit.
+
+    Measured before the fix: 3 backtracks at iteration 1, tau stuck at 63.0.
+    """
+    _, data = _long_episode_fixture(n_ep=40, T=500, seed=0)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    fit = est.fit(data, max_iter=6, epochs=10, init="random")
+    assert fit.n_anneal > 0, fit.temperatures
+    assert fit.temperatures[0] > 1.0, fit.temperatures
+    assert fit.reached_tau_one, fit.temperatures
+    assert fit.n_iter > fit.n_anneal, (fit.n_iter, fit.n_anneal)
+
+
+def test_a_fit_that_stops_while_tempered_says_so():
+    """A fit that stops mid-anneal is not an estimate of anything -- its last
+    objective is a smoothed surrogate, not the likelihood -- and it reads exactly
+    like a converged fit unless asked. It happens at small iteration budgets,
+    where the backtrack guard exhausts before the schedule flattens."""
+    _, data = _long_episode_fixture(n_ep=40, T=500, seed=0)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    # n_anneal deliberately longer than the fit can complete.
+    fit = est.fit(data, max_iter=1, epochs=5, init="random", n_anneal=40)
+    if not fit.reached_tau_one:
+        out = fit.estimate(torch.tensor(1.0))
+        assert not out.reached_tau_one
+        assert "STOPPED-WHILE-TEMPERED" in out.label(), out.label()
+
+
+def test_the_monotone_guard_reads_the_objective_the_m_step_maximises():
+    """(b), the part that would silently undo the fix.
+
+    During annealing the M-step maximises the TEMPERED objective, and the true
+    likelihood may legitimately fall while it does. A guard that judged those
+    steps by the untempered likelihood would reject exactly the moves the anneal
+    exists to make -- annealing would be present in the code and absent in
+    effect. ``monotone`` is therefore evaluated only over the tau = 1 phase.
+    """
+    _, data = _long_episode_fixture(n_ep=60, T=500, seed=0)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    fit = est.fit(data, max_iter=6, epochs=10, init="random")
+    assert fit.n_anneal > 0, "episodic data must trigger the anneal"
+    assert fit.temperatures[0] > 1.0
+    # monotone judges the tau = 1 tail only; the annealed prefix is excluded by
+    # design, so a legitimate anneal cannot be reported as non-monotone.
+    assert isinstance(fit.monotone, bool)
+    assert fit.n_anneal == sum(1 for t in fit.temperatures if t > 1.0)

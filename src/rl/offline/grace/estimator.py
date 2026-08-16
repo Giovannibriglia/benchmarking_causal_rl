@@ -37,7 +37,7 @@ Written against NBN v0.14.0 the library's own way, per ``docs/nbn_requirements``
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -81,6 +81,17 @@ def _posterior_mean(out) -> torch.Tensor:
     return (
         (w.unsqueeze(-1) * samples).sum(dim=1).reshape(samples.shape[0], -1).mean(dim=1)
     )
+
+
+# DIAGNOSTIC reporting levels, not estimator calibration (A2). Nothing in the
+# fit depends on either: the raw saturation FRACTION is reported, and these only
+# decide when a human-readable flag is printed.
+_SATURATION_EPS = 1e-3  # "a responsibility within eps of 0 or 1"
+# The level at which the human-readable flag fires: a MAJORITY of episodes
+# frozen. Measured values are not as bimodal as first assumed (0.00 at T = 12,
+# 0.867 on the T = 500 fixture), so this is a reporting choice and is documented
+# as one -- it decides only what gets printed, never what the estimator does.
+_SATURATION_FLAG = 0.5
 
 
 @dataclass
@@ -150,9 +161,26 @@ class Estimate:
     separability: float
     backtracks: int = 0
     backtrack_exhausted: bool = False
+    # The correctness diagnostic. ``separability`` above is retained as
+    # TELEMETRY only: it saturates to 1.0 on long episodes regardless of whether
+    # the fit is right, so it cannot answer the question C3 attaches it for.
+    separation_per_step: float = 0.0
+    initial_saturation: float = 0.0
+    saturated_at_init: bool = False
+    reached_tau_one: bool = True
 
     def label(self) -> str:
-        bits = [f"sep={self.separability:.2f}"]
+        bits = [f"sep/step={self.separation_per_step:.3f}"]
+        if not self.reached_tau_one:
+            # Stopped while still tempered: the parameters maximise a smoothed
+            # surrogate, not the likelihood. Louder than NOT-CONVERGED, because
+            # a not-converged fit is at least optimising the right thing.
+            bits.append("STOPPED-WHILE-TEMPERED")
+        if self.saturated_at_init:
+            # Frozen at its initialisation: the E-step was a step function from
+            # the first iteration, so this number is a property of the init, not
+            # of the likelihood. It must travel with every value downstream.
+            bits.append(f"SATURATED-AT-INIT({self.initial_saturation:.2f})")
         if not self.monotone:
             bits.append("NON-MONOTONE-EM")
         if not self.converged:
@@ -161,6 +189,7 @@ class Estimate:
             bits.append("BACKTRACK-EXHAUSTED")
         if self.backtracks:
             bits.append(f"backtracks={self.backtracks}")
+        bits.append(f"sep(telemetry)={self.separability:.2f}")
         return " ".join(bits)
 
     def __float__(self) -> float:
@@ -180,6 +209,15 @@ class LatentClassFit:
     label_permutation: tuple = ()
     backtracks: int = 0
     backtrack_exhausted: bool = False
+    temperatures: List[float] = field(default_factory=list)
+    n_anneal: int = 0
+    # Temperatures whose surrogate the M-step could not improve. Reported, not
+    # fatal: the anneal is a warm-up and skipping a rung costs at most the
+    # warm-up's benefit.
+    anneal_exhaustions: int = 0
+    initial_saturation: float = 0.0
+    final_saturation: float = 0.0
+    separation_per_step: float = 0.0
 
     def estimate(self, value: torch.Tensor) -> "Estimate":
         """Wrap a value with this fit's conditions — the ONLY way estimates are
@@ -191,7 +229,38 @@ class LatentClassFit:
             separability=self.separability(),
             backtracks=self.backtracks,
             backtrack_exhausted=self.backtrack_exhausted,
+            separation_per_step=self.separation_per_step,
+            initial_saturation=self.initial_saturation,
+            saturated_at_init=self.saturated_at_init,
+            reached_tau_one=self.reached_tau_one,
         )
+
+    @property
+    def reached_tau_one(self) -> bool:
+        """Did the anneal finish, or did the fit stop while still tempered?
+
+        A fit that stops mid-anneal is **not an estimate of anything**: its last
+        objective is a tempered one, so its parameters maximise a smoothed
+        surrogate rather than the likelihood. Observed at small iteration
+        budgets, where the backtrack guard exhausts before the schedule
+        flattens. It reads exactly like a converged fit unless asked.
+        """
+        return bool(self.temperatures) and self.temperatures[-1] == 1.0
+
+    @property
+    def saturated_at_init(self) -> bool:
+        """Did the FIRST untempered E-step already assign hard 0/1 labels?
+
+        A REPORTING flag over ``initial_saturation``, which is the number that
+        matters and is always available. Nothing in the fit reads this.
+
+        If it did, EM never had a choice of basin: the M-step fitted whatever
+        partition the initialisation supplied and every later E-step confirmed
+        it. The resulting number is a function of the init. Detected directly
+        rather than inferred, and propagated under C3 like ``monotone`` and
+        ``converged``, so it is visible wherever it occurs rather than only
+        where someone thought to look."""
+        return self.initial_saturation >= _SATURATION_FLAG
 
     @property
     def monotone(self) -> bool:
@@ -211,9 +280,14 @@ class LatentClassFit:
         avoid. It is a diagnostic, not an error: recovery on the fixture is
         0.980 with a decrease present, so non-monotone does NOT imply wrong.
         """
-        return all(
-            b >= a - 1e-6 for a, b in zip(self.log_likelihood, self.log_likelihood[1:])
-        )
+        # EVALUATED ONLY OVER THE tau = 1 PHASE. During annealing the M-step
+        # maximises the TEMPERED objective, and the true likelihood may
+        # legitimately decrease while it does -- judging the annealing steps by
+        # the untempered likelihood would report every annealed fit as
+        # non-monotone and, worse, the guard would reject the very steps the
+        # anneal exists to take.
+        tail = self.log_likelihood[self.n_anneal :]
+        return all(b >= a - 1e-6 for a, b in zip(tail, tail[1:]))
 
     @property
     def final_ll(self) -> float:
@@ -223,12 +297,19 @@ class LatentClassFit:
         return self.responsibilities.argmax(dim=1)
 
     def separability(self) -> float:
-        """Mean max-responsibility: 1/K is chance, 1.0 is perfect separation.
+        """Mean max-responsibility. **TELEMETRY ONLY — not the correctness
+        diagnostic. Use ``separation_per_step``.**
 
-        Reported alongside every estimate because a latent-class fit that has
-        not separated is not an error — it is a *weak-proxy regime*, and the
-        number that distinguishes the two has to be visible rather than inferred
-        from a value that looks plausible either way.
+        It was the correctness diagnostic, and it cannot be: the posterior it
+        summarises is built from a SUM over the episode's rows, so it is
+        confident for long episodes whether or not the fit is right. Measured on
+        D-D Acrobot at T = 500: **1.0000 at 0.53 recovery**, in every one of six
+        fits. A diagnostic that reads perfect exactly where the estimator fails
+        is worse than none, because C3 makes it travel with the number and lends
+        it authority.
+
+        Retained because the saturation level is itself informative — read it
+        next to ``initial_saturation``, never as evidence a fit is good.
         """
         return float(self.responsibilities.max(dim=1).values.mean())
 
@@ -375,14 +456,99 @@ class LatentClassEstimator:
         per_row = torch.stack(cols, dim=1)  # (n, K)
         return data.episode_sum(per_row)  # (E, K)
 
-    def e_step(self, data: EpisodeData, prior: torch.Tensor) -> tuple:
-        """Episode responsibilities and the observed-data log-likelihood."""
+    def e_step(
+        self, data: EpisodeData, prior: torch.Tensor, temperature: float = 1.0
+    ) -> tuple:
+        """``(resp, true_ll, tempered_objective, saturation)``.
+
+        **Why a temperature.** The episode log-likelihood is a SUM over the
+        episode's rows, so a between-class difference of d nats per step becomes
+        ``T * d`` nats per episode. At ``T = 500`` the softmax over classes is a
+        step function: responsibilities are 0/1 after the FIRST E-step, the
+        M-step fits two hard clusters, and EM can never move between basins
+        again. It is frozen at whatever its initialisation happened to pick.
+        Measured on D-D Acrobot at ``T = 500``: **6 of 6 fits at chance recovery
+        (0.53-0.59), every one reporting separability 1.0000.** At ``T = 18-38``
+        the same code recovers 0.997-1.000. This is a property of the estimator
+        on long episodes, not of any cell.
+
+        Tempering is the standard remedy (deterministic annealing): divide the
+        class log-likelihoods by ``tau`` before the softmax, so early E-steps
+        cannot saturate and the basin is chosen by the likelihood rather than by
+        the initialisation. The annealed objective
+        ``tau * sum_e logsumexp(ll_e / tau)`` reduces to the true log-likelihood
+        at ``tau = 1``.
+
+        ``saturation`` is ALWAYS computed from the UNTEMPERED posterior, because
+        the question it answers is "would this fit have frozen", which tempering
+        is meant to prevent rather than to hide.
+        """
         ll = self._episode_log_liks(data) + torch.log(prior).reshape(1, -1)
         # log-sum-exp per episode: the observed-data likelihood, and the
         # normaliser for the posterior.
         marginal = torch.logsumexp(ll, dim=1)  # (E,)
-        resp = torch.exp(ll - marginal.reshape(-1, 1))
-        return resp, float(marginal.sum())
+        resp_true = torch.exp(ll - marginal.reshape(-1, 1))
+        sat = float(
+            (resp_true.max(dim=1).values > 1.0 - _SATURATION_EPS).float().mean()
+        )
+        if temperature == 1.0:
+            return resp_true, float(marginal.sum()), float(marginal.sum()), sat
+        tempered = ll / float(temperature)
+        resp = torch.softmax(tempered, dim=1)
+        obj = float(temperature) * float(torch.logsumexp(tempered, dim=1).sum())
+        return resp, float(marginal.sum()), obj, sat
+
+    def _separation_per_step(self, data: EpisodeData) -> float:
+        """Class separation in NATS PER STEP — the length-normalised replacement
+        for ``separability`` as the correctness diagnostic.
+
+        ``separability`` (mean max-responsibility) is a posterior confidence, and
+        a posterior built from a sum over ``T`` rows is confident for large ``T``
+        whether or not it is right: it read **1.0000 at 0.53 recovery**. C3
+        attaches a diagnostic so an unseparated fit can be told from a separated
+        one, and that one fails exactly in the regime where it is needed.
+
+        This is the gap between the best and second-best class in the per-STEP
+        average log-likelihood, so it does not grow with episode length and a
+        weak-separation fit reads weak however long the episodes are.
+        """
+        ll = self._episode_log_liks(data)  # (E, K), episode-summed
+        ones = torch.ones(data.n, 1, device=ll.device, dtype=ll.dtype)
+        counts = data.episode_sum(ones).clamp_min(1.0)  # (E, 1)
+        per_step = ll / counts
+        if per_step.shape[1] < 2:
+            return 0.0
+        top2 = per_step.topk(2, dim=1).values
+        return float((top2[:, 0] - top2[:, 1]).mean())
+
+    def _temperature_schedule(
+        self, data: EpisodeData, max_iter: int, tau0: float | None, n_anneal: int | None
+    ) -> list:
+        """Geometric anneal from ``tau0`` down to 1, then 1 for the rest.
+
+        **``tau0`` DEFAULTS TO THE MEAN EPISODE LENGTH, and that is a derivation
+        rather than a tuning choice.** At ``tau = T`` the tempered episode
+        log-likelihood is exactly the per-STEP average, which is the natural
+        scale on which classes differ; annealing from there to 1 walks from
+        "one effective observation per episode" to the full episode. It is read
+        off the data, never fitted, and it is REPORTED on the fit
+        (``temperatures``) so a reader can see the schedule that produced a
+        number. Tuning it against recovery would be choosing the method by the
+        answer.
+        """
+        if tau0 is None:
+            ones = torch.ones(data.n, 1, device=data.state.device)
+            tau0 = float(data.episode_sum(ones).mean())
+        tau0 = max(1.0, float(tau0))
+        if tau0 <= 1.0:
+            return [1.0] * (max_iter + 1)
+        if n_anneal is None:
+            n_anneal = max(1, max_iter // 2)
+        n_anneal = max(0, int(n_anneal))
+        if n_anneal == 0:
+            return [1.0] * (max_iter + 1)
+        sched = [tau0 ** (1.0 - i / n_anneal) for i in range(n_anneal)]
+        return sched + [1.0] * (max_iter + 1)
 
     # ---------------------------------------------------------------- M-step --
     def m_step(
@@ -437,6 +603,8 @@ class LatentClassEstimator:
         tol: float = 1e-4,
         init: str = "proxy",
         max_backtracks: int = 3,
+        temperature: float | None = None,
+        n_anneal: int | None = None,
         verbose: bool = False,
         **fit_kwargs,
     ) -> LatentClassFit:
@@ -458,45 +626,124 @@ class LatentClassEstimator:
         Cost is one extra E-step evaluation per iteration in principle, and
         NONE in the happy path: the post-M-step E-step that checks the objective
         IS the next iteration's E-step, so it is computed once and reused.
+
+        **DETERMINISTIC ANNEALING, APPLIED ONLY WHERE IT IS NEEDED.** The first
+        E-step is run untempered; it both measures ``initial_saturation`` and
+        decides whether to anneal. Where the E-step does not saturate the
+        schedule is flat at ``tau = 1`` and this method behaves exactly as it did
+        before, on the full iteration budget — which matters, because annealing
+        spends iterations and a short-episode fit has no pathology to spend them
+        on (it drove the T = 12 fixture into an exhausted backtrack budget).
+
+        ``temperature`` is ``tau0`` and defaults to the mean episode length — a
+        derivation, not a tuning choice (see ``_temperature_schedule``);
+        ``n_anneal`` defaults to half the iteration budget. The realised schedule
+        is stored on the fit and reported, never fitted against recovery. Pass
+        ``temperature=1.0`` to force annealing off.
         """
         torch.manual_seed(self.seed)
         resp = self._init_responsibilities(data, init)
         prior = self.m_step(data, resp, **fit_kwargs)
-        resp, ll = self.e_step(data, prior)
+        # The untempered first E-step measures the pathology. It is a PURE
+        # DIAGNOSTIC and no control decision reads it.
+        #
+        # An earlier spelling gated the anneal on it, justified as "the statistic
+        # is bimodal, so any cut in (0, 1) decides identically". That was
+        # asserted from two observations and is false: the T = 500 fixture
+        # measures 0.867, not ~1.0, so the cut-point would have been a tuned
+        # constant deciding real cases -- precisely what A2 forbids. Instead the
+        # anneal is a PREFIX OF EXTRA iterations rather than a slice of
+        # ``max_iter``, which removes the conflict that made a gate look
+        # necessary: a short-episode fit keeps its full tau = 1 budget and merely
+        # pays a cheap warm-up, so nothing has to decide whether to skip it.
+        # ``max_iter`` now means "iterations at tau = 1".
+        resp, ll, obj, sat0 = self.e_step(data, prior, temperature=1.0)
+        taus = self._temperature_schedule(data, max_iter, temperature, n_anneal)
+        n_anneal_used = sum(1 for t in taus if t > 1.0)
+        if n_anneal_used:
+            resp, ll, obj, _ = self.e_step(data, prior, temperature=taus[0])
+        total_iter = max_iter + n_anneal_used
 
         history: List[float] = [ll]
         base_lr = float(fit_kwargs.pop("lr", 1e-3))
         backtracks, exhausted, converged = 0, False, False
+        anneal_exhaustions = 0
+        sat = sat0
         it = 0
-        for it in range(1, max_iter + 1):
+        tau_prev = taus[0]
+        for it in range(1, total_iter + 1):
+            tau = taus[min(it, len(taus) - 1)]
+            # WHEN tau MOVES, THE REFERENCE MUST MOVE WITH IT. The guard compares
+            # the objective before and after the M-step, and at a temperature
+            # change those are DIFFERENT FUNCTIONS -- comparing an objective at
+            # tau = 500 against one at tau = 63 is not a comparison at all. Left
+            # unhandled it read as a catastrophic decrease at the first anneal
+            # step, exhausted the backtrack budget on iteration 1, and stopped
+            # the fit before it ever reached tau = 1: the anneal present in the
+            # code and absent in effect, which is the exact way this fix could
+            # have failed silently. So the previous objective is re-evaluated at
+            # the new tau, at the cost of one extra E-step per temperature change
+            # and none at all once the schedule flattens.
+            if tau != tau_prev:
+                _, ll, obj, _ = self.e_step(data, prior, temperature=tau)
+                tau_prev = tau
             snapshot = self._snapshot()
             tried = 0
             while True:
                 new_prior = self.m_step(
                     data, resp, lr=base_lr * (0.5**tried), **fit_kwargs
                 )
-                new_resp, new_ll = self.e_step(data, new_prior)
-                if new_ll >= ll - 1e-9 or tried >= max_backtracks:
+                new_resp, new_ll, new_obj, sat = self.e_step(
+                    data, new_prior, temperature=tau
+                )
+                # THE GUARD IS APPLIED TO THE OBJECTIVE THE M-STEP IS ACTUALLY
+                # MAXIMISING. During annealing that is the TEMPERED objective;
+                # judging those steps by the untempered likelihood would reject
+                # exactly the moves the anneal exists to make, and the guard
+                # would quietly undo the fix.
+                if new_obj >= obj - 1e-9 or tried >= max_backtracks:
                     break
-                # The M-step overshot. Revert and take a smaller one.
                 self._restore(snapshot)
                 tried += 1
                 backtracks += 1
                 if verbose:
-                    print(f"  EM {it:3d}  backtrack {tried}: {ll:.4f} -> {new_ll:.4f}")
-            if new_ll < ll - 1e-9:
-                # Budget spent and still decreasing: stop on the last good
-                # parameters rather than proceed on a decrease.
+                    print(
+                        f"  EM {it:3d} tau={tau:8.2f} backtrack {tried}: "
+                        f"{obj:.4f} -> {new_obj:.4f}"
+                    )
+            if new_obj < obj - 1e-9:
                 self._restore(snapshot)
+                if tau > 1.0:
+                    # EXHAUSTION DURING THE ANNEAL IS NOT A REASON TO STOP. The
+                    # anneal is a warm-up: failing to improve one temperature's
+                    # SURROGATE says nothing about the likelihood, and stopping
+                    # there leaves the fit maximising a smoothed objective it was
+                    # only ever meant to pass through. Observed doing exactly
+                    # that on the T = 10 fixture -- it exhausted mid-anneal,
+                    # returned a tempered fit, and the do-effect came out at 1.22
+                    # against a true 0.75, while every other diagnostic looked
+                    # ordinary. Advance to the next temperature instead; the
+                    # worst case is that the anneal contributes nothing and the
+                    # tau = 1 phase runs exactly as it did before this change.
+                    anneal_exhaustions += 1
+                    continue
+                # At tau = 1 it means what it always meant: EM stopped on a
+                # decrease of the TRUE objective it could not repair.
                 exhausted = True
                 break
             prior, resp = new_prior, new_resp
-            improvement = new_ll - ll
-            ll = new_ll
+            improvement = new_obj - obj
+            ll, obj = new_ll, new_obj
             history.append(ll)
             if verbose:
-                print(f"  EM {it:3d}  ll={ll:.4f}  prior={prior.tolist()}")
-            if improvement < tol * abs(ll):
+                print(
+                    f"  EM {it:3d} tau={tau:8.2f} ll={ll:.4f} obj={obj:.4f} "
+                    f"sat={sat:.3f} prior={prior.tolist()}"
+                )
+            # Convergence is only meaningful once the objective has stopped
+            # changing underneath it: during the anneal tau itself moves, so a
+            # small increment says nothing.
+            if tau == 1.0 and improvement < tol * abs(obj):
                 converged = True
                 break
 
@@ -509,6 +756,12 @@ class LatentClassEstimator:
             converged=converged,
             backtracks=backtracks,
             backtrack_exhausted=exhausted,
+            temperatures=list(taus[: it + 1]),
+            anneal_exhaustions=anneal_exhaustions,
+            n_anneal=n_anneal_used,
+            initial_saturation=sat0,
+            final_saturation=sat,
+            separation_per_step=self._separation_per_step(data),
         )
         return self._canonicalise(fit, data)
 
@@ -572,13 +825,18 @@ class LatentClassEstimator:
         if order == tuple(range(self.u_card)):
             return fit
         idx = torch.tensor(order, device=fit.responsibilities.device)
-        return LatentClassFit(
-            model=fit.model,
+        # ``replace`` rather than a fresh construction, and that is not a style
+        # preference. The explicit form listed the fields it knew about and
+        # SILENTLY RESET THE REST to their defaults -- so a fit whose classes
+        # happened to need swapping reported ``backtracks = 0`` and
+        # ``backtrack_exhausted = False`` however badly it had struggled, and the
+        # C3 labels lied on exactly half the runs at random. Every field added
+        # here since would have been dropped the same way. ``replace`` copies by
+        # construction, so the bug class is unreachable rather than fixed.
+        return replace(
+            fit,
             prior=fit.prior[idx],
             responsibilities=fit.responsibilities[:, idx],
-            log_likelihood=fit.log_likelihood,
-            n_iter=fit.n_iter,
-            converged=fit.converged,
             label_permutation=order,
         )
 

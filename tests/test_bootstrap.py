@@ -237,3 +237,65 @@ def test_parallelism_preserves_failure_accounting():
     b = bootstrap_null(stat, b=20, seed=0, n_jobs=6)
     assert a.n_failed == b.n_failed > 0
     assert a.diagnostics() == b.diagnostics()
+
+
+def test_a_saturated_replicate_is_a_failed_replicate():
+    """§3 — the consequence that reaches L4 and L5.
+
+    Every bootstrap replicate is an EM fit. If a replicate's E-step saturates it
+    is frozen at its initialisation, so its statistic is a draw from the
+    INITIALISER rather than from the sampling distribution. A null built out of
+    those measures initialisation variance -- and it does so while looking
+    impeccable: narrow, smooth, and about the wrong thing. L4's compatible set
+    and L5's thresholds are both read off these nulls, so the failure would
+    propagate into every calibrated number without ever presenting as an error.
+
+    Saturated belongs in the same category as an exhausted backtrack budget:
+    a number came back, and it is not a number about the target.
+    """
+
+    class _Fit:
+        def __init__(self, value, **kw):
+            self.value = value
+            self.converged = True
+            self.monotone = True
+            self.backtracks = 0
+            self.backtrack_exhausted = False
+            self.initial_saturation = 0.0
+            self.saturated_at_init = False
+            self.reached_tau_one = True
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+    def statistic(seed: int):
+        # every third replicate is frozen at its init
+        if seed % 3 == 0:
+            return _Fit(1.0, initial_saturation=0.97, saturated_at_init=True)
+        return _Fit(float(seed % 5))
+
+    null = bootstrap_null(statistic, b=12, seed=0, statistic_name="t")
+    assert null.n_failed > 0
+    assert not null.trustworthy, "a null with frozen replicates must not pass"
+    d = null.diagnostics()
+    assert d["n_saturated_at_init"] == null.n_failed, d
+    assert d["max_initial_saturation"] > 0.9, d
+    assert any("saturated at initialisation" in r for r in d["reasons"]), d["reasons"]
+
+
+def test_a_replicate_that_stopped_while_tempered_is_a_failed_replicate():
+    """Its parameters maximise a smoothed surrogate, not the likelihood, so the
+    statistic is not an estimate of the target at all."""
+
+    class _Fit:
+        value = 1.0
+        converged = True
+        monotone = True
+        backtracks = 0
+        backtrack_exhausted = False
+        initial_saturation = 0.0
+        saturated_at_init = False
+        reached_tau_one = False
+
+    null = bootstrap_null(lambda seed: _Fit(), b=4, seed=0)
+    assert null.n_failed == 4
+    assert null.diagnostics()["n_stopped_while_tempered"] == 4

@@ -65,6 +65,12 @@ def main() -> int:
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--fit-seeds", nargs="+", type=int, default=[0, 1, 2])
+    ap.add_argument(
+        "--skip-proxyinit",
+        action="store_true",
+        help="drop the context-only production-init arm; it never enters the "
+        "verdict, so it is the first thing to cut when the budget is tight",
+    )
     ap.add_argument("--envs", nargs="+", default=["CartPole-v1", "Acrobot-v1"])
     ap.add_argument("--sigma", type=float, default=1.0)
     ap.add_argument(
@@ -146,6 +152,8 @@ def main() -> int:
             # from initialisation.
             ("with_proxyinit", True, "proxy"),
         ]
+        if args.skip_proxyinit:
+            arms = [a for a in arms if a[0] != "with_proxyinit"]
         for label, with_p, init in arms:
             per_seed = []
             for fs in args.fit_seeds:
@@ -166,6 +174,11 @@ def main() -> int:
                 )
                 good = est.interventional_sweep(
                     eval_states, [0] * eval_states.shape[0], fit
+                )
+                print(
+                    f"    {r['env']} s{r['seed']} {label}/{init} fit_seed={fs} "
+                    f"ll={float(fit.final_ll):.1f} conv={fit.converged}",
+                    flush=True,
                 )
                 per_seed.append(
                     {

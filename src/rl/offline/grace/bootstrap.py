@@ -12,6 +12,22 @@ space**, where the regularity conditions behind `chi^2_df` fail. The reference
 distribution is not chi-2 and is not known in closed form, so estimating it from
 the data at hand is the only sound route — not a fallback.
 
+**A NULL COMPUTED FROM SATURATED REPLICATES IS NOT A NULL.** Every replicate
+is an EM fit, and the L3 E-step sums per-row log-likelihoods over the episode --
+so on long episodes the responsibilities saturate to 0/1 immediately and the fit
+is frozen at whatever its initialisation picked. A replicate like that does not
+sample the statistic's sampling distribution; it samples the INITIALISER. A null
+built from them measures initialisation variance, and it does so while looking
+impeccable: narrow, smooth, and about the wrong thing. Since L4's compatible set
+and L5's falsification thresholds are both read off these nulls, that failure
+would propagate into every calibrated number in the project without ever
+presenting as an error.
+
+Saturated replicates are therefore FAILED replicates, in the same category as an
+exhausted backtrack budget, and they are counted in ``diagnostics()``. The same
+applies to a fit that stopped mid-anneal: its parameters maximise a tempered
+surrogate rather than the likelihood.
+
 **The hazard this module is designed around: silently dropped replicates.**
 Every replicate is an EM fit, and EM fits can fail — non-convergence, or an
 exhausted backtrack budget under the monotone guard. Dropping the failures and
@@ -81,6 +97,9 @@ class ReplicateResult:
     monotone: bool = True
     backtracks: int = 0
     backtrack_exhausted: bool = False
+    initial_saturation: float = 0.0
+    saturated_at_init: bool = False
+    reached_tau_one: bool = True
     failed: bool = False
     reason: str = ""
 
@@ -179,6 +198,15 @@ class BootstrapNull:
             "n_failed": self.n_failed,
             "failure_rate": self.failure_rate,
             "n_non_monotone": sum(1 for r in self.replicates if not r.monotone),
+            "n_saturated_at_init": sum(
+                1 for r in self.replicates if r.saturated_at_init
+            ),
+            "n_stopped_while_tempered": sum(
+                1 for r in self.replicates if not r.reached_tau_one
+            ),
+            "max_initial_saturation": max(
+                (r.initial_saturation for r in self.replicates), default=0.0
+            ),
             "n_backtrack_exhausted": sum(
                 1 for r in self.replicates if r.backtrack_exhausted
             ),
@@ -278,12 +306,33 @@ def bootstrap_null(
         rec.monotone = bool(getattr(out, "monotone", True))
         rec.backtracks = int(getattr(out, "backtracks", 0))
         rec.backtrack_exhausted = bool(getattr(out, "backtrack_exhausted", False))
+        rec.initial_saturation = float(getattr(out, "initial_saturation", 0.0))
+        rec.saturated_at_init = bool(getattr(out, "saturated_at_init", False))
+        rec.reached_tau_one = bool(getattr(out, "reached_tau_one", True))
         # An exhausted backtrack budget means EM stopped on a decrease it could
         # not repair. That is a FAILED fit for calibration purposes even though a
         # number came back, because the number is not from a converged model.
         if rec.backtrack_exhausted:
             rec.failed = True
             rec.reason = "backtrack budget exhausted (EM stopped on a decrease)"
+        # A SATURATED replicate is the same category, and a more dangerous one.
+        # Its E-step was a step function from the first iteration, so the fit is
+        # frozen at its initialisation: the replicate's statistic is a draw from
+        # the INITIALISER, not from the sampling distribution. A null built out
+        # of those measures initialisation variance while looking perfectly
+        # well-behaved -- narrow, smooth, and about the wrong thing.
+        elif rec.saturated_at_init:
+            rec.failed = True
+            rec.reason = (
+                f"E-step saturated at initialisation ({rec.initial_saturation:.2f} of "
+                "episodes hard-assigned before the first M-step); this replicate's "
+                "statistic reflects its init, not the resample"
+            )
+        # Stopped mid-anneal: the parameters maximise a tempered surrogate, so
+        # the statistic is not an estimate of the target at all.
+        elif not rec.reached_tau_one:
+            rec.failed = True
+            rec.reason = "fit stopped while still tempered (anneal did not reach tau=1)"
         return rec
 
     if n_jobs == 1:
