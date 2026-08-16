@@ -226,3 +226,29 @@ def test_an_exhausted_backtrack_budget_stops_rather_than_proceeding():
     assert fit.monotone, "a decrease survived the guard"
     if fit.backtrack_exhausted:
         assert not fit.converged
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_the_default_proxy_init_runs_on_the_data_device():
+    """The proxy init is the production DEFAULT and had never run on GPU.
+
+    Every tensor the initialiser builds must live on the data's device. The
+    random branch always did -- it ends in ``.to(device)`` -- which is exactly
+    why the omission on the proxy branch stayed hidden: the fallback path was
+    device-correct, so nothing in the test suite exercised the default one
+    anywhere but CPU. It raises rather than degrading, but only at the first
+    line that happens to mix the two."""
+    u_ep, data = _fixture(n_ep=40, T=8)
+    data = EpisodeData(
+        state=data.state.cuda(),
+        action=data.action.cuda(),
+        reward=data.reward.cuda(),
+        episode_ids=data.episode_ids.cuda(),
+        proxy={k: v.cuda() for k, v in data.proxy.items()},
+    )
+    est = LatentClassEstimator(
+        state_dim=2, n_actions=2, proxy_names=("Z",), device="cuda", seed=0
+    )
+    fit = est.fit(data, max_iter=2, epochs=5, init="proxy")
+    assert fit.responsibilities.is_cuda
+    assert fit.separability() > 0.5

@@ -519,21 +519,36 @@ class LatentClassEstimator:
         uniq, _ = data.blocks()
         n_ep = uniq.numel()
         g = torch.Generator(device="cpu").manual_seed(self.seed)
+        # EVERY tensor built here must be created on the DATA's device. The
+        # random branch below always did (it ends in ``.to(device)``), which is
+        # why the omission on the proxy branch went unnoticed -- and the proxy
+        # branch is the production DEFAULT, so the default init path had simply
+        # never been run on GPU. It raises rather than degrading, but only at
+        # the first line that mixes the two.
+        dev = data.state.device
         if init == "proxy" and self.proxy_names:
             # A covariate-free proxy is a direct (noisy) read of U, so its
             # episode mean orders the episodes far better than noise does --
             # fewer iterations and no dependence on a lucky seed.
             name = self.proxy_names[0]
             per_ep = data.episode_sum(
-                torch.stack([data.proxy[name].reshape(-1), torch.ones(data.n)], dim=1)
+                torch.stack(
+                    [
+                        data.proxy[name].reshape(-1),
+                        torch.ones(data.n, device=dev),
+                    ],
+                    dim=1,
+                )
             )
             mean = (per_ep[:, 0] / per_ep[:, 1]).reshape(-1)
-            qs = torch.quantile(mean, torch.linspace(0, 1, self.u_card + 1)[1:-1])
+            qs = torch.quantile(
+                mean, torch.linspace(0, 1, self.u_card + 1, device=dev)[1:-1]
+            )
             hard = torch.bucketize(mean, qs)
-            resp = torch.full((n_ep, self.u_card), 0.1)
-            resp[torch.arange(n_ep), hard] = 0.9
+            resp = torch.full((n_ep, self.u_card), 0.1, device=dev)
+            resp[torch.arange(n_ep, device=dev), hard] = 0.9
             return resp / resp.sum(dim=1, keepdim=True)
-        resp = torch.rand(n_ep, self.u_card, generator=g).to(data.state.device)
+        resp = torch.rand(n_ep, self.u_card, generator=g).to(dev)
         return resp / resp.sum(dim=1, keepdim=True)
 
     def _canonicalise(self, fit: LatentClassFit, data: EpisodeData) -> LatentClassFit:
