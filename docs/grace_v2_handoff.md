@@ -407,6 +407,49 @@ Consequences, both of which apply retroactively:
 Any L3 comparison from here reports **paired seeds and the median**, not a
 single fit and not a mean over three.
 
+### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
+
+Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
+precision issue: on that arm the estimator was **failing outright**. Every
+measurement taken with it on the real arms is therefore suspect until re-checked,
+and the ones below are **void rather than imprecise** — an unconverged number can
+be tightened, a number from a broken estimator cannot.
+
+| measurement | status |
+|---|---|
+| **D-D proxy ablation** | **VOID.** Its value-level numbers (the 14× do-contrast error on CartPole s0, the −0.099 on Acrobot s1) were computed through a degenerate reward density. Its *latent-level* conclusion — "the proxies are not load-bearing for identification" — is equally suspect, because the estimator that measured it was the one failing at chance on that arm. **The re-run is a FIRST measurement, not a repeat**, and must be reported as such. |
+| **L3 re-validation** (T = 16/150/500) | Ran under MDN-R. The 0.563 → 0.990 headline is confounded — see the 2×2 below, which is the more interesting consequence. |
+| **T = 16 seed sweep** | Ran under MDN-R. Lower stakes (its conclusion is "no effect"), but it carries the caveat until re-checked. |
+| **Cost numbers** | Being redone with both fixes. |
+| **D-D informativeness / third-proxy retirement** | **UNAFFECTED — confirmed, not assumed.** `tools/measure_dd_granularity.py` imports only `numpy`/`json`/`os`/`pathlib`; the AUC, the k-ranks and the margins are pure functions of the logged data and never construct a model. The retirement stands. |
+
+**The 2×2 that the re-validation cannot substitute for.** Tempering and discrete
+R both landed between the 0.563 → 0.990 result and now, and only the first was
+measured. **Tempering may have been compensating for a degenerate reward
+density** — in which case discrete R alone fixes T = 500 and the anneal is doing
+less than advertised. `tools/validate_t500_2x2.py` separates them:
+`{τ=1, annealed} × {MDN-R, categorical-R}`, three seeds each, on the corrected
+`ceil(log2 τ₀)` schedule. Any of the three outcomes is a result; **attributing
+the fix to the wrong cause is not.**
+
+### 🔍 THE PATTERN: a diagnostic added for one failure keeps catching a larger one
+
+Four times now, and it is an argument for the C3 discipline itself rather than an
+anecdote — **it belongs in the paper's methods discussion, not only here**:
+
+| diagnostic added for… | …immediately caught |
+|---|---|
+| **saturation detector** (frozen E-step) | the anneal terminating mid-schedule and returning a tempered surrogate |
+| **`reached_tau_one`** (incomplete anneal) | a smoothed surrogate being returned as an estimate, reading like a converged fit |
+| **scale-floor detector** (one 287,155 outlier) | **R mis-specified as continuous on every arm in the benchmark** |
+| **C3 labels** (conditions travelling with values) | `_canonicalise` resetting them, lying on ~half of all runs at random |
+
+The common structure: each pathology was **already occurring and already
+invisible**, and what made it visible was attaching a condition to the number
+rather than inspecting the number. None of the four was found by looking at a
+result and doubting it; all four were found because a value arrived carrying a
+label that contradicted it.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.
