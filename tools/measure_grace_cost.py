@@ -106,6 +106,29 @@ def main() -> int:
         wall = time.time() - t0
         hard = fit.hard_assignment().cpu().numpy()
 
+        # PER-MECHANISM SPLIT, measured rather than inferred. With R categorical
+        # the only gradient-fitted continuous mechanisms left are the proxies
+        # and S -- and **S is needed only for q2**, the sequential value. So if
+        # S dominates the M-step, that is a direct measurement of what the
+        # sequential query costs over the per-step one, rather than an argument
+        # about it.
+        mech_times = {}
+        for name, mech in dict(est.model.mechanisms).items():
+            frame = est._frame(
+                data, torch.zeros(data.n, dtype=torch.long, device=device)
+            )
+            from nbn.core.network import pack_parents
+
+            pa = pack_parents(frame, est.model.dag.parents(name))
+            if device == "cuda":
+                torch.cuda.synchronize()
+            tm = time.time()
+            for _ in range(3):
+                mech.log_prob(frame[name], pa)
+            if device == "cuda":
+                torch.cuda.synchronize()
+            mech_times[name] = round((time.time() - tm) / 3, 4)
+
         # THE LEVER, MEASURED. The fixed-step budget has been argued to decouple
         # per-iteration cost from dataset size; the V-D projection rests on it,
         # so it gets a measured factor. Timed over a few iterations of the
@@ -176,6 +199,8 @@ def main() -> int:
             "ll_tail_deltas": deltas,
             "ll_tail_rel_deltas": rel,
             "tol": args.tol,
+            "convergence_window": 2,
+            "mechanism_log_prob_seconds": mech_times,
         }
         out.append(rec)
         print(json.dumps(rec, indent=1), flush=True)

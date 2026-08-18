@@ -120,6 +120,10 @@ _SATURATION_EPS = 1e-3  # "a responsibility within eps of 0 or 1"
 # 0.867 on the T = 500 fixture), so this is a reporting choice and is documented
 # as one -- it decides only what gets printed, never what the estimator does.
 _SATURATION_FLAG = 0.5
+# Consecutive sub-tolerance iterations required to declare convergence. Not a
+# calibration constant: it is the WINDOW LENGTH of an existing test, and 2 is the
+# smallest window that can distinguish a trend from a single draw.
+_CONVERGENCE_WINDOW = 2
 
 
 @dataclass
@@ -956,6 +960,7 @@ class LatentClassEstimator:
         base_lr = float(fit_kwargs.pop("lr", 1e-3))
         backtracks, exhausted, converged = 0, False, False
         anneal_exhaustions = 0
+        small_steps = 0
         sat = sat0
         it = 0
         tau_prev = taus[0]
@@ -1031,9 +1036,25 @@ class LatentClassEstimator:
             # Convergence is only meaningful once the objective has stopped
             # changing underneath it: during the anneal tau itself moves, so a
             # small increment says nothing.
+            #
+            # TWO CONSECUTIVE ITERATIONS, not one. The per-iteration improvement
+            # is NOT monotone even under the guard -- measured on the converging
+            # CartPole fit, the relative delta ran
+            # 1.5e-2 -> 1.6e-4 -> 5.8e-4 -> 2.6e-4 -> 3.7e-5 against tol = 1e-4.
+            # A single-iteration test can therefore fire mid-oscillation: had
+            # that second delta come in at 9e-5 the fit would have stopped with
+            # 5.8e-4 of real improvement still ahead, and every number
+            # downstream would have carried a ``converged: True`` meaning
+            # "paused" rather than "finished". It came within a factor of two of
+            # doing exactly that. A window turns the flag from a snapshot into a
+            # claim, and costs at most one iteration.
             if tau == 1.0 and improvement < tol * abs(obj):
-                converged = True
-                break
+                small_steps += 1
+                if small_steps >= _CONVERGENCE_WINDOW:
+                    converged = True
+                    break
+            else:
+                small_steps = 0
 
         fit = LatentClassFit(
             model=self.model,

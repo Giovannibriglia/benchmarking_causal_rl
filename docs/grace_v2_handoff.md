@@ -340,10 +340,20 @@ the real data that exhibited it:**
 3. **A plausible constant that would have been wrong on real data.** The first
    version gated annealing on `initial_saturation ≥ 0.99`, justified as "the
    statistic is bimodal, so any cut decides identically". Asserted from two
-   observations and **false** — measured 0.41 / 0.93 / 0.99 across T = 16 / 150 /
-   500, a graded statistic. **A 0.99 cut would have declared T=150 unaffected,
-   and a third of the pre-fix fits failed there.** Worth reading next to A2: the
-   constant was not merely unjustified, it was wrong. The anneal is now extra
+   observations and **false**. ⚠ **The conclusion holds; the reason first
+   recorded for it does not — corrected here rather than left resting on a
+   superseded measurement.** The original evidence was a gradation
+   0.41 / 0.93 / 0.99 across T = 16 / 150 / 500, read as sat0 tracking episode
+   length. Those were **MDN-R** fits. Under categorical-R the *same environment
+   at the same T* reads **0.983**, not 0.41 — so sat0 is **not primarily a
+   function of T**. It tracks **per-step separation × episode length**, and the
+   categorical mechanism raises per-step separation sharply; the original
+   gradation confounded episode length with mechanism mis-specification. The A2
+   conclusion survives and is stronger: sat0 is near-saturated almost everywhere,
+   including on a **converged, correct, recovery-0.991 CartPole fit at T = 18**,
+   so *any* cut in the upper range misclassifies healthy fits. **A 0.99 cut would
+   have declared T=150 unaffected, and a third of the pre-fix fits failed
+   there.** The constant was not merely unjustified, it was wrong. The anneal is now extra
    iterations rather than a slice of `max_iter`, which removes the conflict that
    made a gate look necessary; nothing in the control path reads the detector.
 4. **`_canonicalise` was silently resetting fields, and had been all along.** It
@@ -505,6 +515,35 @@ invisible**, and what made it visible was attaching a condition to the number
 rather than inspecting the number. None of the four was found by looking at a
 result and doubting it; all four were found because a value arrived carrying a
 label that contradicted it.
+
+### THE FORK — CartPole answered; the architecture SPLITS rather than collapsing
+
+**CartPole: 198.7 s (3.3 min), CONVERGED, 6 iterations, every C3 condition
+clean** — against 3913 s unconverged before the discrete-R and anneal-rung
+fixes. `MINUTES → cadence refit viable`. Measured lever: fixed-step M-step
+33.1 s/iter against epoch-based 129.9 s/iter, **×3.92** (up from ×2.01, because
+the categorical R made the fixed-step path cheaper while the baseline still pays
+O(n·epochs)).
+
+**If Acrobot lands on hours the architecture does not collapse, it SPLITS**:
+GRACE is a cadence-refit critic where fits are cheap and a fit-once-then-serve
+critic where they are not. That is defensible **only if the split is DECLARED
+PER CELL rather than discovered at runtime** — a critic that silently changes
+its refresh semantics with the environment is exactly the kind of undeclared
+channel A1 exists to forbid.
+
+The concrete consequence, which is narrower than a general limitation: it would
+block **the online Acrobot cells specifically**, because those need refresh and
+refresh means refitting (N2: `update_local` refuses weights). Offline Acrobot is
+unaffected — it fits once by construction.
+
+**V-D re-projection, ready to run but NOT yet run.** At 3.3 min per converged
+fit, `B = 99` is ~5.5 h serial per constraint and well under an hour at six-way
+parallelism, against the earlier estimate of 1.7–4 h *per replicate*. That is a
+different problem, and **option A (the full grid) may be back in reach on
+CartPole**. Do not project until Acrobot reports: Acrobot decides whether the
+grid is uniform or must be split by environment, and projecting on CartPole
+alone would answer the easy half.
 
 ### Open threads
 
