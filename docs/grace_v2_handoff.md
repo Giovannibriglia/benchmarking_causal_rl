@@ -417,11 +417,22 @@ be tightened, a number from a broken estimator cannot.
 
 | measurement | status |
 |---|---|
-| **D-D proxy ablation** | **VOID.** Its value-level numbers (the 14× do-contrast error on CartPole s0, the −0.099 on Acrobot s1) were computed through a degenerate reward density. Its *latent-level* conclusion — "the proxies are not load-bearing for identification" — is equally suspect, because the estimator that measured it was the one failing at chance on that arm. **The re-run is a FIRST measurement, not a repeat**, and must be reported as such. |
+| **D-D proxy ablation** | **VOID, for two independent reasons.** (1) Its value-level numbers (the 14× do-contrast error on CartPole s0, the −0.099 on Acrobot s1) were computed through a degenerate reward density, and its *latent-level* conclusion is equally suspect because the estimator that measured it was failing at chance on that arm. (2) **Its SELECTION criterion is also void.** It picked the reported fit by `max(per_seed, key=final_ll)` — deliberately, so the answer would not choose the method — but under a floor-dominated reward density **a higher likelihood may indicate a MORE degenerate fit, not a better one**. The criterion may have been selecting *for* degeneracy. **The re-run is a FIRST measurement, not a repeat.** |
 | **L3 re-validation** (T = 16/150/500) | Ran under MDN-R. The 0.563 → 0.990 headline is confounded — see the 2×2 below, which is the more interesting consequence. |
 | **T = 16 seed sweep** | Ran under MDN-R. Lower stakes (its conclusion is "no effect"), but it carries the caveat until re-checked. |
 | **Cost numbers** | Being redone with both fixes. |
 | **D-D informativeness / third-proxy retirement** | **UNAFFECTED — confirmed, not assumed.** `tools/measure_dd_granularity.py` imports only `numpy`/`json`/`os`/`pathlib`; the AUC, the k-ranks and the margins are pure functions of the logged data and never construct a model. The retirement stands. |
+
+**Likelihood-based SELECTION is only valid when the likelihood is.** This is the
+sharper form of the point above and it reaches further than the ablation. The
+proxy-init probe's central evidence — proxy-init at `ll ≈ +24k…+42k` against
+random-init's `−15k…−35k`, taken as clean proof that the estimand is identified
+and the optimiser is the defect — was also measured under MDN-R. Under
+categorical-R log-probabilities are bounded above by zero and comparable across
+fits, so **re-check that comparison**. A 40k-nat gap is unlikely to be
+manufactured by a scale floor and the conclusion will probably hold, but the
+load-bearing evidence for "optimisation, not identification" currently rests on a
+criterion we now distrust, and that should not be left standing on trust.
 
 **The 2×2 that the re-validation cannot substitute for.** Tempering and discrete
 R both landed between the 0.563 → 0.990 result and now, and only the first was
@@ -431,6 +442,51 @@ less than advertised. `tools/validate_t500_2x2.py` separates them:
 `{τ=1, annealed} × {MDN-R, categorical-R}`, three seeds each, on the corrected
 `ceil(log2 τ₀)` schedule. Any of the three outcomes is a result; **attributing
 the fix to the wrong cause is not.**
+
+### T = 500 2×2 — RESULT: both fixes are load-bearing, partially redundant
+
+| reward | τ=1 | annealed |
+|---|---|---|
+| **MDN-R** | **0.550** (0/3 good) | **0.990** (3/3) |
+| **categorical-R** | **0.980** (2/3) | **0.990** (3/3) |
+
+**Tempering alone rescues T = 500 under MDN-R**, so the 0.563 → 0.990 headline
+stands as measured. Discrete-R alone also gets there in the median but not
+reliably (one seed in three still at 0.56). Only the combination is 3/3. Neither
+fix is doing the other's work, and neither owns the result.
+
+Two things the 2×2 showed that it was not designed to look for:
+
+1. **SATURATION IS NECESSARY BUT NOT SUFFICIENT.** `initial_saturation` is
+   0.95–1.00 in **all twelve** fits, including the categorical cells that recover
+   perfectly at τ=1. So the E-step saturates regardless; what separates recovery
+   from chance is the basin structure the mechanism creates. Saturation is the
+   precondition, the mis-specified likelihood was the trigger. **This corrected
+   the bootstrap contract — see below.**
+2. **RECOVERY AND LIKELIHOOD VALIDITY COME APART.** `degenerate_mechanism` fires
+   on 2 of the 3 MDN *annealed* fits — the ones recovering at 0.99. A fit can get
+   the latent right while its reward density sits on the floor. Since L4 and L5
+   read the **likelihood**, not the labels, **discrete-R is required for them
+   even where tempering already fixes recovery.** An independent argument for the
+   change, separate from the CartPole recovery result.
+
+#### ⚠ CORRECTED: saturation is a RISK flag, not a FAILURE flag
+
+The first version of the bootstrap contract failed any replicate whose E-step
+saturated. **That was wrong, and finding 1 above is what showed it**: on the
+T = 500 arm every fit saturates, so the rule would have failed *every* replicate
+on exactly the long-episode environments L4 and L5 most need — and with
+`max_failure_rate` defaulting to zero, rejected every null there **while looking
+principled**. The wrong version is preserved because the general lesson is:
+
+> **A diagnostic that fires on healthy fits is a RISK flag, not a FAILURE flag.**
+> Failing on it conflates "this was hard" with "this went wrong".
+
+Revised: saturation fails a replicate only when **nothing was done about it** —
+saturated *and* no annealing, i.e. init-determined. Saturated with the anneal
+active is the diagnostic doing its job. The genuine failure conditions are an
+exhausted backtrack budget, a fit that stopped mid-anneal, a **degenerate
+mechanism**, and non-convergence.
 
 ### 🔍 THE PATTERN: a diagnostic added for one failure keeps catching a larger one
 

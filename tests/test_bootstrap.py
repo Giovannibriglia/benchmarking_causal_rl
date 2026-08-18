@@ -239,6 +239,39 @@ def test_parallelism_preserves_failure_accounting():
     assert a.diagnostics() == b.diagnostics()
 
 
+def test_saturation_alone_does_not_fail_a_replicate():
+    """CORRECTED RULE. Saturation is a property of the DATA, not of the fit.
+
+    Measured on the T = 500 arm: ``initial_saturation`` is 0.95-1.00 in EVERY
+    fit, including the ones recovering at 0.99. The first version of this
+    contract failed any saturated replicate, which would have failed every
+    replicate on exactly the long-episode environments L4 and L5 most need --
+    and with ``max_failure_rate`` defaulting to zero, rejected every null there
+    while looking principled.
+
+    A diagnostic that fires on healthy fits is a RISK flag, not a FAILURE flag.
+    """
+
+    class _Fit:
+        value = 1.0
+        converged = True
+        monotone = True
+        backtracks = 0
+        backtrack_exhausted = False
+        initial_saturation = 0.98
+        saturated_at_init = True
+        n_anneal = 9  # the anneal DID run: saturation was handled
+        reached_tau_one = True
+        degenerate_mechanism = False
+
+    null = bootstrap_null(lambda seed: _Fit(), b=8, seed=0)
+    assert null.n_failed == 0, [r.reason for r in null.replicates if r.failed]
+    assert null.trustworthy
+    # ...but it is still REPORTED, because it is why annealing was needed.
+    assert null.diagnostics()["n_saturated_at_init"] == 8
+    assert null.diagnostics()["n_init_determined"] == 0
+
+
 def test_a_saturated_replicate_is_a_failed_replicate():
     """§3 — the consequence that reaches L4 and L5.
 
@@ -263,23 +296,27 @@ def test_a_saturated_replicate_is_a_failed_replicate():
             self.backtrack_exhausted = False
             self.initial_saturation = 0.0
             self.saturated_at_init = False
+            self.n_anneal = 9
             self.reached_tau_one = True
+            self.degenerate_mechanism = False
             for k, v in kw.items():
                 setattr(self, k, v)
 
     def statistic(seed: int):
         # every third replicate is frozen at its init
         if seed % 3 == 0:
-            return _Fit(1.0, initial_saturation=0.97, saturated_at_init=True)
+            return _Fit(
+                1.0, initial_saturation=0.97, saturated_at_init=True, n_anneal=0
+            )
         return _Fit(float(seed % 5))
 
     null = bootstrap_null(statistic, b=12, seed=0, statistic_name="t")
     assert null.n_failed > 0
     assert not null.trustworthy, "a null with frozen replicates must not pass"
     d = null.diagnostics()
-    assert d["n_saturated_at_init"] == null.n_failed, d
+    assert d["n_init_determined"] == null.n_failed, d
     assert d["max_initial_saturation"] > 0.9, d
-    assert any("saturated at initialisation" in r for r in d["reasons"]), d["reasons"]
+    assert any("NO annealing" in r for r in d["reasons"]), d["reasons"]
 
 
 def test_a_replicate_that_stopped_while_tempered_is_a_failed_replicate():
@@ -294,7 +331,9 @@ def test_a_replicate_that_stopped_while_tempered_is_a_failed_replicate():
         backtrack_exhausted = False
         initial_saturation = 0.0
         saturated_at_init = False
+        n_anneal = 9
         reached_tau_one = False
+        degenerate_mechanism = False
 
     null = bootstrap_null(lambda seed: _Fit(), b=4, seed=0)
     assert null.n_failed == 4

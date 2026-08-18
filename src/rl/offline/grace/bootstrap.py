@@ -12,21 +12,37 @@ space**, where the regularity conditions behind `chi^2_df` fail. The reference
 distribution is not chi-2 and is not known in closed form, so estimating it from
 the data at hand is the only sound route — not a fallback.
 
-**A NULL COMPUTED FROM SATURATED REPLICATES IS NOT A NULL.** Every replicate
-is an EM fit, and the L3 E-step sums per-row log-likelihoods over the episode --
-so on long episodes the responsibilities saturate to 0/1 immediately and the fit
-is frozen at whatever its initialisation picked. A replicate like that does not
-sample the statistic's sampling distribution; it samples the INITIALISER. A null
-built from them measures initialisation variance, and it does so while looking
-impeccable: narrow, smooth, and about the wrong thing. Since L4's compatible set
-and L5's falsification thresholds are both read off these nulls, that failure
-would propagate into every calibrated number in the project without ever
-presenting as an error.
+**AN INIT-DETERMINED REPLICATE IS NOT A REPLICATE.** Every replicate is an EM
+fit, and the L3 E-step sums per-row log-likelihoods over the episode -- so on
+long episodes the responsibilities saturate to 0/1 immediately and an untempered
+fit is frozen at whatever its initialisation picked. Such a fit does not sample
+the statistic's sampling distribution; it samples the INITIALISER. A null built
+from them measures initialisation variance while looking impeccable -- narrow,
+smooth, and about the wrong thing -- and since L4's compatible set and L5's
+falsification thresholds are both read off these nulls, it would propagate into
+every calibrated number without presenting as an error.
 
-Saturated replicates are therefore FAILED replicates, in the same category as an
-exhausted backtrack budget, and they are counted in ``diagnostics()``. The same
-applies to a fit that stopped mid-anneal: its parameters maximise a tempered
-surrogate rather than the likelihood.
+**CORRECTED RULE, and the wrong version is preserved because the reasoning that
+produced it is the general lesson.** The first version failed any replicate whose
+E-step saturated. That was wrong, and measurably so: on the T = 500 arm
+``initial_saturation`` is 0.95-1.00 in **every** fit, including the ones that
+recover at 0.99 -- so the rule would have failed EVERY replicate on exactly the
+long-episode environments this layer most needs, and with ``max_failure_rate``
+defaulting to zero it would have rejected every null there while looking
+principled. Saturation is a property of the DATA (episode length x per-step
+separation), not of the fit's health: it says an untempered EM *would be*
+init-determined here, which is a statement about what the optimiser must do, not
+about whether it did it.
+
+    **A diagnostic that fires on healthy fits is a RISK flag, not a FAILURE
+    flag.** Failing on it conflates "this was hard" with "this went wrong".
+
+So saturation fails a replicate only when nothing was done about it -- saturated
+**and** no annealing. Saturated with the anneal active is the diagnostic doing
+its job and is reported, not failed. The genuine failure conditions are:
+an exhausted backtrack budget, a fit that stopped mid-anneal (its parameters
+maximise a tempered surrogate), a degenerate mechanism (its likelihood is
+measuring ``min_scale``), and non-convergence.
 
 **The hazard this module is designed around: silently dropped replicates.**
 Every replicate is an EM fit, and EM fits can fail — non-convergence, or an
@@ -99,7 +115,9 @@ class ReplicateResult:
     backtrack_exhausted: bool = False
     initial_saturation: float = 0.0
     saturated_at_init: bool = False
+    n_anneal: int = 0
     reached_tau_one: bool = True
+    degenerate_mechanism: bool = False
     failed: bool = False
     reason: str = ""
 
@@ -200,6 +218,12 @@ class BootstrapNull:
             "n_non_monotone": sum(1 for r in self.replicates if not r.monotone),
             "n_saturated_at_init": sum(
                 1 for r in self.replicates if r.saturated_at_init
+            ),
+            "n_init_determined": sum(
+                1 for r in self.replicates if r.saturated_at_init and r.n_anneal == 0
+            ),
+            "n_degenerate_mechanism": sum(
+                1 for r in self.replicates if r.degenerate_mechanism
             ),
             "n_stopped_while_tempered": sum(
                 1 for r in self.replicates if not r.reached_tau_one
@@ -308,25 +332,36 @@ def bootstrap_null(
         rec.backtrack_exhausted = bool(getattr(out, "backtrack_exhausted", False))
         rec.initial_saturation = float(getattr(out, "initial_saturation", 0.0))
         rec.saturated_at_init = bool(getattr(out, "saturated_at_init", False))
+        rec.n_anneal = int(getattr(out, "n_anneal", 0))
         rec.reached_tau_one = bool(getattr(out, "reached_tau_one", True))
+        rec.degenerate_mechanism = bool(getattr(out, "degenerate_mechanism", False))
         # An exhausted backtrack budget means EM stopped on a decrease it could
         # not repair. That is a FAILED fit for calibration purposes even though a
         # number came back, because the number is not from a converged model.
         if rec.backtrack_exhausted:
             rec.failed = True
             rec.reason = "backtrack budget exhausted (EM stopped on a decrease)"
-        # A SATURATED replicate is the same category, and a more dangerous one.
-        # Its E-step was a step function from the first iteration, so the fit is
-        # frozen at its initialisation: the replicate's statistic is a draw from
-        # the INITIALISER, not from the sampling distribution. A null built out
-        # of those measures initialisation variance while looking perfectly
-        # well-behaved -- narrow, smooth, and about the wrong thing.
-        elif rec.saturated_at_init:
+        # SATURATION IS A RISK FLAG, NOT A FAILURE FLAG -- corrected, see the
+        # module docstring. It fails a replicate only when NOTHING WAS DONE
+        # ABOUT IT: saturated with no annealing means the fit is
+        # init-determined and its statistic is initialisation noise. Saturated
+        # WITH the anneal active is the diagnostic doing its job.
+        elif rec.saturated_at_init and rec.n_anneal == 0:
             rec.failed = True
             rec.reason = (
                 f"E-step saturated at initialisation ({rec.initial_saturation:.2f} of "
-                "episodes hard-assigned before the first M-step); this replicate's "
-                "statistic reflects its init, not the resample"
+                "episodes hard-assigned before the first M-step) with NO annealing; "
+                "this replicate is init-determined and its statistic is "
+                "initialisation noise, not a resample"
+            )
+        # A degenerate mechanism IS a failure regardless: a scale on its floor
+        # makes the likelihood a function of min_scale, and every statistic here
+        # is likelihood-based.
+        elif rec.degenerate_mechanism:
+            rec.failed = True
+            rec.reason = (
+                "a mechanism's fitted scale is on its min_scale floor; the "
+                "likelihood is measuring the floor, not the data"
             )
         # Stopped mid-anneal: the parameters maximise a tempered surrogate, so
         # the statistic is not an estimate of the target at all.
