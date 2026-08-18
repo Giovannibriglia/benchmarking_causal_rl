@@ -259,6 +259,18 @@ class LatentClassFit:
     # fatal: the anneal is a warm-up and skipping a rung costs at most the
     # warm-up's benefit.
     anneal_exhaustions: int = 0
+    # Cumulative learning-rate reduction the backtracking needed. Reported
+    # because a fit that had to shrink by 2^-6 is telling you the M-step's
+    # default step size is wrong for this data, which is actionable.
+    stationary: bool = False
+    # Relative worsening of the BEST step available when the fit gave up. Near
+    # numerical zero => a numerical fixed point; ~tol => the optimiser simply
+    # cannot ascend. ``stationary`` is the same flag either way, but not the
+    # same strength of claim.
+    rejected_step_rel: float | None = None
+    backtracks_per_iter: List[int] = field(default_factory=list)
+    final_lr_scale: float = 1.0
+    lr_reductions: int = 0
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
@@ -294,6 +306,23 @@ class LatentClassFit:
         itself be the test.
         """
         return any(v > 0.0 for v in self.mechanism_degeneracy.values())
+
+    @property
+    def finished(self) -> bool:
+        """Did the fit reach an end state, by either legitimate route?
+
+        Read ``rejected_step_rel`` alongside a stationary stop: it says
+        whether the best available step worsened the objective by numerical
+        noise (a fixed point) or by a real margin (an optimiser that cannot
+        ascend). Same flag, different strength of claim.
+
+        Two of them, and they are different claims: the TOLERANCE window
+        (improvements below ``tol`` twice consecutively) and STATIONARITY (no
+        improving step exists at any step size tried, with the last improvement
+        already sub-tolerance). A fit that runs out of step sizes while still
+        improving by percent is neither -- it is stuck, and is reported as such.
+        """
+        return bool(self.converged or self.stationary)
 
     @property
     def reached_tau_one(self) -> bool:
@@ -961,6 +990,12 @@ class LatentClassEstimator:
         backtracks, exhausted, converged = 0, False, False
         anneal_exhaustions = 0
         small_steps = 0
+        lr_scale = 1.0
+        lr_reductions = 0
+        stationary = False
+        improvement_rel = None
+        rejected_step_rel = None
+        backtracks_per_iter: List[int] = []
         sat = sat0
         it = 0
         tau_prev = taus[0]
@@ -984,7 +1019,7 @@ class LatentClassEstimator:
             tried = 0
             while True:
                 new_prior = self.m_step(
-                    data, resp, lr=base_lr * (0.5**tried), **fit_kwargs
+                    data, resp, lr=base_lr * lr_scale * (0.5**tried), **fit_kwargs
                 )
                 new_resp, new_ll, new_obj, sat = self.e_step(
                     data, new_prior, temperature=tau
@@ -1020,12 +1055,76 @@ class LatentClassEstimator:
                     # tau = 1 phase runs exactly as it did before this change.
                     anneal_exhaustions += 1
                     continue
-                # At tau = 1 it means what it always meant: EM stopped on a
-                # decrease of the TRUE objective it could not repair.
+                # AT tau = 1, EXHAUSTION IS AMBIGUOUS -- "the fit is finished"
+                # and "the step size is wrong" look identical from here -- and a
+                # per-iteration budget can only ever conclude the first. So
+                # persist the reduction and try again from the smaller step,
+                # bounded by the same ``max_backtracks`` applied to the number of
+                # PERSISTENT reductions. Only when those are also spent is the
+                # fit genuinely stuck rather than merely over-stepping.
+                lr_scale *= 0.5 ** max(tried, 1)
+                lr_reductions += 1
+                if lr_reductions <= max_backtracks:
+                    if verbose:
+                        print(
+                            f"  EM {it:3d} tau=1 persistent lr reduction "
+                            f"{lr_reductions}: scale now {lr_scale:.3g}"
+                        )
+                    continue
+                # STATIONARY vs STUCK -- two different stops, both legitimate,
+                # and the distinction must be earned rather than assumed in
+                # either direction.
+                #
+                # Having spent the persistent reductions, no improving step
+                # exists at any step size this optimiser will try. If the recent
+                # improvements were ALREADY sub-tolerance, that is the objective
+                # being stationary at the optimiser's resolution -- a second
+                # legitimate route to "finished", distinct from the tolerance
+                # window. Measured on CartPole at production scale: last relative
+                # delta 2.7e-5 against tol 1e-4, with no improving step
+                # available.
+                #
+                # If instead the fit was still improving by percent when it ran
+                # out of step sizes, it is STUCK, and calling that convergence
+                # would be relabelling a failure to make a number look finished.
+                # The test is on measured quantities only; no new constant.
+                # HOW BADLY did the smallest step tried worsen the objective?
+                # "No step worked" and "no step worked, and the best available
+                # step worsens it by 1e-9" are different claims. At
+                # lr_scale ~ 1e-4 the parameter movement is tiny, so a rejected
+                # step may be NUMERICAL NOISE rather than a real worsening -- in
+                # which case the fit is at a numerical fixed point and
+                # ``stationary`` holds for a stronger reason than stated. A
+                # rejection at ~1e-4 relative means the optimiser genuinely
+                # cannot ascend, which is a weaker claim and must read as one.
+                rejected_step_rel = float((obj - new_obj) / max(abs(obj), 1e-12))
+                if improvement_rel is not None and improvement_rel < tol:
+                    stationary = True
                 exhausted = True
                 break
+            # PERSIST THE LEARNING-RATE REDUCTION ACROSS ITERATIONS.
+            #
+            # ``tried`` used to reset every iteration, so the halvings were
+            # DISCARDED and each iteration restarted at ``base_lr``. The guard
+            # could therefore reject a bad step but never adapt: if the objective
+            # needs ``base_lr / 16``, every iteration halves ``max_backtracks``
+            # times, fails, and the fit stops. Measured at production scale --
+            # Acrobot ended with 9 backtracks, exactly 3 iterations x 3 halvings,
+            # each hitting the same wall, and it stopped the moment it reached
+            # tau = 1 with the tail still 8x tolerance. CartPole did the same with
+            # 3.
+            #
+            # The transition into tau = 1 is where it bites: the step size that
+            # worked on the SMOOTHED objective overshoots on the sharper true
+            # one, and a per-iteration reset guarantees it overshoots again.
+            # Carrying the reduction forward is ordinary backtracking-line-search
+            # behaviour and adds no constant. Monotone decrease, no re-growth:
+            # re-inflating is what caused this.
+            lr_scale *= 0.5**tried
+            backtracks_per_iter.append(tried)
             prior, resp = new_prior, new_resp
             improvement = new_obj - obj
+            improvement_rel = improvement / max(abs(new_obj), 1e-12)
             ll, obj = new_ll, new_obj
             history.append(ll)
             if verbose:
@@ -1067,6 +1166,11 @@ class LatentClassEstimator:
             backtrack_exhausted=exhausted,
             temperatures=list(taus[: it + 1]),
             anneal_exhaustions=anneal_exhaustions,
+            stationary=stationary,
+            rejected_step_rel=rejected_step_rel,
+            backtracks_per_iter=list(backtracks_per_iter),
+            final_lr_scale=lr_scale,
+            lr_reductions=lr_reductions,
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
             final_saturation=sat,

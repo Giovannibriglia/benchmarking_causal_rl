@@ -100,17 +100,31 @@ def test_on_failure_raise_refuses_to_produce_a_conditioned_null():
 
 def test_an_exhausted_backtrack_budget_counts_as_a_FAILED_replicate():
     """EM that stopped on a decrease it could not repair returns a number, but
-    not one from a converged model. Counting it as a success would launder a
-    known-bad fit into the null."""
+    not one from a finished model. Counting it as a success would launder a
+    known-bad fit into the null.
+
+    The fixture originally set ``converged=True`` alongside
+    ``backtrack_exhausted=True``. The estimator cannot produce that pair -- the
+    EM loop breaks on one or the other -- and once the failure test became
+    ``finished`` rather than the raw flag, the impossible combination read as a
+    finished fit and the test stopped exercising anything. Corrected to the
+    realistic case; the intent is unchanged, and the point it makes is now
+    sharper: what fails a replicate is exhausting the budget WHILE STILL
+    IMPROVING, not exhausting it at a stationary point.
+    """
 
     class Out:
         def __init__(self, v, exhausted):
             self.value, self.backtrack_exhausted = v, exhausted
-            self.converged, self.monotone, self.backtracks = True, True, 0
+            self.monotone, self.backtracks = True, 0
+            # stopped on a decrease => not converged, and not stationary either
+            self.converged = not exhausted
+            self.stationary = False
+            self.finished = not exhausted
 
     null = bootstrap_null(lambda s: Out(float(s), exhausted=(s % 4 == 0)), b=16, seed=0)
     assert null.n_failed > 0
-    assert any("backtrack budget exhausted" in r.reason for r in null.replicates)
+    assert any("still improving" in r.reason for r in null.replicates)
 
 
 def test_non_finite_statistics_are_failures_not_data():
@@ -338,3 +352,49 @@ def test_a_replicate_that_stopped_while_tempered_is_a_failed_replicate():
     null = bootstrap_null(lambda seed: _Fit(), b=4, seed=0)
     assert null.n_failed == 4
     assert null.diagnostics()["n_stopped_while_tempered"] == 4
+
+
+def test_a_stationary_replicate_is_not_a_failure():
+    """The failure test is ``finished``, not ``converged`` — and the two now
+    diverge routinely.
+
+    A fit has two legitimate end states: the tolerance window, and STATIONARITY
+    (no improving step at any step size tried, with the last improvement already
+    sub-tolerance). A stationary fit sets ``backtrack_exhausted``, so a contract
+    testing that flag alone would fail it. Measured: the production-scale
+    CartPole fit at 55k transitions finishes by stationarity, NOT by the
+    tolerance window, so a converged-based rule would reject the typical
+    production replicate.
+
+    Same class as the first saturation rule: a condition that used to fire
+    almost never and now fires often.
+    """
+
+    class _Fit:
+        value = 1.0
+        converged = False  # the tolerance window never fired...
+        stationary = True  # ...but the objective is stationary
+        finished = True
+        monotone = True
+        backtracks = 12
+        backtrack_exhausted = True  # which a stationary fit always sets
+        initial_saturation = 0.98
+        saturated_at_init = True
+        n_anneal = 5
+        reached_tau_one = True
+        degenerate_mechanism = False
+
+    null = bootstrap_null(lambda seed: _Fit(), b=6, seed=0)
+    assert null.n_failed == 0, [r.reason for r in null.replicates if r.failed]
+    assert null.trustworthy
+    assert null.diagnostics()["n_stationary"] == 6
+    assert null.diagnostics()["n_not_finished"] == 0
+
+    # ...while exhausting the budget WHILE STILL IMPROVING remains a failure.
+    class _Stuck(_Fit):
+        stationary = False
+        finished = False
+
+    stuck = bootstrap_null(lambda seed: _Stuck(), b=6, seed=0)
+    assert stuck.n_failed == 6
+    assert any("still improving" in r for r in stuck.diagnostics()["reasons"])

@@ -200,6 +200,10 @@ def main() -> int:
             "ll_tail_rel_deltas": rel,
             "tol": args.tol,
             "convergence_window": 2,
+            "stationary": bool(fit.stationary),
+            "finished": bool(fit.finished),
+            "lr_reductions": int(fit.lr_reductions),
+            "final_lr_scale": float(fit.final_lr_scale),
             "mechanism_log_prob_seconds": mech_times,
         }
         out.append(rec)
@@ -208,15 +212,61 @@ def main() -> int:
         Path(args.out).write_text(json.dumps(out, indent=1))
 
     print("\n=== THE FORK ===")
+    unresolved = False
     for r in out:
         mins = r["fit_seconds"] / 60.0
+        # A fit that did not finish, or that finished carrying a C3 failure, is
+        # not a cost measurement. NOTE the corrected saturation rule: saturated
+        # WITH the anneal active is a risk flag, not a failure, so it does not
+        # appear here -- it fired on a converged, correct, recovery-0.991 fit.
+        problems = []
+        if not (r["converged"] or r.get("stationary")):
+            problems.append(f"NOT FINISHED at {r['n_iter']} iters")
+        elif r.get("stationary") and not r["converged"]:
+            # A legitimate end state, but a different claim from the tolerance
+            # window, so it is named rather than folded in.
+            print(
+                f"  {r['env']:<12} finished by STATIONARITY (no improving step at "
+                f"any tried step size; last relative delta already < tol), not by "
+                f"the tolerance window"
+            )
+        if r["backtrack_exhausted"] and not r.get("stationary"):
+            problems.append("stopped on a decrease while still improving")
+        if not r["reached_tau_one"]:
+            problems.append("stopped while tempered")
+        if r["degenerate_mechanism"]:
+            problems.append("degenerate scale")
         side = (
             "MINUTES -> cadence refit viable"
             if mins < 60
             else "HOURS -> fit-once-then-serve"
         )
+        if problems:
+            unresolved = True
+            print(
+                f"  {r['env']:<12} {mins:8.1f} min  -- NOT A CLEAN MEASUREMENT: "
+                + "; ".join(problems)
+            )
+            print(f"      would read: {side}")
+        else:
+            print(f"  {r['env']:<12} {mins:8.1f} min  clean  -> {side}")
         print(
-            f"  {r['env']:<12} {mins:8.1f} min  converged={r['converged']}  -> {side}"
+            f"      relative ll deltas {r['ll_tail_rel_deltas']} against tol {r['tol']}"
+        )
+        print(
+            f"      fixed-step M-step {r['seconds_per_iter_fixed_step']}s/iter vs "
+            f"epoch-based {r['seconds_per_iter_epoch_based']}s/iter "
+            f"(x{r['fixed_step_speedup']})"
+        )
+        print(
+            f"      E-step log_prob split (NOT the M-step): "
+            f"{r['mechanism_log_prob_seconds']}"
+        )
+    if unresolved:
+        print(
+            "\n  Read the 'would read' lines as INDICATIVE, not as the fork's "
+            "answer: a wall-clock figure from a fit that stopped on a decrease "
+            "is a lower bound on a converged fit, not a measurement of one."
         )
     return 0
 

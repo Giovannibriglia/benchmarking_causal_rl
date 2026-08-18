@@ -40,9 +40,20 @@ about whether it did it.
 So saturation fails a replicate only when nothing was done about it -- saturated
 **and** no annealing. Saturated with the anneal active is the diagnostic doing
 its job and is reported, not failed. The genuine failure conditions are:
-an exhausted backtrack budget, a fit that stopped mid-anneal (its parameters
-maximise a tempered surrogate), a degenerate mechanism (its likelihood is
-measuring ``min_scale``), and non-convergence.
+a fit that stopped mid-anneal (its parameters maximise a tempered surrogate), a
+degenerate mechanism (its likelihood is measuring ``min_scale``), and **an
+exhausted backtrack budget WHILE STILL IMPROVING** — which is not the same as an
+exhausted budget.
+
+**THE TEST IS ``finished``, NOT ``converged``, and this is stated because the
+two now diverge ROUTINELY.** A fit has two legitimate end states: the tolerance
+window, and **stationarity** — no improving step at any step size tried, with the
+last improvement already sub-tolerance. A stationary fit sets
+``backtrack_exhausted``, so testing that flag alone would fail it. Measured: the
+production-scale CartPole fit at 55k transitions finishes by *stationarity*, not
+by the tolerance window, so ``converged``-based failure would reject the typical
+production replicate. Same class of error as the first saturation rule — a
+condition that used to fire almost never and now fires often.
 
 **The hazard this module is designed around: silently dropped replicates.**
 Every replicate is an EM fit, and EM fits can fail — non-convergence, or an
@@ -110,6 +121,8 @@ class ReplicateResult:
     seed: int
     statistic: Optional[float] = None
     converged: bool = False
+    stationary: bool = False
+    finished: bool = False
     monotone: bool = True
     backtracks: int = 0
     backtrack_exhausted: bool = False
@@ -225,6 +238,8 @@ class BootstrapNull:
             "n_degenerate_mechanism": sum(
                 1 for r in self.replicates if r.degenerate_mechanism
             ),
+            "n_stationary": sum(1 for r in self.replicates if r.stationary),
+            "n_not_finished": sum(1 for r in self.replicates if not r.finished),
             "n_stopped_while_tempered": sum(
                 1 for r in self.replicates if not r.reached_tau_one
             ),
@@ -327,6 +342,17 @@ def bootstrap_null(
             rec.statistic = None
             return rec
         rec.converged = bool(getattr(out, "converged", True))
+        rec.stationary = bool(getattr(out, "stationary", False))
+        # THE FAILURE CONDITION IS ``finished``, NOT ``converged`` -- stated
+        # explicitly because the two now diverge ROUTINELY rather than rarely.
+        # A stationary fit reached a legitimate end state (no improving step at
+        # any step size tried, with the last improvement already sub-tolerance)
+        # and is NOT a failed replicate. Testing ``converged`` alone would fail
+        # most production-scale replicates: the measured CartPole fit at 55k
+        # transitions finishes by stationarity, not by the tolerance window.
+        # Same class of error as the first saturation rule -- a condition that
+        # used to fire almost never and now fires often.
+        rec.finished = bool(getattr(out, "finished", rec.converged or rec.stationary))
         rec.monotone = bool(getattr(out, "monotone", True))
         rec.backtracks = int(getattr(out, "backtracks", 0))
         rec.backtrack_exhausted = bool(getattr(out, "backtrack_exhausted", False))
@@ -338,9 +364,12 @@ def bootstrap_null(
         # An exhausted backtrack budget means EM stopped on a decrease it could
         # not repair. That is a FAILED fit for calibration purposes even though a
         # number came back, because the number is not from a converged model.
-        if rec.backtrack_exhausted:
+        if rec.backtrack_exhausted and not rec.finished:
             rec.failed = True
-            rec.reason = "backtrack budget exhausted (EM stopped on a decrease)"
+            rec.reason = (
+                "backtrack budget exhausted while still improving (EM stopped on "
+                "a decrease it could not repair, and not at a stationary point)"
+            )
         # SATURATION IS A RISK FLAG, NOT A FAILURE FLAG -- corrected, see the
         # module docstring. It fails a replicate only when NOTHING WAS DONE
         # ABOUT IT: saturated with no annealing means the fit is
