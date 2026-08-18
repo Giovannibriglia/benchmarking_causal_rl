@@ -33,16 +33,31 @@ LEVER_MEASURED = {"cartpole": [2.01, 3.05, 3.62, 3.92], "acrobot": [12.68]}
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--b", type=int, default=99)
+    ap.add_argument("--b", type=int, default=99, help="replicates per null")
     ap.add_argument("--parallel", type=int, default=6)
     ap.add_argument("--recert", default="results/vb_recertification/report.json")
     ap.add_argument(
-        "--fit-minutes",
-        nargs="+",
-        default=["CartPole-v1=8.6"],
-        help="measured per-env fit cost; envs without a measurement are reported "
-        "as UNMEASURED rather than filled with a guess",
+        "--declarations",
+        type=int,
+        default=1,
+        help="declarations tested per dataset. V-D's misspecification arms are "
+        "wrong DECLARATIONS, not different datasets -- the same dataset is "
+        "tested under several, each with its own null under its own declared "
+        "model. Default 1 UNDER-counts for exactly the experiment V-D is; L5 is "
+        "unstarted so the arm structure is modelled parametrically rather than "
+        "invented.",
     )
+    ap.add_argument(
+        "--pool-seeds",
+        action="store_true",
+        help="LEVER A: one null per (cell, env, sigma) CONFIGURATION rather than "
+        "per dataset. Seeds within a configuration are i.i.d. draws from the "
+        "same generator, so under H0 their nulls are the same distribution and "
+        "computing five is estimating one object five times. Licensed by a "
+        "tested exchangeability check, not by the argument (see bootstrap.py).",
+    )
+    ap.add_argument("--fit-minutes", nargs="+", default=["CartPole-v1=8.6"])
+    ap.add_argument("--scenarios", action="store_true", help="run all three")
     args = ap.parse_args()
 
     from src.rl.offline.grace.cell_graph import CATALOGUE
@@ -53,55 +68,96 @@ def main() -> int:
         fit_min[k] = float(v)
 
     rows = json.loads(Path(args.recert).read_text())
-    constraints = {}
-    for name, g in CATALOGUE.items():
-        constraints[name] = len(g.testable_implications) + sum(
-            1 for a in g.assumptions if not a.untestable
-        )
+    constraints = {
+        name: len(g.testable_implications)
+        + sum(1 for a in g.assumptions if not a.untestable)
+        for name, g in CATALOGUE.items()
+    }
+
+    def project(b, pool, declarations):
+        """(total_fits, total_minutes, unmeasured_envs, per_cell_minutes)."""
+        # Pooling makes the NULL a property of the configuration, so the unit of
+        # work is the configuration; without it, the dataset.
+        units = {}
+        for r in rows:
+            key = (
+                (r["cell"], r["env"], r["sigma"])
+                if pool
+                else (r["cell"], r["env"], r["sigma"], r["seed"])
+            )
+            units[key] = r
+        total_fits, total_min, unmeasured, per_cell = 0, 0.0, set(), {}
+        for r in units.values():
+            c = constraints.get(r["diagram"], 0)
+            fits = c * b * declarations
+            total_fits += fits
+            if r["env"] not in fit_min:
+                unmeasured.add(r["env"])
+                continue
+            m = fits * fit_min[r["env"]]
+            total_min += m
+            per_cell[(r["cell"], r["env"])] = (
+                per_cell.get((r["cell"], r["env"]), 0.0) + m
+            )
+        return total_fits, total_min, unmeasured, per_cell
 
     print("constraints per diagram (MEASURED, not the estimated 4):")
     for d in sorted({r["diagram"] for r in rows}):
         print(f"  {d:<14} {constraints.get(d, '?')}")
-    print()
-
-    total_fits = 0
-    total_min = 0.0
-    unmeasured = set()
-    per_cell = {}
-    for r in rows:
-        c = constraints.get(r["diagram"], 0)
-        fits = c * args.b
-        total_fits += fits
-        env = r["env"]
-        if env not in fit_min:
-            unmeasured.add(env)
-            continue
-        m = fits * fit_min[env]
-        total_min += m
-        key = (r["cell"], env)
-        per_cell[key] = per_cell.get(key, 0.0) + m
-
-    print(f"{len(rows)} datasets, B = {args.b}")
-    print(f"  total EM fits            {total_fits:,}")
-    if unmeasured:
-        print(f"  !! UNMEASURED envs, excluded from the total: {sorted(unmeasured)}")
-        print("     the total below is a LOWER BOUND, not the projection")
+    n_cfg = len({(r["cell"], r["env"], r["sigma"]) for r in rows})
     print(
-        f"  serial                   {total_min / 60:,.0f} h  "
-        f"({total_min / 60 / 24:,.1f} days)"
+        f"\n{len(rows)} datasets in {n_cfg} configurations "
+        f"({len(rows) // n_cfg} seeds each)"
     )
-    print(
-        f"  at {args.parallel}-way parallel        {total_min / 60 / args.parallel:,.0f} h  "
-        f"({total_min / 60 / args.parallel / 24:,.1f} days)"
-    )
-    print()
-    print("  by cell x env (six-way hours):")
-    for k, v in sorted(per_cell.items(), key=lambda kv: -kv[1]):
-        print(f"    {k[0]:<11}{k[1]:<13}{v / 60 / args.parallel:8.1f}")
-    print()
-    print("  M-step lever, measured range (projections use the CONSERVATIVE end):")
-    for env, vals in LEVER_MEASURED.items():
-        print(f"    {env:<10} x{min(vals):.2f} .. x{max(vals):.2f}  from {vals}")
+
+    if not args.scenarios:
+        scenarios = [("as configured", args.b, args.pool_seeds, args.declarations)]
+    else:
+        # LEVER A pools 5 seeds, so B per dataset drops 5x for the same
+        # configuration-level precision. LEVER B then trades p-value resolution
+        # for cost, with the MC error reported alongside.
+        # ``b`` is the replicate count OF THE NULL. Unpooled that is per
+        # dataset; pooled it is per CONFIGURATION, drawn evenly across the
+        # configuration's seeds -- so LEVER A holds the null's precision fixed
+        # (100 ~ 99) and divides the fits by the seed count, rather than cutting
+        # precision. Conflating the two units understates A's cost by 5x, which
+        # is the seed count exactly.
+        scenarios = [
+            ("current: B=99 per DATASET", 99, False, args.declarations),
+            (
+                "+A: B=100 per CONFIG (20/seed) — same precision, 5x fewer fits",
+                100,
+                True,
+                args.declarations,
+            ),
+            (
+                "+A+B: B=39 per CONFIG — precision traded, MC error quoted",
+                39,
+                True,
+                args.declarations,
+            ),
+        ]
+
+    for label, b, pool, decl in scenarios:
+        fits, mins, unmeasured, per_cell = project(b, pool, decl)
+        six = mins / 60 / args.parallel
+        print(f"\n=== {label}   [declarations={decl}] ===")
+        print(f"  total EM fits          {fits:,}")
+        if unmeasured:
+            print(
+                f"  !! UNMEASURED envs excluded: {sorted(unmeasured)} "
+                "-- the figures below are a LOWER BOUND"
+            )
+        print(f"  serial                 {mins / 60:,.0f} h ({mins / 60 / 24:,.1f} d)")
+        print(f"  {args.parallel}-way parallel        {six:,.0f} h ({six / 24:,.1f} d)")
+        if b < 99:
+            # MC error of a quantile from b replicates, reported rather than
+            # hidden: cutting B is honest degradation only if the degradation
+            # is quoted.
+            print(
+                f"  p-value resolution     ~1/{b + 1} = {1 / (b + 1):.3f} "
+                f"(against 1/100 = 0.010 at B=99)"
+            )
     return 0
 
 

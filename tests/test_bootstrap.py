@@ -398,3 +398,64 @@ def test_a_stationary_replicate_is_not_a_failure():
     stuck = bootstrap_null(lambda seed: _Stuck(), b=6, seed=0)
     assert stuck.n_failed == 6
     assert any("still improving" in r for r in stuck.diagnostics()["reasons"])
+
+
+def _null_from(values, seed=0):
+    class _Out:
+        def __init__(self, v):
+            self.value = v
+            self.converged = True
+            self.stationary = False
+            self.finished = True
+            self.monotone = True
+            self.backtracks = 0
+            self.backtrack_exhausted = False
+            self.initial_saturation = 0.0
+            self.saturated_at_init = False
+            self.n_anneal = 5
+            self.reached_tau_one = True
+            self.degenerate_mechanism = False
+
+    it = iter(values)
+    return bootstrap_null(lambda s: _Out(next(it)), b=len(values), seed=seed)
+
+
+def test_pooling_across_seeds_is_licensed_by_a_TESTED_exchangeability_check():
+    """LEVER A. Seeds within a configuration are i.i.d. draws from the same
+    generator, so under H0 their nulls are the SAME distribution and computing
+    one per seed estimates a single object five times. Pooling B/5 from each
+    gives the same configuration-level precision for a fifth of the fits.
+
+    The saving is only legitimate if exchangeability HOLDS, so it is tested
+    rather than argued -- and a refusal is a finding about the GENERATOR, not a
+    calibration inconvenience.
+    """
+    from src.rl.offline.grace.bootstrap import pooled_null
+
+    rng = np.random.default_rng(0)
+    same = {s: _null_from(list(rng.normal(0, 1, 40)), seed=s) for s in range(5)}
+    pooled = pooled_null(same, statistic_name="t")
+    assert pooled.successes.size == 200
+    assert pooled.trustworthy
+
+    # A seed drawn from a DIFFERENT distribution must refuse pooling, loudly.
+    shifted = dict(same)
+    shifted[2] = _null_from(list(rng.normal(6.0, 1, 40)), seed=2)
+    with pytest.raises(ValueError, match="NOT exchangeable"):
+        pooled_null(shifted)
+
+
+def test_pooling_refuses_to_launder_a_failed_seed():
+    """A seed whose replicates failed contributes no successes; pooling it in
+    would hide its failure rate inside a pool that looks healthy."""
+    from src.rl.offline.grace.bootstrap import pooled_null
+
+    rng = np.random.default_rng(1)
+    d = {s: _null_from(list(rng.normal(0, 1, 30)), seed=s) for s in range(3)}
+
+    class _Dead:
+        value = float("nan")
+
+    d[1] = bootstrap_null(lambda s: _Dead(), b=4, seed=1)
+    with pytest.raises(ValueError, match="pooling a null over a failed one"):
+        pooled_null(d)

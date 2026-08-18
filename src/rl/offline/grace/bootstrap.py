@@ -96,7 +96,7 @@ uncertainty invites over-reading.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -105,6 +105,7 @@ __all__ = [
     "BootstrapNull",
     "resample_episodes",
     "bootstrap_null",
+    "pooled_null",
 ]
 
 
@@ -445,3 +446,87 @@ def lr_statistic(
         return 2.0 * (float(full.final_ll) - float(restricted.final_ll))
 
     return _one
+
+
+def pooled_null(
+    per_seed: Dict[int, "BootstrapNull"],
+    *,
+    alpha: float = 0.01,
+    statistic_name: str = "",
+) -> "BootstrapNull":
+    """Pool per-seed nulls into ONE configuration-level null — if they may be.
+
+    **The saving and why it is not a corner cut.** Seeds within a
+    ``(cell, env, sigma)`` configuration are i.i.d. draws from the same
+    generator, so under H0 their null distributions are *the same
+    distribution*. Computing a separate B-replicate null per seed estimates one
+    object five times. Drawing ``B/5`` from each and pooling gives the same
+    configuration-level precision for a fifth of the fits, entirely within the
+    configuration — no external reference and no constant.
+
+    **Exchangeability is TESTED, not asserted**, which is the whole point: the
+    shortcut is licensed by a check, as everything else here is. Every pair of
+    seeds is compared with a two-sample Kolmogorov-Smirnov test and the
+    family is judged at ``alpha`` with a Bonferroni correction over the pairs —
+    a family of tests read against a per-test cutoff is the S3 mistake, and it
+    would be a particularly bad one here because MORE seeds would then make
+    pooling MORE likely to be refused at random.
+
+    If the seeds are not mutually consistent, **pooling is refused for that
+    configuration and that is itself a finding** — it says the generator is not
+    producing exchangeable draws, which is a defect in the arm rather than an
+    inconvenience in the calibration. Refusal raises rather than silently
+    falling back, because a silent fallback would turn a generator defect into
+    an unexplained slowdown.
+    """
+    seeds = sorted(per_seed)
+    if len(seeds) < 2:
+        raise ValueError("pooling needs at least two seeds")
+    samples = {s: per_seed[s].successes for s in seeds}
+    for s, v in samples.items():
+        if v.size < 2:
+            raise ValueError(
+                f"seed {s} contributed {v.size} successful replicates; pooling a "
+                "null over a failed one would launder its failures into the pool"
+            )
+    pairs = [(a, b) for i, a in enumerate(seeds) for b in seeds[i + 1 :]]
+    level = alpha / max(len(pairs), 1)  # Bonferroni over the PAIRS (S3)
+    bad = []
+    for a, b in pairs:
+        p = _ks_two_sample_p(samples[a], samples[b])
+        if p < level:
+            bad.append((a, b, p))
+    if bad:
+        detail = "; ".join(f"seeds {a}/{b} p={p:.4g}" for a, b, p in bad)
+        raise ValueError(
+            "seeds are NOT exchangeable, so their nulls are not the same "
+            f"distribution and pooling would misstate it: {detail} (family-wise "
+            f"level {level:.4g} over {len(pairs)} pairs). This is a finding about "
+            "the GENERATOR, not a calibration inconvenience -- the configuration's "
+            "seeds are not i.i.d. draws."
+        )
+    merged: List[ReplicateResult] = []
+    for s in seeds:
+        merged.extend(per_seed[s].replicates)
+    return BootstrapNull(
+        replicates=merged,
+        n_requested=sum(per_seed[s].n_requested for s in seeds),
+        seed=per_seed[seeds[0]].seed,
+        statistic_name=statistic_name or per_seed[seeds[0]].statistic_name,
+        max_failure_rate=max(per_seed[s].max_failure_rate for s in seeds),
+    )
+
+
+def _ks_two_sample_p(a: np.ndarray, b: np.ndarray) -> float:
+    """Two-sample KS p-value, asymptotic tail. No scipy in this environment."""
+    a = np.sort(np.asarray(a, dtype=float))
+    b = np.sort(np.asarray(b, dtype=float))
+    n, m = a.size, b.size
+    grid = np.concatenate([a, b])
+    cdf_a = np.searchsorted(a, grid, side="right") / n
+    cdf_b = np.searchsorted(b, grid, side="right") / m
+    d = float(np.max(np.abs(cdf_a - cdf_b)))
+    en = np.sqrt(n * m / (n + m))
+    lam = (en + 0.12 + 0.11 / en) * d
+    k = np.arange(1, 101)
+    return float(min(1.0, 2 * np.sum((-1) ** (k - 1) * np.exp(-2 * k**2 * lam**2))))
