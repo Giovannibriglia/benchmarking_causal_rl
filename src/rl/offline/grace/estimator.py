@@ -271,6 +271,7 @@ class LatentClassFit:
     backtracks_per_iter: List[int] = field(default_factory=list)
     final_lr_scale: float = 1.0
     lr_reductions: int = 0
+    epoch_escalations: int = 0
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
@@ -992,6 +993,7 @@ class LatentClassEstimator:
         small_steps = 0
         lr_scale = 1.0
         lr_reductions = 0
+        epoch_escalations = 0
         stationary = False
         improvement_rel = None
         rejected_step_rel = None
@@ -1018,9 +1020,34 @@ class LatentClassEstimator:
             snapshot = self._snapshot()
             tried = 0
             while True:
-                new_prior = self.m_step(
-                    data, resp, lr=base_lr * lr_scale * (0.5**tried), **fit_kwargs
-                )
+                # RETRY WITH MORE OPTIMISATION, NOT A SMALLER STEP.
+                #
+                # The premise of a backtracking line search is that a smaller
+                # step is more conservative. **That premise is false here**, and
+                # measurably so: NBN's ``fit_local`` REBUILDS the network from
+                # scratch on every call (``self.net = _build_mlp(...)`` with a
+                # fresh Adam), so the M-step is not a partial maximisation from
+                # the current parameters -- it is an INDEPENDENT REFIT. Halving
+                # the learning rate therefore does not take a gentler step, it
+                # produces a WORSE FRESH FIT. Measured on the recovery fixture,
+                # objective against the incumbent: lr x1 -26, x0.5 -110,
+                # x0.25 -1224, x0.0625 -3148, x2.4e-4 -4573 -- monotone, and
+                # catastrophic at the small end.
+                #
+                # So every "conservative retry" was strictly worse than the one
+                # before, which guarantees exhaustion once the first attempt
+                # fails, and the reduction I previously persisted across
+                # iterations made every subsequent M-step worse still.
+                #
+                # With a fresh-fit M-step the way to get CLOSER to the M-step's
+                # maximiser -- which is what GEM actually asks for -- is MORE
+                # optimisation, not less. So a retry doubles the epochs.
+                retry_kwargs = dict(fit_kwargs)
+                if tried:
+                    retry_kwargs["epochs"] = int(
+                        retry_kwargs.get("epochs", 30) * (2**tried)
+                    )
+                new_prior = self.m_step(data, resp, lr=base_lr, **retry_kwargs)
                 new_resp, new_ll, new_obj, sat = self.e_step(
                     data, new_prior, temperature=tau
                 )
@@ -1062,13 +1089,12 @@ class LatentClassEstimator:
                 # bounded by the same ``max_backtracks`` applied to the number of
                 # PERSISTENT reductions. Only when those are also spent is the
                 # fit genuinely stuck rather than merely over-stepping.
-                lr_scale *= 0.5 ** max(tried, 1)
                 lr_reductions += 1
                 if lr_reductions <= max_backtracks:
                     if verbose:
                         print(
-                            f"  EM {it:3d} tau=1 persistent lr reduction "
-                            f"{lr_reductions}: scale now {lr_scale:.3g}"
+                            f"  EM {it:3d} tau=1 retry {lr_reductions} with more "
+                            "optimisation"
                         )
                     continue
                 # STATIONARY vs STUCK -- two different stops, both legitimate,
@@ -1120,7 +1146,11 @@ class LatentClassEstimator:
             # Carrying the reduction forward is ordinary backtracking-line-search
             # behaviour and adds no constant. Monotone decrease, no re-growth:
             # re-inflating is what caused this.
-            lr_scale *= 0.5**tried
+            # The persistent LEARNING-RATE reduction is withdrawn: under a
+            # fresh-fit M-step it drove every later fit to be worse, which is a
+            # regression rather than a fix. What persists now is the EPOCH
+            # escalation, which moves in the direction that actually helps.
+            epoch_escalations += tried
             backtracks_per_iter.append(tried)
             prior, resp = new_prior, new_resp
             improvement = new_obj - obj
@@ -1171,6 +1201,7 @@ class LatentClassEstimator:
             backtracks_per_iter=list(backtracks_per_iter),
             final_lr_scale=lr_scale,
             lr_reductions=lr_reductions,
+            epoch_escalations=epoch_escalations,
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
             final_saturation=sat,
