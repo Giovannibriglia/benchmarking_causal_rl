@@ -49,13 +49,35 @@ def main() -> int:
     ap.add_argument(
         "--reseed-per-m-step",
         action="store_true",
-        help="reseed the global torch RNG before every M-step, so the two arms "
-        "see identical RNG state at each refit. Isolates the ONE channel by "
-        "which an inert consolidation can still change the fit: the Fisher "
-        "pass consumes global RNG (randperm at online_laplace.py:87 whenever "
-        "n > sample_cap), and under restart-EM every subsequent refit is a "
-        "draw from that stream. Identical fits under this flag establish "
-        "pure overhead; divergence under it is a real effect.",
+        help="reseed the global torch RNG before every M-step. NOT sufficient "
+        "on its own: consolidation runs per NODE inside fit_local, so within "
+        "one M-step an earlier node's Fisher pass (randperm at "
+        "online_laplace.py:87 whenever n > sample_cap) still offsets the RNG "
+        "a later node's refit draws from. Identical fits under this flag "
+        "establish pure overhead; divergence under it is INCONCLUSIVE -- use "
+        "--isolate-consolidate-rng for the decisive version.",
+    )
+    ap.add_argument(
+        "--isolate-consolidate-rng",
+        action="store_true",
+        help="wrap every online_laplace.consolidate() call in "
+        "torch.random.fork_rng, so the Fisher pass sees the RNG stream but "
+        "restores it afterwards. Closes the ONE channel by which an inert "
+        "consolidation (check 1: it writes only _ewc_* buffers) can still "
+        "change the fit. Runtime monkeypatch in this tool -- the vendored "
+        "nbn/ snapshot is not touched. With this flag the arms see bitwise "
+        "identical RNG throughout, so any remaining divergence is either a "
+        "real non-RNG channel or kernel nondeterminism -- which "
+        "--determinism-control separates.",
+    )
+    ap.add_argument(
+        "--determinism-control",
+        action="store_true",
+        help="run the consolidate=False arm TWICE before the True arm. If the "
+        "two control fits are not bitwise identical, the pipeline is "
+        "nondeterministic and a bitwise A/B is the wrong instrument (fall "
+        "back to paired seeds per the handoff's single-seed rule); the "
+        "True-vs-False comparison is only read when the control passes.",
     )
     args = ap.parse_args()
 
@@ -99,8 +121,25 @@ def main() -> int:
             return super().m_step(data, resp, **fit_kwargs)
 
     est_cls = ReseededEstimator if args.reseed_per_m_step else LatentClassEstimator
+
+    if args.isolate_consolidate_rng:
+        from nbn.update import online_laplace
+
+        _orig_consolidate = online_laplace.consolidate
+
+        def _rng_isolated_consolidate(mech, x, parents, **kw):
+            devices = [x.device] if x.device.type == "cuda" else []
+            with torch.random.fork_rng(devices=devices):
+                return _orig_consolidate(mech, x, parents, **kw)
+
+        # Both call sites (mdn.py, neural_categorical.py) resolve
+        # ``online_laplace.consolidate`` as a module attribute at call time,
+        # so patching the module covers all of them.
+        online_laplace.consolidate = _rng_isolated_consolidate
+
+    arms = (False, False, True) if args.determinism_control else (True, False)
     out = []
-    for consolidate in (True, False):
+    for arm_idx, consolidate in enumerate(arms):
         est = est_cls(
             state_dim=state.shape[1],
             n_actions=int(s["a"].max()) + 1,
@@ -135,6 +174,12 @@ def main() -> int:
             "converged": bool(fit.converged),
             "finished": bool(fit.finished),
             "reseed_per_m_step": bool(args.reseed_per_m_step),
+            "isolate_consolidate_rng": bool(args.isolate_consolidate_rng),
+            "arm": (
+                "control_repeat"
+                if args.determinism_control and arm_idx == 1
+                else "consolidate_on" if consolidate else "consolidate_off"
+            ),
             # Hash of the fitted parameters EXCLUDING the _ewc_* buffers,
             # which exist only in the consolidate=True arm by construction.
             # Equal hashes across arms = consolidation left the fit bitwise
@@ -152,7 +197,9 @@ def main() -> int:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(out, indent=1))
 
-    on, off = out[0], out[1]
+    on = next(r for r in out if r["arm"] == "consolidate_on")
+    off = next(r for r in out if r["arm"] == "consolidate_off")
+    control = next((r for r in out if r["arm"] == "control_repeat"), None)
     share = 1.0 - off["seconds_per_iter"] / max(on["seconds_per_iter"], 1e-9)
     print(f"\n  per-iteration: {on['seconds_per_iter']}s -> {off['seconds_per_iter']}s")
     print(
@@ -170,11 +217,29 @@ def main() -> int:
         "regardless of endpoints. The PURE-OVERHEAD claim needs identical "
         "fits across arms:"
     )
-    identical = (
-        on["n_iter"] == off["n_iter"]
-        and on["final_ll"] == off["final_ll"]
-        and on["state_sha256_ex_ewc"] == off["state_sha256_ex_ewc"]
-    )
+
+    def _same(a, b):
+        return (
+            a["n_iter"] == b["n_iter"]
+            and a["final_ll"] == b["final_ll"]
+            and a["state_sha256_ex_ewc"] == b["state_sha256_ex_ewc"]
+        )
+
+    deterministic = None
+    if control is not None:
+        deterministic = _same(off, control)
+        print(
+            f"    determinism control (False vs False repeat): "
+            f"{'BITWISE IDENTICAL' if deterministic else 'DIVERGE'} "
+            f"({off['state_sha256_ex_ewc']} vs {control['state_sha256_ex_ewc']})"
+        )
+        if not deterministic:
+            print(
+                "    -> the pipeline itself is nondeterministic; a bitwise A/B "
+                "is the wrong instrument here. Fall back to paired seeds and "
+                "the median (single-seed rule). No equivalence verdict."
+            )
+    identical = _same(on, off)
     print(
         f"    n_iter {on['n_iter']} vs {off['n_iter']}, "
         f"final_ll {on['final_ll']:.4f} vs {off['final_ll']:.4f}, "
@@ -185,23 +250,36 @@ def main() -> int:
         print(
             "    IDENTICAL -> pure overhead ESTABLISHED"
             + (
-                " (divergence without reseeding was the Fisher pass consuming "
-                "global RNG; see --reseed-per-m-step)"
-                if args.reseed_per_m_step
+                " (the earlier divergence was the Fisher pass consuming " "global RNG)"
+                if args.isolate_consolidate_rng
                 else ""
             )
         )
+    elif args.isolate_consolidate_rng and deterministic:
+        print(
+            "    DIVERGE with the RNG channel closed AND a passing "
+            "determinism control -> consolidation affects the fit through a "
+            "real non-RNG channel; NOT a free win, and that is the finding."
+        )
+    elif args.isolate_consolidate_rng and deterministic is None:
+        print(
+            "    DIVERGE with the RNG channel closed but NO determinism "
+            "control -> re-run with --determinism-control before reading "
+            "this as a real effect."
+        )
     elif args.reseed_per_m_step:
         print(
-            "    DIVERGE UNDER PER-M-STEP RESEEDING -> consolidation affects "
-            "the fit through something other than RNG consumption; NOT a "
-            "free win, and that is the finding."
+            "    DIVERGE under per-M-step reseeding -> INCONCLUSIVE: per-node "
+            "Fisher passes still offset RNG WITHIN an M-step, so this does "
+            "not separate a real effect from RNG. Re-run with "
+            "--isolate-consolidate-rng --determinism-control."
         )
-    else:
+    elif deterministic is not False:
         print(
             "    DIFFER -> unresolved between a real effect and RNG "
-            "consumption by the Fisher pass; re-run with --reseed-per-m-step "
-            "to separate them. Report the speedup, not the equivalence."
+            "consumption by the Fisher pass; re-run with "
+            "--isolate-consolidate-rng --determinism-control to separate "
+            "them. Report the speedup, not the equivalence."
         )
     return 0
 
