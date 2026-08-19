@@ -294,11 +294,13 @@ class LatentClassFit:
     final_lr_scale: float = 1.0
     lr_reductions: int = 0
     epoch_escalations: int = 0
-    # WHICH ALGORITHM PRODUCED THIS FIT. "restart-EM" while NBN's fit_local
-    # rebuilds its network per call (see docs/nbn_requirements.md R3): the
-    # M-step is an independent refit, not a partial maximisation, so GEM's
-    # guarantee does not hold and even ACCEPTED steps are stochastic. Becomes
-    # "gem" once warm_start lands.
+    # WHICH ALGORITHM PRODUCED THIS FIT. "gem" when the M-step warm-starts
+    # (NBN >= v0.15.0, fit(warm_start=True), the default): each M-step is a
+    # partial maximisation from theta_old, so GEM's guarantee holds and the
+    # monotone guard compares genuine steps. "restart-EM" when
+    # warm_start=False: fit_local rebuilds per call, the M-step is an
+    # independent refit, and even ACCEPTED steps are stochastic -- the label
+    # carries PARAMS-PROVISIONAL downstream (see Estimate.label()).
     algorithm: str = "restart-EM"
     # Were deterministic kernels enforced for this fit? Default False so
     # only a fit actually run under the flag claims it; ``fit()`` sets it
@@ -904,6 +906,10 @@ class LatentClassEstimator:
         do all of it. Weights are per-EPISODE, broadcast across that episode's
         rows, because one responsibility governs the whole block.
         """
+        # ``warm_start`` rides through fit_kwargs to NBN: True makes this a
+        # STEP from the current parameters (GEM); False makes it a fresh refit
+        # (restart-EM). The caller (``fit``) decides; the first M-step of every
+        # fit is explicitly cold.
         weights_per_row = data.broadcast(resp)  # (n, K)
         frames, weights = [], []
         for k in range(self.u_card):
@@ -968,6 +974,7 @@ class LatentClassEstimator:
         temperature: float | None = None,
         n_anneal: int | None = None,
         deterministic: bool = True,
+        warm_start: bool = True,
         verbose: bool = False,
         **fit_kwargs,
     ) -> LatentClassFit:
@@ -1027,7 +1034,15 @@ class LatentClassEstimator:
         # likelihood is ever read without knowing which mechanism produced it.
         self._resolve_reward_type(data)
         resp = self._init_responsibilities(data, init)
-        prior = self.m_step(data, resp, **fit_kwargs)
+        # The INITIAL M-step is explicitly COLD even when warm_start=True.
+        # On a fresh estimator the mechanisms are unfitted and cold-build
+        # anyway; on a REUSED estimator an implicit warm start would continue
+        # from the PREVIOUS fit's parameters -- across-fit leakage, the exact
+        # trap the bootstrap's symmetry rule forbids (a replicate warm-started
+        # from the null-generating parameters). Cold here also means the
+        # standardisation buffers are derived from THIS fit's weighted data,
+        # then freeze for the rest of the EM loop, per the upstream contract.
+        prior = self.m_step(data, resp, warm_start=False, **fit_kwargs)
         # The untempered first E-step measures the pathology. It is a PURE
         # DIAGNOSTIC and no control decision reads it.
         #
@@ -1082,34 +1097,36 @@ class LatentClassEstimator:
             snapshot = self._snapshot()
             tried = 0
             while True:
-                # RETRY WITH MORE OPTIMISATION, NOT A SMALLER STEP.
+                # THE RETRY STRATEGY IS A FUNCTION OF THE ALGORITHM.
                 #
-                # The premise of a backtracking line search is that a smaller
-                # step is more conservative. **That premise is false here**, and
-                # measurably so: NBN's ``fit_local`` REBUILDS the network from
-                # scratch on every call (``self.net = _build_mlp(...)`` with a
-                # fresh Adam), so the M-step is not a partial maximisation from
-                # the current parameters -- it is an INDEPENDENT REFIT. Halving
-                # the learning rate therefore does not take a gentler step, it
-                # produces a WORSE FRESH FIT. Measured on the recovery fixture,
-                # objective against the incumbent: lr x1 -26, x0.5 -110,
-                # x0.25 -1224, x0.0625 -3148, x2.4e-4 -4573 -- monotone, and
-                # catastrophic at the small end.
+                # Under warm_start (GEM, the default since NBN v0.15.0): the
+                # M-step CONTINUES from the restored theta_old, so a smaller
+                # learning rate is a genuinely gentler step from the current
+                # point -- the premise of a backtracking line search holds
+                # again, and a rejected step retries HALVED. This is what the
+                # guard was originally written for.
                 #
-                # So every "conservative retry" was strictly worse than the one
-                # before, which guarantees exhaustion once the first attempt
-                # fails, and the reduction I previously persisted across
-                # iterations made every subsequent M-step worse still.
-                #
-                # With a fresh-fit M-step the way to get CLOSER to the M-step's
-                # maximiser -- which is what GEM actually asks for -- is MORE
-                # optimisation, not less. So a retry doubles the epochs.
+                # Under warm_start=False (restart-EM, kept as the labelled
+                # fallback): fit_local rebuilds from a fresh random init, a
+                # smaller lr is a WORSE FRESH FIT -- measured on the recovery
+                # fixture, objective vs incumbent at lr x1 / x0.5 / x0.25 /
+                # x0.0625 / x2.4e-4 = -26 / -110 / -1224 / -3148 / -4573,
+                # monotone -- so there the retry doubles the EPOCHS instead
+                # (more optimisation is what approaches the maximiser). That
+                # measurement is the record of why the two regimes must not
+                # share a retry rule; do not "simplify" them back together.
                 retry_kwargs = dict(fit_kwargs)
-                if tried:
-                    retry_kwargs["epochs"] = int(
-                        retry_kwargs.get("epochs", 30) * (2**tried)
-                    )
-                new_prior = self.m_step(data, resp, lr=base_lr, **retry_kwargs)
+                if warm_start:
+                    step_lr = base_lr * (0.5**tried)
+                else:
+                    step_lr = base_lr
+                    if tried:
+                        retry_kwargs["epochs"] = int(
+                            retry_kwargs.get("epochs", 30) * (2**tried)
+                        )
+                new_prior = self.m_step(
+                    data, resp, lr=step_lr, warm_start=warm_start, **retry_kwargs
+                )
                 new_resp, new_ll, new_obj, sat = self.e_step(
                     data, new_prior, temperature=tau
                 )
@@ -1145,20 +1162,26 @@ class LatentClassEstimator:
                     anneal_exhaustions += 1
                     continue
                 # AT tau = 1, EXHAUSTION IS AMBIGUOUS -- "the fit is finished"
-                # and "the step size is wrong" look identical from here -- and a
-                # per-iteration budget can only ever conclude the first. So
-                # persist the reduction and try again from the smaller step,
-                # bounded by the same ``max_backtracks`` applied to the number of
-                # PERSISTENT reductions. Only when those are also spent is the
-                # fit genuinely stuck rather than merely over-stepping.
-                lr_reductions += 1
-                if lr_reductions <= max_backtracks:
-                    if verbose:
-                        print(
-                            f"  EM {it:3d} tau=1 retry {lr_reductions} with more "
-                            "optimisation"
-                        )
-                    continue
+                # and "the step size is wrong" look identical from here.
+                #
+                # Under warm_start the extra-attempts loop below would be a
+                # bitwise REPLAY: the step was rejected, so prior and resp are
+                # unchanged, the parameters were restored, and with
+                # deterministic kernels the next iteration would retry the
+                # IDENTICAL halving sequence and reject it identically. Go
+                # straight to the stationary/stuck classification instead --
+                # re-derived for GEM, not inherited from restart-EM, where each
+                # retry was a NEW stochastic refit with more epochs and so
+                # could genuinely land somewhere else.
+                if not warm_start:
+                    lr_reductions += 1
+                    if lr_reductions <= max_backtracks:
+                        if verbose:
+                            print(
+                                f"  EM {it:3d} tau=1 retry {lr_reductions} with "
+                                "more optimisation"
+                            )
+                        continue
                 # STATIONARY vs STUCK -- two different stops, both legitimate,
                 # and the distinction must be earned rather than assumed in
                 # either direction.
@@ -1208,11 +1231,22 @@ class LatentClassEstimator:
             # Carrying the reduction forward is ordinary backtracking-line-search
             # behaviour and adds no constant. Monotone decrease, no re-growth:
             # re-inflating is what caused this.
-            # The persistent LEARNING-RATE reduction is withdrawn: under a
-            # fresh-fit M-step it drove every later fit to be worse, which is a
-            # regression rather than a fix. What persists now is the EPOCH
-            # escalation, which moves in the direction that actually helps.
-            epoch_escalations += tried
+            # NOTHING PERSISTS ACROSS ITERATIONS, in either regime --
+            # re-derived under warm-start rather than inherited. The persistent
+            # lr reduction was withdrawn under restart-EM (a smaller fresh fit
+            # is a worse fresh fit); under GEM the halvings are a per-iteration
+            # line search in the classical sense: the curvature that forced a
+            # small step at iteration t says nothing binding about t+1, the
+            # measured pathology that once motivated persistence (the same wall
+            # every iteration) was a restart-EM artefact of comparing
+            # independent refits, and a monotone-only persisted reduction would
+            # trap the whole tail of the fit at the smallest step one sharp
+            # region ever needed. Cost of the reset: at most max_backtracks
+            # cheap warm M-steps in an iteration that needs the small step
+            # again. ``epoch_escalations`` counts restart-mode retries only;
+            # under GEM it stays 0 and ``backtracks`` carries the story.
+            if not warm_start:
+                epoch_escalations += tried
             backtracks_per_iter.append(tried)
             prior, resp = new_prior, new_resp
             improvement = new_obj - obj
@@ -1264,7 +1298,7 @@ class LatentClassEstimator:
             final_lr_scale=lr_scale,
             lr_reductions=lr_reductions,
             epoch_escalations=epoch_escalations,
-            algorithm="restart-EM",
+            algorithm="gem" if warm_start else "restart-EM",
             deterministic=deterministic,
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
