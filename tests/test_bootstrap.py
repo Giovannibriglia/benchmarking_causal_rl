@@ -426,9 +426,14 @@ def test_pooling_across_seeds_is_licensed_by_a_TESTED_exchangeability_check():
     one per seed estimates a single object five times. Pooling B/5 from each
     gives the same configuration-level precision for a fifth of the fits.
 
-    The saving is only legitimate if exchangeability HOLDS, so it is tested
-    rather than argued -- and a refusal is a finding about the GENERATOR, not a
-    calibration inconvenience.
+    Exchangeability here is STRUCTURAL -- seeds are i.i.d. draws from the same
+    generator by construction -- so the KS check is a SMOKE TEST against
+    implementation error (a seed that silently used different parameters, a
+    leaked RNG, a dataset misfiled into the wrong configuration), not the licence
+    for the design. At ~20 replicates over 10 pairs it detects only gross
+    differences, which is all it is asked to do. A refusal means something is
+    wrong with the generator or the bookkeeping, which is when a loud stop beats
+    a quiet fallback.
     """
     from src.rl.offline.grace.bootstrap import pooled_null
 

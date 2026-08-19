@@ -464,20 +464,32 @@ def pooled_null(
     configuration-level precision for a fifth of the fits, entirely within the
     configuration — no external reference and no constant.
 
-    **Exchangeability is TESTED, not asserted**, which is the whole point: the
-    shortcut is licensed by a check, as everything else here is. Every pair of
-    seeds is compared with a two-sample Kolmogorov-Smirnov test and the
-    family is judged at ``alpha`` with a Bonferroni correction over the pairs —
-    a family of tests read against a per-test cutoff is the S3 mistake, and it
-    would be a particularly bad one here because MORE seeds would then make
+    **EXCHANGEABILITY HERE IS STRUCTURAL, NOT ASSUMED, and the check below is a
+    SMOKE TEST — not the licence.** Seeds within a configuration are i.i.d.
+    draws from the same generator *by construction*: that is what a seed is in
+    this benchmark. The claim rests on the design, and framing the KS check as
+    *establishing* exchangeability would overstate what it can do — at ~20
+    replicates per seed over 10 pairwise comparisons it detects only gross
+    differences, so a pass is weak evidence and would be poor grounds for a
+    statistical assumption that might genuinely fail.
+
+    What it *can* catch is **implementation error**, which is the realistic
+    failure here and not a statistical one: a seed that silently used different
+    parameters, a leaked global RNG, a dataset misfiled into the wrong
+    configuration. Under that framing the weak power is not a problem — it
+    catches the failures it is capable of catching, and it is not being asked to
+    license the design.
+
+    Mechanics: every pair of seeds is compared with a two-sample
+    Kolmogorov-Smirnov test, judged family-wise at ``alpha`` with a Bonferroni
+    correction over the PAIRS. A family read against a per-test cutoff is the S3
+    mistake, and a particularly bad one here — MORE seeds would otherwise make
     pooling MORE likely to be refused at random.
 
-    If the seeds are not mutually consistent, **pooling is refused for that
-    configuration and that is itself a finding** — it says the generator is not
-    producing exchangeable draws, which is a defect in the arm rather than an
-    inconvenience in the calibration. Refusal raises rather than silently
-    falling back, because a silent fallback would turn a generator defect into
-    an unexplained slowdown.
+    A refusal therefore means **something is wrong with the generator or the
+    bookkeeping**, not that a statistical assumption failed — which is exactly
+    when a loud stop beats a quiet fallback. Refusal raises; a silent fallback
+    would turn an implementation defect into an unexplained slowdown.
     """
     seeds = sorted(per_seed)
     if len(seeds) < 2:

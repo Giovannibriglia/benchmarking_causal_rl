@@ -56,6 +56,14 @@ def main() -> int:
         "computing five is estimating one object five times. Licensed by a "
         "tested exchangeability check, not by the argument (see bootstrap.py).",
     )
+    ap.add_argument(
+        "--declaration-matrix",
+        action="store_true",
+        help="use the per-cell declaration counts from docs/grace_v2_vd_design.md "
+        "instead of a scalar. A misspecification applies only where the thing it "
+        "misspecifies EXISTS, so the count is cell-dependent: declaring an "
+        "omission of an edge never declared is not a misspecification.",
+    )
     ap.add_argument("--fit-minutes", nargs="+", default=["CartPole-v1=8.6"])
     ap.add_argument("--scenarios", action="store_true", help="run all three")
     args = ap.parse_args()
@@ -74,6 +82,18 @@ def main() -> int:
         for name, g in CATALOGUE.items()
     }
 
+    # From docs/grace_v2_vd_design.md. Value = list of DECLARED diagrams tested
+    # on that cell; the constraint count of each is the DECLARED diagram's, not
+    # the data's. M2 is excluded here and scoped to a single demonstration
+    # configuration, because it is undetectable in principle and running it
+    # everywhere buys a repeated null result at full price.
+    DECLARATION_MATRIX = {
+        "d_a_null": ["D-A-null"],
+        "d_b_prime": ["D-B-prime", "D-A"],
+        "d_e": ["D-E", "D-A"],
+        "d_d": ["D-D", "D-A", "D-D"],
+    }
+
     def project(b, pool, declarations):
         """(total_fits, total_minutes, unmeasured_envs, per_cell_minutes)."""
         # Pooling makes the NULL a property of the configuration, so the unit of
@@ -88,8 +108,13 @@ def main() -> int:
             units[key] = r
         total_fits, total_min, unmeasured, per_cell = 0, 0.0, set(), {}
         for r in units.values():
-            c = constraints.get(r["diagram"], 0)
-            fits = c * b * declarations
+            if args.declaration_matrix:
+                decls = DECLARATION_MATRIX.get(r["cell"], [r["diagram"]])
+                c = sum(constraints.get(d, 0) for d in decls)
+                fits = c * b
+            else:
+                c = constraints.get(r["diagram"], 0)
+                fits = c * b * declarations
             total_fits += fits
             if r["env"] not in fit_min:
                 unmeasured.add(r["env"])
