@@ -419,6 +419,17 @@ Consequences, both of which apply retroactively:
 Any L3 comparison from here reports **paired seeds and the median**, not a
 single fit and not a mean over three.
 
+**And bitwise comparisons are the wrong instrument entirely (2026-08-19).**
+The L3 fit is nondeterministic run-to-run on CUDA at a fixed seed: two
+bitwise-identical `consolidate=False` runs (same data, same config, RNG
+verified identical by construction) returned the same `n_iter` and recovery
+but final_ll −18330.6 vs −18342.8 and different parameter hashes
+(`consolidate_share_isolated.log`). So a fixed-seed A/B cannot establish that
+two configurations produce "the same fit" — a ~12-nat ll spread is the noise
+floor of a single run pair, and any smaller effect is unreadable. Equivalence
+claims need the paired-seed distributional test above; fixed-seed pairs only
+measure rates.
+
 ### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
 
 Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
