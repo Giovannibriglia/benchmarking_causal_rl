@@ -173,6 +173,7 @@ def main() -> int:
             "final_ll": float(fit.final_ll),
             "converged": bool(fit.converged),
             "finished": bool(fit.finished),
+            "algorithm": fit.algorithm,
             "reseed_per_m_step": bool(args.reseed_per_m_step),
             "isolate_consolidate_rng": bool(args.isolate_consolidate_rng),
             "arm": (
@@ -206,12 +207,20 @@ def main() -> int:
         f"  CONSOLIDATION SHARE of the M-step: {share * 100:.1f}%  "
         f"(speedup x{on['seconds_per_iter'] / max(off['seconds_per_iter'], 1e-9):.2f})"
     )
-    print(
-        "\n  PRE-WARM-START LABEL: measured under restart-EM (NBN R3 not yet "
-        "merged). The share is a fraction of a baseline M-step that warm-start "
-        "will make substantially cheaper, so the SHARE will shrink; the "
-        "absolute per-call saving persists."
-    )
+    print(f"\n  ALGORITHM: {on['algorithm']} (from the fit's C3 label).")
+    if on["algorithm"] != "gem":
+        print(
+            "  RESTART-EM REGIME: the share is a fraction of a baseline the "
+            "warm-started M-step makes cheaper; the absolute saving persists."
+        )
+    else:
+        print(
+            "  Note the DIRECTION: warm-start cheapens the non-consolidation "
+            "part of the M-step, so consolidation's SHARE of a consolidate-on "
+            "M-step RISES as the baseline improves (share = 1 - off/on). The "
+            "earlier 'share will shrink' expectation had the arithmetic "
+            "backwards; the absolute per-call cost is what is invariant."
+        )
     print(
         "\n  Two claims, different strength. The per-iteration RATE stands "
         "regardless of endpoints. The PURE-OVERHEAD claim needs identical "
