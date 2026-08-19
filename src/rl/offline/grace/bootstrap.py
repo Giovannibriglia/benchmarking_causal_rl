@@ -87,6 +87,21 @@ Two concrete traps this rules out:
 
 Both are special cases of the same rule, and both look like pure speed-ups.
 
+**Replicate spread and kernel determinism (2026-08-19).** Every replicate is
+an EM fit, so before deterministic kernels became the estimator's default
+(commit 9625b85) the replicate spread contained a run-to-run FIT-NOISE
+component on top of the resampling variance it exists to measure — magnitude,
+measured on k = 5 identical fits at production scale (CartPole d_d, 300
+episodes): final_ll spread 131.7 nats, n_iter 8–11, five distinct parameter
+states from one configuration. That contamination ran in the CONSERVATIVE
+direction — a wider null rejects less, and the observed statistic carries the
+same noise — so pre-determinism calibrations remain valid; but they measured
+resampling + fit noise, not resampling alone, and should not be mistaken for
+extra power or for a defect. With ``fit(deterministic=True)`` (now the
+default) the null measures what it claims. A run that disables determinism
+reverts to the contaminated-but-conservative regime, and the fit's C3 label
+(``NONDETERMINISTIC-KERNELS``) is how that travels into the threshold.
+
 ``B`` is a **reported Monte-Carlo precision parameter**, not a calibration
 constant — the same distinction as ``alpha`` in L4. Every threshold is returned
 with its own Monte-Carlo error, because a threshold quoted without its

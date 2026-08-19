@@ -430,6 +430,44 @@ floor of a single run pair, and any smaller effect is unreadable. Equivalence
 claims need the paired-seed distributional test above; fixed-seed pairs only
 measure rates.
 
+**RESOLVED (same day): the nondeterminism was removable, and determinism is
+now the default.** `tools/probe_l3_determinism.py`: torch's
+`use_deterministic_algorithms(True)` raises on nothing in the fit path and
+makes repeats bitwise identical — re-confirmed at the scale that failed
+(`results/cost/l3_noise_floor.log`: two 300-episode fits bit-identical, ll
+equal to the last bit) at ~5% cost. The measured pre-determinism floor,
+k = 5 identical fits at 300 episodes: **ll spread 131.7 nats, n_iter
+8/8/8/10/11, five distinct parameter states, recovery constant at 0.99** — so
+every ll gap the consolidate A/B produced (12, 143, 210 nats) was at or inside
+the floor and none was readable. Decision (2026-08-19):
+`fit(deterministic=True)` is the DEFAULT for every reported run — commit
+`9625b85` is the switchover point, and pre- and post-switchover numbers are
+not naively comparable, since deterministic kernels are not bit-identical to
+the default ones. The mode travels on the fit and its estimates under C3;
+`NONDETERMINISTIC-KERNELS` flags the unusual case. **FAIL-LOUD:** torch raises
+if an op with no deterministic implementation ever enters the fit path (none
+does today). If a future change trips it, that is the flag working — add a
+deterministic implementation or consciously label the run; never silently
+disable. One consequence for the consolidate question: with deterministic
+kernels plus `--isolate-consolidate-rng`, the A/B becomes bitwise-decidable in
+a single run, so re-measurement-queue item 4 can be that instead of a
+paired-seed campaign.
+
+**The transferable lesson — amplification through discrete decisions.** The
+mechanism behind the floor: parameters can return bitwise identical while the
+evaluation differs by 5e-4 nats (measured at 100 episodes), and **a guard that
+makes a DISCRETE decision on a continuous quantity converts arbitrarily small
+numerical noise into macroscopic path divergence.** Three such sites, all in
+the EM loop: the backtrack accept/reject, the convergence window, and the
+stationary rule — whence 131 nats and three different n_iter values from one
+configuration. Two consequences: (a) fit fragility is a property of the
+OPTIMISER, not only of the measurement — re-check after warm-start, since
+continuation from θ_old should reduce the sensitivity, and if it does not,
+that is worth knowing before V-D runs thousands of fits; (b) the
+pre-determinism bootstrap nulls contained this fit noise on top of resampling
+variance — conservative, so nothing is invalidated, but see the note in
+`bootstrap.py`'s docstring.
+
 ### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
 
 Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
