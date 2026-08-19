@@ -896,6 +896,14 @@ class LatentClassEstimator:
         # objective, not that it maximise it, so a fixed number of gradient steps
         # is admissible and makes the M-step O(steps) instead. ``epochs`` is
         # derived from it here rather than passed, so the two cannot disagree.
+        # NO EWC CONSOLIDATION IN AN M-STEP. NBN defaults ``consolidate=True``,
+        # which runs a diagonal-Fisher pass -- up to ``sample_cap = 4096``
+        # SEQUENTIAL per-sample backward passes, per node, per call. It exists
+        # for continual learning, where a mechanism must retain earlier tasks.
+        # An M-step is a fresh weighted fit of the same nodes on the same rows,
+        # and GRACE never calls ``update()``, so the snapshot it produces is
+        # never read. Overridable, so a caller who wants it can ask.
+        fit_kwargs.setdefault("consolidate", False)
         budget = fit_kwargs.pop("m_step_budget", None)
         if budget is not None:
             bs = int(fit_kwargs.get("batch_size") or 1024)
