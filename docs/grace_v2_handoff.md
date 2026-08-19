@@ -512,6 +512,44 @@ AND deterministic. Everything before it was measured through one or both
 instabilities; comparisons across the boundary go through the C3 labels
 (`algorithm`, `deterministic`), never through memory.
 
+### THE BOUNDARY WAS CROSSED 2026-08-19 — first stable-instrument results
+
+NBN v0.15.0 synced (`c007b7a`), warm-start adopted (`a75b274`: GEM by
+default, lr-halving retry, per-iteration reset, the tau=1 retry loop dead
+under GEM, `algorithm="gem"` on the label).
+
+**L3 re-validation (GEM + deterministic, random init, 3 fit seeds,
+`results/l3_validation/report_gem.json`; pre-warm-start record kept at
+`report.json`):**
+
+| dataset | tau=1 | annealed |
+|---|---|---|
+| CartPole T=16 | 0.980/0.980/0.960 | 0.980/0.980/0.980 |
+| Acrobot T=150 | 0.630/0.940/0.920 | 0.940/0.980/0.980 |
+| Acrobot T=500 | 0.990/0.990/**0.690** | 0.990/0.990/0.980 |
+
+**Tempering SURVIVES, re-measured** — and the attribution sharpened:
+warm-start alone rescues 2/3 untempered seeds at T=500 (was 0/3), the anneal
+turns that into 3/3. GEM shrinks the damage saturation does; the anneal
+removes the trigger. Anneal still a wash at T=16. The bad-basin tail shrank
+everywhere (worst fit 0.630 vs 0.530 pre-warm-start).
+
+**Fragility (`results/cost/l3_fragility.*`):** identical-fit pairs are
+BITWISE STABLE under the new stack, n_iter included — so identical
+configurations now have quotable costs. But a 1e-7 perturbation of ONE input
+element moves final_ll by **60 nats under GEM** (146 under restart-EM):
+continuation damps the response ~2.4× and does NOT remove it — **the
+optimiser path is chaotic in its inputs in both regimes.** Recovery was
+bit-for-bit unmoved in every case; the chaos lives in ll/parameters only.
+Consequences: (a) a single fit's ll carries no meaningful precision below
+tens of nats with respect to data representation — two fits on
+NEARLY-identical data are incomparable at the ll level; only identical
+inputs compare, and then bitwise; (b) bootstrap replicates legitimately
+absorb this response as part of sampling variability (the symmetry rule
+covers it: observed and replicates share the procedure); (c) V-D must never
+read a raw ll difference across arms without its null — which its design
+already forbids, but this is now a measured reason rather than a policy.
+
 ### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
 
 Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
