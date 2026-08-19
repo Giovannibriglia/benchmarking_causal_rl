@@ -468,6 +468,50 @@ pre-determinism bootstrap nulls contained this fit noise on top of resampling
 variance — conservative, so nothing is invalidated, but see the note in
 `bootstrap.py`'s docstring.
 
+**The floor reaches the COST numbers too — n_iter is 40% of the story.**
+`n_iter` came back 8/8/8/10/11 across identical fits, and total fit time is
+`n_iter × per-iteration cost`, so every total-time figure quoted so far is a
+single draw from a distribution with ~40% spread in its dominant factor: the
+fork verdicts (CartPole 8.6 min, Acrobot 11.9 min — the qualitative verdict
+"minutes, not hours" survives easily; the figures do not support their quoted
+precision), the M-step lever range (×2.01 / ×3.92 / ×3.62 / ×12.68 — some of
+its cross-run drift, previously read as configuration-dependent, is this, and
+using the conservative end in projections was right for a reason unidentified
+at the time), and the consolidate share (66.2 / 56.2 / 59.2%). None of these
+is wrong and none changes a decision already made, but until re-measured they
+are RANGES, not figures.
+
+**The re-measurement queue** (post-merge, post-sync, everything with
+deterministic kernels ON, diagnostics on subsampled real data per S11):
+
+1. **L3 re-validation** at T = 16/150/500, warm-started. Nothing at
+   production scale before this confirms the estimator behaves warm-started.
+   Includes the fragility re-check above.
+2. **Cost re-measurement**, both environments, fork verdict per environment —
+   explicitly including every figure in the paragraph above, quoted as a
+   figure only from here on. The consolidate SHARE will shrink as warm-start
+   cheapens the baseline while the absolute saving persists; label
+   accordingly.
+3. **V-D re-projection** against the declaration matrix, three scenarios
+   (current, +A, +A+B).
+4. **Consolidate equivalence** — one bitwise run (deterministic kernels +
+   `--isolate-consolidate-rng`), upgraded from the paired-seed campaign.
+5. **D-D proxy ablation** — a FIRST measurement, not a repeat; it was void
+   for three separate reasons.
+
+**What the floor does NOT touch: recovery held at 0.99 in all five runs.**
+The noise lives in the log-likelihood and the parameters, never in the
+latent — so every conclusion resting on RECOVERY (tempering fixing T = 500,
+discrete-R rescuing CartPole, the 2×2 attribution) is unaffected by the
+floor. Do not over-generalise the invalidation: it reaches numbers denominated
+in nats or seconds, not the latent-recovery results.
+
+**The boundary.** The first post-sync measurement will be the first in this
+project made with a stable instrument — warm-started (GEM, not restart-EM)
+AND deterministic. Everything before it was measured through one or both
+instabilities; comparisons across the boundary go through the C3 labels
+(`algorithm`, `deterministic`), never through memory.
+
 ### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
 
 Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
