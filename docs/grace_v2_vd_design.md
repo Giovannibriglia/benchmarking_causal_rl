@@ -55,6 +55,50 @@ richest declared structure (so a spurious edge has the most room to look
 plausible) and the cheapest fits, since the result is known in advance and the
 run exists to document it.
 
+## OPEN — sample size: a detection CURVE against n, not a point at n = 3000
+
+Every dataset in the store is n = 3000 episodes, so the design above measures
+falsification power at exactly one sample size — the production one. That
+answers "is the misspecification detectable at our budget?" and nothing else.
+It does not say how far above the detection threshold n = 3000 sits, whether
+the answer is robust to a smaller data regime a user would actually be in, or
+which misspecifications die first as data shrinks. A power claim made at a
+single n is the kind of headline number that evaporates under the first
+"but what if I have less data?" — and the paper's falsification story is
+exactly such a headline.
+
+**Design (S11 does the heavy lifting).** The curve costs no new generation:
+subsample EPISODES from the stored datasets — real data, full fits, never a
+truncated budget — at a log-spaced grid, e.g. n ∈ {100, 300, 1000, 3000}.
+For each (dataset, declaration, n): recompute the statistic **and its null**
+at that n, since a null is a property of the (data, declaration, n) triple and
+a null built at 3000 says nothing about the tail at 300. Detection at level
+alpha is the statistic exceeding its own null quantile (quantile, not z — the
+family maxima are right-skewed). Paired seeds, median reported, per the
+single-seed rule: at small n the basin lottery is at its worst, which is
+precisely where the curve's lower end lives.
+
+**What the curve is FOR.** Three readings, in order of value:
+1. **n\*(M) per misspecification** — the smallest n at which M1/M3 are
+   detected at the declared level. If n\*(M1) and n\*(M3) differ materially,
+   that ordering is a result about which assumptions are cheap to test.
+2. **The margin at production scale** — how far 3000 sits above n\*. A curve
+   still rising at 3000 says the experiment is data-limited; a flat one says
+   the remaining misses are structural, not statistical.
+3. **The false-positive companion** — the d_a_null true-declaration arm run
+   down the same grid, so the power curve is read against a false-alarm curve
+   at each n rather than against an assumed level.
+
+**Open questions, deliberately not resolved here:** the grid (4 points or 6);
+whether the curve runs on the full declaration matrix or on the M2-style
+chosen subset (the multiplier is |n grid| × the matrix, so the full product
+may need the pooling lever); and whether subsampling is with or without
+replacement across curve points (without, so points share no episodes and the
+curve is not artificially smooth — but that caps the grid at disjoint
+partitions of 3000). All three interact with the cost projection below, and
+none should be fixed before the D-D re-measurement lands (the constraint-count
+gate applies to the curve exactly as it applies to the point design).
+
 ## Cost consequence
 
 Projected by `tools/project_vd_cost.py --declaration-matrix`, which reads the
