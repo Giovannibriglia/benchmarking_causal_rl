@@ -3,12 +3,14 @@
 This directory is a vendored snapshot of the NeuralBayesianNetworks library.
 
 - **Source:** https://github.com/Giovannibriglia/NeuralBayesianNetworks
-- **Release:** **v0.14.0** (annotated tag) — the repository's first PEP 440 tag.
-- **Upstream commit:** `4784b8e6a09e` ("feat: parent-gradient contract,
-  per-sample weighted fitting, model.log_prob, licence + provenance (#257)")
-- **Version string:** `0.14.0` (see `_version.py`)
-- **Synced into this repository:** 2026-08-15 (GRACE v2, branch `feat/grace-v2`).
-  Supersedes the syncs to `9b5c6b7c6d22` and `926fa62b8db6`.
+- **Release:** **v0.15.0** (annotated tag).
+- **Upstream commit:** `3f134126921e` ("feat(learning): warm_start on
+  fit_local, so an M-step is a step (#260)" — the squash commit; delivers R3
+  plus the FlexCode root-branch weights fix)
+- **Version string:** `0.15.0` (see `_version.py`)
+- **Synced into this repository:** 2026-08-19 (GRACE v2, branch `feat/grace-v2`).
+  Supersedes the v0.14.0 sync to `4784b8e6a09e` (and, before it,
+  `9b5c6b7c6d22` and `926fa62b8db6`).
 - **Author:** Giovanni Briglia (author of both this repository and the upstream
   library)
 
@@ -43,14 +45,14 @@ now trustworthy and orderable, and the untrustworthy cases announce themselves:
 
 | how the source was obtained | resolves to |
 |---|---|
-| full clone with tags | `0.14.0` |
-| shallow / tagless clone | `0.14.0.dev1+unknown.g4784b8e6a` |
-| `.git`-less tree (a file drop, as vendored here) | `0.14.0.dev0+unknown` |
+| full clone with tags | `0.15.0` |
+| shallow / tagless clone | `0.15.0.dev1+unknown.g3f1341269` |
+| `.git`-less tree (a file drop, as vendored here) | `0.15.0.dev0+unknown` |
 
 The `+unknown` local segment is the marker: a version carrying it was derived
 without tag history and should not be trusted for ordering. Because upstream
 generates `_version.py` at build time and gitignores it, the vendored copy is
-**hand-pinned** to `0.14.0` with the commit id recorded above.
+**hand-pinned** to `0.15.0` with the commit id recorded above.
 
 ## Local conventions
 
@@ -63,11 +65,35 @@ generates `_version.py` at build time and gitignores it, the vendored copy is
 - Upstream's packaging would also install a top-level `benchmarking` package and
   an `nbn-bench` script; only `nbn/` is vendored here.
 
-## Known sharp edges — RE-AUDITED at v0.14.0
+## Known sharp edges — RE-AUDITED at v0.15.0
+
+**How this audit was carried at the v0.15.0 sync** (and should be at every
+sync): `tools/audit_nbn_sharp_edges.py`, run against THIS vendored copy under
+this repository's torch pin — 10/10 checks pass. Two tiers: subtrees
+byte-identical to the previously audited tag keep their rows without
+re-measurement (`inference/`, `sampling/`, `update/`, `core/dag.py` are
+untouched v0.14.0 → v0.15.0, so every engine row below carries over); the
+touched subtrees (`learning/`, `mechanisms/`, the fit-threading kwarg in
+`core/network.py`) were re-verified empirically.
+
+### GAINED at v0.15.0
+
+| edge | status |
+|---|---|
+| `fit_local` rebuilds the network with a fresh init **on every call** (default) | **DOCUMENTED CONTRACT with an opt-out** — `warm_start=True` continues the existing parameters. The rebuild default is byte-compatible with v0.14.0 behaviour; an EM caller must pass the flag or its M-step is an independent refit (this was R3, and it is what made GRACE restart-EM). |
+| the warm-start contract | **DELIVERED and audited on this copy**: fresh Adam over existing parameters (moments deliberately not carried — they are absent from `state_dict()`, so a snapshot/restore backtrack could not revert them); standardisation buffers freeze (`_pa_mean`/`_pa_std`, FlexCode's `_y_min`/`_y_max`); shape mismatch **raises** (never a silent rebuild); never-fitted **cold-builds**, observable via `warm_started: bool` in the metrics dict; closed-form branches are accepted no-ops declared by `Mechanism.warm_start_is_noop`, with **root** branches of MDN/neural-categorical/FlexCode always recomputing so they keep responding to the caller's weights. |
+| FlexCode **root branch dropped per-sample weights** | **FIXED at v0.15.0** (`346f073`, kept as its own commit in the PR): `weighted_moments(targets, w_vec)` replaces the dropped vector. Audited here: zeroed-weight half of a bimodal target is excluded from the fitted density. Present-but-unknown at v0.14.0 — weighted EM through a FlexCode ROOT node was silently unweighted there. |
+| `fit_local` draws a fresh `randperm` **every epoch, even at full batch** | **SHARP EDGE for bitwise consumers, not a defect**: rows are permuted per call, and a permuted batch changes the floating-point reduction order, so two otherwise-identical calls differ in ulps platform-dependently. Found via CI on upstream #260. Any bitwise comparison across `fit_local` calls must pin the RNG immediately before each call. |
+
+### LOST at v0.15.0
+
+None — all nine v0.14.0 rows below stand (engine rows by byte-identity;
+mechanism/fit rows re-verified).
+
+### Carried over from the v0.14.0 audit
 
 Eight of the nine edges the original audit recorded were fixed at `a91d8f9`;
-the ninth is now **documented contract, not defect**. Re-verified on this
-vendored copy.
+the ninth is now **documented contract, not defect**.
 
 | edge | status at v0.14.0 |
 |---|---|
@@ -81,7 +107,7 @@ vendored copy.
 | `fit()`'s "held-out LL" was in-sample | **FIXED** — relabelled, and the absence of a split/early stopping stated. |
 | `intervene()` severs the caller's gradient | **CONTRACT, not defect** — inherent to returning a deep-copied model. `model.sample(n, do=…)` is the differentiable interventional path (verified grad **1.0000** vs analytic 1.0). |
 
-### Differentiability contract (v0.14.0, pinned upstream by tests)
+### Differentiability contract (since v0.14.0, pinned upstream by tests; re-verified at v0.15.0: `sample(do=)` grad 0.9998 vs analytic 1.0)
 
 | path | differentiable through caller-supplied tensors? |
 |---|---|
