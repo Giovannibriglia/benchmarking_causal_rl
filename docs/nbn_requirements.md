@@ -3,9 +3,16 @@
 **Audience:** the NBN library author. **Scope:** what GRACE v2 needs from NBN
 that it cannot get GRACE-side without compromising correctness.
 
-> **⚠ R3 IS OPEN AND IS BLOCKING** (added 2026-08-19). Unlike R1 and R2, this
-> one cannot be worked around GRACE-side without changing what algorithm GRACE
-> is running. See [R3](#r3--warm_start-on-fit_local-so-an-m-step-is-a-step).
+> **R3 STATUS (updated 2026-08-19): IMPLEMENTED AND VERIFIED UPSTREAM, NOT YET
+> DELIVERED HERE.** Branch `feat/warm-start-fit-local` (5 commits, FlexCode
+> root-branch weights fix separated as its own commit), full suite green
+> including the `a91d8f9`/#255 and #258 regression sets, PR #260 open for
+> review. **Still blocking on the GRACE side**: until it is merged, tagged and
+> synced into the vendored `nbn/`, GRACE runs restart-EM and every rule scoped
+> to that (the `RESTART-EM-PARAMS-PROVISIONAL` label, the do-not-re-measure
+> freeze on cost numbers) stays in force. Unlike R1 and R2, this one cannot be
+> worked around GRACE-side without changing what algorithm GRACE is running.
+> See [R3](#r3--warm_start-on-fit_local-so-an-m-step-is-a-step).
 
 > **STATUS: R1 AND R2 DELIVERED in NBN v0.14.0 (`4784b8e`).** R1 is
 > pinned by upstream tests; R2 shipped with a `supports_weights` capability
@@ -203,7 +210,7 @@ affected.
 
 ---
 
-## R3 — `warm_start` on `fit_local`, so an M-step is a *step* ⚠ OPEN, BLOCKING
+## R3 — `warm_start` on `fit_local`, so an M-step is a *step* — IMPLEMENTED UPSTREAM (PR #260, in review); blocking here until merged + synced
 
 **Statement.** Add `warm_start: bool = False` to `Mechanism.fit_local` (and
 thread it through `fit`). When `True` **and** the mechanism is already fitted
@@ -275,6 +282,15 @@ usable; which one it is must be documented.
 **Incompatible shapes must RAISE, never silently rebuild.** A silent rebuild is
 precisely the behaviour that produced this entire episode: it is invisible,
 plausible, and it invalidates the algorithm above it.
+
+**Delivered semantics (upstream `nbn/learning/warm_start.py`, verified by
+`tests/unit/test_warm_start_contract.py`):** fresh Adam over the existing
+parameters (moments are not in `state_dict()`, so carrying them would break
+the #258 snapshot/restore idiom); data-derived standardisation buffers
+freeze; shape mismatch raises, never-fitted cold-builds, observable via a
+`warm_started: bool` in the metrics dict; closed-form branches are declared
+no-ops through `Mechanism.warm_start_is_noop`, with root branches always
+recomputing so they keep responding to the E-step.
 
 **Acceptance test — pins the contract with no ambiguity:**
 

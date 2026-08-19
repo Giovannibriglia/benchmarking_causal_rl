@@ -549,6 +549,13 @@ alone would answer the easy half.
 
 ### 🛑 THE M-STEP IS NOT A STEP — NBN R3 is OPEN and BLOCKING
 
+> **STATUS 2026-08-19: implemented and verified upstream** (branch
+> `feat/warm-start-fit-local`, full suite green, PR #260 in review). Nothing
+> below is retired until it is **merged, tagged and synced into `nbn/`** —
+> GRACE is still running restart-EM against the vendored snapshot, the
+> `RESTART-EM-PARAMS-PROVISIONAL` label stays on, and the re-measurement
+> freeze stays in force.
+
 `MDNMechanism.fit_local` executes `self.net = _build_mlp(...)` with a fresh Adam
 **on every call**, so GRACE's M-step is an **independent refit from random
 init**, not a partial maximisation of `Q(θ | θ_old)`. GEM's guarantee
