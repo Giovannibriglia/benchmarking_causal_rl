@@ -605,5 +605,17 @@ design document, which needs no optimiser.
 * **pre-commit reformats and aborts the commit.** Always `git log` after committing; re-`git add -A` and re-commit.
 * **One agent per worktree.** Kill by **PID**, never a bare pattern (`pkill -f regime_sweep` matches `test_regime_sweep.py`). Note also that `pgrep -f <own pattern>` **matches its own shell**, so "still running" can be entirely self-reference — check `ps -eo args | grep -v grep` before concluding a job survived a kill.
 * **`cd X && ... &` BACKGROUNDS THE `cd` TOO — a silent write into a sibling checkout.** The `&` applies to the whole `&&` chain, so any *following* line in the same tool call runs in the ORIGINAL cwd. A heredoc written that way landed a script in the frozen `benchmarking_causal_rl` checkout instead of this worktree, with no error anywhere. Guards: parenthesise, `(cd X && ...) &`, or use absolute paths in anything backgrounded. **The sharper risk is the one that did not happen this time:** it created an *untracked* file, which was harmless and visible in `git status`. The same slip onto an *existing* path would have been a silent modification to the frozen v1 branch with nothing to signal it. Check the sibling checkout is clean after any backgrounded write.
+  **UPDATE (2026-08-19): the sharper risk then happened, by a different route.**
+  Post-crash assessment found the frozen checkout with 25 *modified tracked
+  files* under `nbn/` plus one staged addition — a half-finished wholesale copy
+  of upstream over the vendored tree (made to source a corrected LICENSE, of
+  which only the LICENSE was committed), sitting uncommitted on the frozen
+  branch for four days. Not a backgrounded write at all. The general form of
+  the rule: **after ANY operation that touches a sibling checkout — copies,
+  syncs, licence fixes, anything — run `git status` there before leaving it.**
+  Looking for stray files is not enough; the worse failure is modifications to
+  tracked files, which `ls` cannot see. (Resolved: discarded as premature per
+  the sync procedure; the licence commit was completed by fixing NOTICE.md's
+  stale GPLv3 line in `b513ba3`.)
 * The full test suite exceeds a 10-minute tool timeout; run in chunks with `-k`.
 * Sampling from an **unfitted** model raises `assert self._bias is not None` — that is "sample before fit", unrelated to any do-semantics issue.
