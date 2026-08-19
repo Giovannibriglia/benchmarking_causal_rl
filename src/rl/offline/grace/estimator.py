@@ -203,15 +203,22 @@ class Estimate:
     degenerate_mechanism: bool = False
     mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
     reward_mechanism: str = ""
+    algorithm: str = "restart-EM"
 
     def label(self) -> str:
         # The resolved R mechanism rides on every number: a likelihood read
         # without knowing whether R was categorical or an MDN is not comparable
         # to one read the other way.
-        bits = [
-            f"R={self.reward_mechanism or '?'}",
-            f"sep/step={self.separation_per_step:.3f}",
-        ]
+        bits = [f"R={self.reward_mechanism or '?'}"]
+        if self.algorithm != "gem":
+            # PROVISIONAL, and the label is how that travels. Under restart-EM
+            # the parameter sequence may never settle even after the objective
+            # plateaus, so ``converged`` can fire on delta-LL while the
+            # parameters still jump between iterations. Any value-level quantity
+            # -- interventional values, L4 bounds -- reads the PARAMETERS, not
+            # the objective, and inherits that instability.
+            bits.append(f"{self.algorithm.upper()}-PARAMS-PROVISIONAL")
+        bits.append(f"sep/step={self.separation_per_step:.3f}")
         if self.degenerate_mechanism:
             worst = max(self.mechanism_degeneracy.items(), key=lambda kv: kv[1])
             bits.append(f"DEGENERATE-SCALE({worst[0]}:{worst[1]:.2f})")
@@ -272,6 +279,12 @@ class LatentClassFit:
     final_lr_scale: float = 1.0
     lr_reductions: int = 0
     epoch_escalations: int = 0
+    # WHICH ALGORITHM PRODUCED THIS FIT. "restart-EM" while NBN's fit_local
+    # rebuilds its network per call (see docs/nbn_requirements.md R3): the
+    # M-step is an independent refit, not a partial maximisation, so GEM's
+    # guarantee does not hold and even ACCEPTED steps are stochastic. Becomes
+    # "gem" once warm_start lands.
+    algorithm: str = "restart-EM"
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
@@ -295,6 +308,7 @@ class LatentClassFit:
             degenerate_mechanism=self.degenerate_mechanism,
             mechanism_degeneracy=dict(self.mechanism_degeneracy),
             reward_mechanism=self.reward_mechanism,
+            algorithm=self.algorithm,
         )
 
     @property
@@ -1202,6 +1216,7 @@ class LatentClassEstimator:
             final_lr_scale=lr_scale,
             lr_reductions=lr_reductions,
             epoch_escalations=epoch_escalations,
+            algorithm="restart-EM",
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
             final_saturation=sat,

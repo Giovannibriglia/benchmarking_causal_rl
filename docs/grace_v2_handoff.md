@@ -547,6 +547,47 @@ CartPole**. Do not project until Acrobot reports: Acrobot decides whether the
 grid is uniform or must be split by environment, and projecting on CartPole
 alone would answer the easy half.
 
+### 🛑 THE M-STEP IS NOT A STEP — NBN R3 is OPEN and BLOCKING
+
+`MDNMechanism.fit_local` executes `self.net = _build_mlp(...)` with a fresh Adam
+**on every call**, so GRACE's M-step is an **independent refit from random
+init**, not a partial maximisation of `Q(θ | θ_old)`. GEM's guarantee
+presupposes continuity from `θ_old`. **Without warm-start, GRACE's EM is not
+EM.**
+
+Four things chased as separate problems are one cause:
+
+| symptom | explanation |
+|---|---|
+| the line search is **inverted** — measured Δ objective at `lr ×1 / ×0.5 / ×0.25 / ×0.0625 / ×2.4e-4` = **−26 / −110 / −1224 / −3148 / −4573** | a smaller `lr` is not a gentler step, it is a **worse fresh fit**, so every retry is worse than the last and exhaustion is guaranteed |
+| the guard compares against a **moving baseline** — even `lr ×1` returns worse by 26 | the refit is stochastic |
+| **non-monotone likelihood tails**, twice read as ill-conditioning | refit stochasticity |
+| per-iteration cost never falls as the fit approaches its optimum | every iteration relearns from scratch |
+
+**Interim: the algorithm is `restart-EM`, not GEM, and every fit says so.** The
+workaround retries with **more epochs** rather than a smaller `lr` — with a
+fresh-fit M-step, more optimisation is what gets closer to the maximiser. It is
+directionally right and it changes the algorithm: even *accepted* steps are
+stochastic refits, so the parameter sequence may never settle after the objective
+plateaus. `converged` can therefore fire on ΔLL while the parameters still jump,
+and **anything reading the PARAMETERS rather than the objective — interventional
+values, L4 bounds — is provisional**. `Estimate.label()` carries
+`RESTART-EM-PARAMS-PROVISIONAL` until warm-start lands.
+
+#### Retroactive scope — what survives, what must be re-measured
+
+| result | status |
+|---|---|
+| **discrete-R** | **SURVIVES UNTOUCHED** — a modelling-correctness result, independent of the optimiser. |
+| **tempering / T=500** | **Probably survives, re-check rather than assume.** Saturation is an **E-step** property: responsibilities saturate, the partition freezes, and refitting mechanisms from a frozen partition reinforces it whether the refit is warm or cold. Tempering attacks the E-step. It is load-bearing, so re-check it after warm-start. |
+| **all cost numbers, both fork verdicts, the V-D projection's absolutes** | **MUST BE RE-MEASURED.** They rest on per-iteration costs that change materially once iterations stop restarting from scratch. Expect improvement. The *lever ratios* (5× pooling, the declaration matrix) are unaffected. |
+| **CartPole "finished by stationarity", 8.6 min** | **WITHDRAWN** — `stationary` meant "no fresh refit at a degraded `lr` beat the incumbent", not stationarity of the objective. |
+| **D-D proxy ablation** | **VOID**, now for a third reason. |
+
+**Do not re-run any of it until warm-start is available.** Measuring twice is the
+one thing worse than measuring late. The productive work meanwhile is the V-D
+design document, which needs no optimiser.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.

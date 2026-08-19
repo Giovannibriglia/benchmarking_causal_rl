@@ -3,7 +3,11 @@
 **Audience:** the NBN library author. **Scope:** what GRACE v2 needs from NBN
 that it cannot get GRACE-side without compromising correctness.
 
-> **STATUS: BOTH REQUIREMENTS DELIVERED in NBN v0.14.0 (`4784b8e`).** R1 is
+> **⚠ R3 IS OPEN AND IS BLOCKING** (added 2026-08-19). Unlike R1 and R2, this
+> one cannot be worked around GRACE-side without changing what algorithm GRACE
+> is running. See [R3](#r3--warm_start-on-fit_local-so-an-m-step-is-a-step).
+
+> **STATUS: R1 AND R2 DELIVERED in NBN v0.14.0 (`4784b8e`).** R1 is
 > pinned by upstream tests; R2 shipped with a `supports_weights` capability
 > flag checked before any node is fitted. The fallback sections below are
 > **superseded** and kept only as the record of what was traded away had they
@@ -195,3 +199,105 @@ deep-copied model and is now documented, with `sample(n, do=…)` as the
 differentiable path. One of our own claims was corrected upstream:
 `is_fitted` was already implemented by kde/knn/flexcode; only LG/MDN/flow were
 affected.
+
+
+---
+
+## R3 — `warm_start` on `fit_local`, so an M-step is a *step* ⚠ OPEN, BLOCKING
+
+**Statement.** Add `warm_start: bool = False` to `Mechanism.fit_local` (and
+thread it through `fit`). When `True` **and** the mechanism is already fitted
+with compatible shapes, continue optimising the **existing** parameters instead
+of rebuilding them. `False` is exactly today's behaviour, bitwise.
+
+**Motivation — this is not a performance request.** `MDNMechanism.fit_local`
+currently executes
+
+```python
+self.net = _build_mlp(d_pa, self.hidden, out_dim, self.activation).to(device)
+opt = torch.optim.Adam(self.parameters(), lr=lr)
+```
+
+**on every call**, so a refit discards the previous parameters and starts from a
+fresh random initialisation with a fresh optimiser. GRACE's L3 is EM over a
+latent class: its M-step calls `fit(...)` once per EM iteration. With a rebuild
+on every call, **the M-step is not a partial maximisation of `Q(θ | θ_old)` — it is an
+independent refit**, and generalized EM's guarantee (an M-step that does not
+decrease the objective cannot decrease the likelihood) presupposes continuity
+from `θ_old`. Without it, GRACE's EM is not EM; it is a sequence of unrelated
+fits whose objective happens to be recomputed between them.
+
+**Four symptoms we chased separately turned out to be this one cause:**
+
+1. *The backtracking line search is inverted.* Its premise is that a smaller
+   step is more conservative. Measured objective against the incumbent on our
+   recovery fixture, same data, same responsibilities, varying only `lr`:
+
+   | `lr` multiplier | 1 | 0.5 | 0.25 | 0.0625 | 0.000244 |
+   |---|---|---|---|---|---|
+   | Δ objective | −26 | −110 | −1224 | −3148 | −4573 |
+
+   Monotone, and catastrophic at the small end: a smaller learning rate does not
+   take a gentler step, it produces a **worse fresh fit**. So every
+   "conservative retry" is strictly worse than the last, which guarantees the
+   guard exhausts once its first attempt fails.
+2. *The guard compares against a moving baseline.* Even at `lr × 1` the refit
+   came back **worse by 26** — because it is a different random initialisation.
+3. *Non-monotone likelihood trajectories.* On a converging production fit the
+   relative improvement ran `1.5e-2 → 1.6e-4 → 5.8e-4 → 2.6e-4 → 3.7e-5`. We
+   twice read this as ill-conditioning. It is refit stochasticity.
+4. *Cost.* Every iteration relearns from scratch, so per-iteration cost never
+   falls as the fit approaches its optimum.
+
+**Why not GRACE-side.** We can only work *around* it, not fix it. The interim
+workaround — retry with **more epochs** rather than a smaller learning rate,
+since with a fresh-fit M-step more optimisation is what gets closer to the
+maximiser — is directionally right but changes the algorithm: it makes GRACE
+**restart-EM**, not GEM. Even accepted steps are stochastic refits, so the
+parameter sequence may never settle even after the objective plateaus, and any
+downstream quantity depending on the *parameters* rather than the objective
+(interventional values, L4 bounds) inherits that instability. Warm-start repairs
+the whole stack at once and cannot be simulated from outside the mechanism.
+
+**Proposed API.**
+
+```python
+def fit_local(self, x, parents, *, weights=None, warm_start=False,
+              epochs=..., lr=..., batch_size=...) -> dict
+def fit(model, data, *, weights=None, warm_start=False, ...) -> TrainHistory
+```
+
+Please **state explicitly whether optimiser state is also reused**, because it
+changes the semantics: reusing Adam's moments continues a trajectory, while a
+fresh optimiser over existing parameters restarts the momentum. Either is
+usable; which one it is must be documented.
+
+**Incompatible shapes must RAISE, never silently rebuild.** A silent rebuild is
+precisely the behaviour that produced this entire episode: it is invisible,
+plausible, and it invalidates the algorithm above it.
+
+**Acceptance test — pins the contract with no ambiguity:**
+
+```python
+import copy, torch
+m = MDNMechanism(num_components=3, hidden=(64, 64))
+x, pa = torch.randn(500, 1), torch.randn(500, 2)
+m.fit_local(x, pa, epochs=5)
+before = copy.deepcopy(m.state_dict())          # deepcopy: state_dict ALIASES
+
+m.fit_local(x, pa, epochs=0, warm_start=True)
+after_warm = m.state_dict()
+assert all(torch.equal(before[k], after_warm[k]) for k in before)   # UNCHANGED
+
+m.fit_local(x, pa, epochs=0, warm_start=False)
+after_cold = m.state_dict()
+assert not all(torch.equal(before[k], after_cold[k]) for k in before)  # FRESH
+```
+
+Secondary: with `warm_start=True` a second call's objective is `>=` the first's;
+with `False` the two are independent draws. And an incompatible parent width
+under `warm_start=True` raises.
+
+*(`copy.deepcopy` in the test is not incidental — `state_dict()` returns tensors
+sharing storage with the live parameters, so the naive spelling compares a
+snapshot against itself and passes regardless. That cost us a day separately.)*
