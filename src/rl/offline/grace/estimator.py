@@ -38,8 +38,16 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Sequence
+
+# Required by torch for deterministic cuBLAS; must be in the environment
+# before the first CUDA matmul creates the workspace, so it is set at
+# import. Without it, ``use_deterministic_algorithms(True)`` raises at the
+# first matmul with an error naming this variable -- fail-loud, but at a
+# confusing distance from the cause.
+os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
 import numpy as np
 import torch
@@ -204,6 +212,7 @@ class Estimate:
     mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
     reward_mechanism: str = ""
     algorithm: str = "restart-EM"
+    deterministic: bool = False
 
     def label(self) -> str:
         # The resolved R mechanism rides on every number: a likelihood read
@@ -232,6 +241,12 @@ class Estimate:
             # the first iteration, so this number is a property of the init, not
             # of the likelihood. It must travel with every value downstream.
             bits.append(f"SATURATED-AT-INIT({self.initial_saturation:.2f})")
+        if not self.deterministic:
+            # The unusual case now flags, not the default one: under default
+            # kernels identical fits differed by 12-58 nats run-to-run, so a
+            # number produced that way is path-dependent on kernel scheduling
+            # and comparable to nothing without a calibrated floor.
+            bits.append("NONDETERMINISTIC-KERNELS")
         if not self.monotone:
             bits.append("NON-MONOTONE-EM")
         if not self.converged:
@@ -285,6 +300,12 @@ class LatentClassFit:
     # guarantee does not hold and even ACCEPTED steps are stochastic. Becomes
     # "gem" once warm_start lands.
     algorithm: str = "restart-EM"
+    # Were deterministic kernels enforced for this fit? Default False so
+    # only a fit actually run under the flag claims it; ``fit()`` sets it
+    # explicitly. Pre- and post-determinism numbers are not naively
+    # comparable (deterministic kernels are not bit-identical to the
+    # default ones), which is exactly why the mode must travel.
+    deterministic: bool = False
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
     separation_per_step: float = 0.0
@@ -309,6 +330,7 @@ class LatentClassFit:
             mechanism_degeneracy=dict(self.mechanism_degeneracy),
             reward_mechanism=self.reward_mechanism,
             algorithm=self.algorithm,
+            deterministic=self.deterministic,
         )
 
     @property
@@ -945,6 +967,7 @@ class LatentClassEstimator:
         max_backtracks: int = 3,
         temperature: float | None = None,
         n_anneal: int | None = None,
+        deterministic: bool = True,
         verbose: bool = False,
         **fit_kwargs,
     ) -> LatentClassFit:
@@ -981,6 +1004,23 @@ class LatentClassEstimator:
         is stored on the fit and reported, never fitted against recovery. Pass
         ``temperature=1.0`` to force annealing off.
         """
+        # DETERMINISTIC KERNELS, ON BY DEFAULT for every reported run
+        # (decision 2026-08-19; measured cost ~5%). Not only an instrument for
+        # equivalence tests: (a) it removes the whole "signal or noise" class
+        # of question -- run-to-run gaps of 12-58 nats were measured on
+        # IDENTICAL fits under default kernels; (b) it restores the bootstrap
+        # null to measuring resampling variance rather than resampling + fit
+        # noise; (c) the noise is not benign -- 5e-4 nats of evaluation noise
+        # reaches the backtrack/convergence/stationarity decisions, each a
+        # DISCRETE decision on a continuous quantity, and amplifies into
+        # macroscopically different execution paths. Reported numbers should
+        # not be path-dependent on kernel scheduling.
+        #
+        # FAIL-LOUD BY DESIGN: torch raises if an op with no deterministic
+        # implementation enters the fit path (none does today). If a future
+        # change trips it, that is this flag working, not a bug in it.
+        # The mode travels on the fit and its estimates under C3.
+        torch.use_deterministic_algorithms(deterministic)
         torch.manual_seed(self.seed)
         # Resolve R's TYPE from the data before anything is fitted, and rebuild
         # if it disagrees with the provisional model. Recorded on the fit, so no
@@ -1225,6 +1265,7 @@ class LatentClassEstimator:
             lr_reductions=lr_reductions,
             epoch_escalations=epoch_escalations,
             algorithm="restart-EM",
+            deterministic=deterministic,
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
             final_saturation=sat,
