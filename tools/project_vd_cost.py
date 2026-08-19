@@ -166,7 +166,14 @@ def main() -> int:
     for label, b, pool, decl in scenarios:
         fits, mins, unmeasured, per_cell = project(b, pool, decl)
         six = mins / 60 / args.parallel
-        print(f"\n=== {label}   [declarations={decl}] ===")
+        # When the declaration matrix is active the scalar is UNUSED -- echoing
+        # it would claim a multiplier the math ignored.
+        tag = (
+            "declaration-matrix (1/2/2/3 per cell)"
+            if args.declaration_matrix
+            else f"declarations={decl}"
+        )
+        print(f"\n=== {label}   [{tag}] ===")
         print(f"  total EM fits          {fits:,}")
         if unmeasured:
             print(
