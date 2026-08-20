@@ -215,6 +215,10 @@ Construction: two conditionally-independent noisy measurements of `U` emitted in
 
 ### ⚠ D-D's Kruskal triple includes the REWARD view, whose informativeness is policy-dependent
 
+> **Superseded by the 2026-08-20 revision below (pending review): the triple
+> becomes `{Z, W, V}` and no longer depends on `R` at all.** This section
+> stays as the record of the property that made the revision necessary.
+
 A documented property, not a defect, and deliberately **not** engineered away.
 
 The triple is `{Z, W, R}`. `Z` and `W` are covariate-free and σ-independent, but
@@ -298,13 +302,106 @@ would compensate for a weakness that does not exist. What survives is R4's
 question — how `R` degrades as the logged policy improves — now correctly posed
 against `P(a_bad) × E[T]` rather than `P(a_bad)`.
 
+> **REVERSED (2026-08-20): the remedy goes LIVE, for the MIRROR IMAGE of the
+> reason it was retired.** It was reserved against `R` being *weak*; the
+> measured defect is `R` being *strong* (the ablation below). A third proxy is
+> not the fix for that — weakening `R` is — but weakening `R` alone drops its
+> k-rank to 1, the Kruskal sum to 5 < 6, and un-identifies the cell. `V` is
+> required as the **enabler** that decouples identifiability from the reward
+> channel so `R` can then be weakened freely. Retired on evidence, returned on
+> evidence, for the opposite defect — both decisions stand on their dates.
+
 **The concern that replaces it, and outranks it: D-D may be TOO EASY.** If `R`
 alone recovers `U` at AUC 1.0000 per episode, `U` is effectively *observed* — an
 estimator can recover it from the reward channel, condition on it, and the
 confounding disappears. D-D would then be a **back-door cell wearing proximal
 clothing**, and "the clean point-ID case" would be validating latent recovery
 from a highly separable mixture rather than proximal identification: V-C would
-report success on machinery it never exercised. Open; see the proxy-ablation.
+report success on machinery it never exercised.
+
+**RESOLVED — CONFIRMED, 2026-08-20** (`results/dd_ablation_gem.log`, matched
+random inits, GEM + deterministic): the without-proxies arm recovers
+0.995–1.000 and is ≥ the with-proxies arm in **all six** (env, dataset-seed)
+blocks. `U` is recoverable from `(S, A, R)` alone from a random init; the
+proxies do no work, not even the initialisation role they held under the old
+optimiser. The remedy is the revision below.
+
+### 🔧 REVISION (2026-08-20, PENDING CATALOGUE REVIEW) — `V` joins the diagram; `R`'s informativeness becomes a swept parameter
+
+**Diagnosis, one line.** The proxies are decorative because **`R` is too
+informative** — episode-mean `R` separates `U` at AUC ≈ 1.0, so the latent is
+effectively observed through the reward channel and nothing else is needed.
+The inversion matters: the third proxy was reserved against `R` being weak;
+the defect is `R` being strong, so `V` alone would make identification
+*easier*, not the proxies *necessary*. The fix is weakening `R` — and `V` is
+what makes that safe.
+
+**Diagram change (A1 — this is a new catalogue entry revision, not a knob).**
+
+| field | change |
+|---|---|
+| Nodes | + `V` (observed, continuous, episode-level) |
+| Edges | + `U → V`. **Exclusions:** `parents(V) = {U}` exactly — no `A → V`, no `V →` anything, `ε_V` independent of `ε_Z`, `ε_W`, and of `S` |
+| Construction | `V = U + ε_V`, emitted into `infos`, exactly as `Z` and `W` |
+| Kruskal triple | **`{Z, W, V}`** — three covariate-free views, each k-rank 2, sum 6: still exactly tight at |U| = 2, but **decoupled from `R`**, whose k-rank may now fall to 1 with nothing lost |
+| Testable implication | extends: `P(Z, W, V \| A, S)` has rank ≤ |U| (M3 unchanged in kind — `W` remains the invalidated proxy) |
+
+**Parameterisation (NOT a diagram change): the `U → R` channel's per-episode
+signal-to-noise becomes a swept parameter.** Two levers exist; they are not
+equivalent and the choice is part of this review:
+
+* **Exogenous reward noise (recommended primary axis):** scales the per-step
+  SNR of the gated reward with *everything else held fixed* — policy, action
+  law, episode lengths all untouched.
+* **Gate probabilities (secondary check only):** moving them changes the
+  action law, and episode length is an OUTCOME (S1b) — points along that axis
+  differ in behaviour and length distribution, not only in `R`-informativeness,
+  so a transition located on it is confounded by construction.
+
+Per A1/A2 discipline: YAML declares the noise strength; each generated point's
+**realised** informativeness is measured (episode-mean-`R` AUC against logged
+`U`) and reported alongside — the transition is *located by measurement*,
+never tuned for. The current setting is retained as the **`R`-strong end** of
+the sweep, so the existing 40 datasets and the 2026-08-19 ablation remain
+interpretable as one point on the curve rather than being discarded.
+
+**The result to report is the sweep, not a point:** the with/without-proxies
+ablation at every sweep point, fixed-step budget, converged fits, value-level
+do-contrasts included (the 2026-08-19 run's contrasts are not-quotable
+`conv=False` numbers; the sweep replaces them). Expected shape: the
+without-arm degrades as `R` weakens and the with-arm holds — the curve shows
+the proxies moving from decorative to load-bearing and **locates the
+transition**, which is exactly the evidence a "did the proxies do any work?"
+reviewer wants. One honesty note for the analysis: `(S, A)` trajectories also
+carry `U` through the action mixture, so the without-arm may degrade
+gracefully rather than collapse — the transition is where the *joint*
+non-proxy channels lose `U`, not where `R` alone does.
+
+**Preflight obligations (new assertions, S4/S5 discipline):**
+1. `V` covariate-free: assert `max|corr(V, S)|` at the Z/W threshold, per
+   dataset — the same silent-collapse risk as Z/W (state-scaled noise would
+   make `V` covariate-conditional with no error anywhere).
+2. k-rank of the `{Z, W, V}` triple measured per dataset with family-correct
+   nulls (S3), margins reported.
+3. `R`'s k-rank **reported but no longer required** — at the weak end it is
+   *expected* to fall to 1, and that is the design working, not a failure.
+4. Realised `R`-AUC recorded in the dataset's certification stamp, and the
+   **sweep parameter is part of the dataset id** (S6 — identity has one
+   construction site; a sweep that collides ids across noise levels would
+   repeat the 27-rows-8-datasets failure).
+
+**Consequences to propagate on acceptance:**
+* The V-D declaration matrix changes — D-D gains a view, hence constraints;
+  re-run `project_vd_cost.py` after the entry lands (the ordering rule in the
+  handoff: never price a diagram set a pending change may invalidate).
+* D-D datasets regenerate (fast post-speedup); certification re-stamps every
+  derived key (the Cluster-B lesson).
+* `diagram_arms.py` derives the `V` channel from the catalogue entry; YAML
+  supplies strengths only (A1).
+
+**Sequencing (agreed 2026-08-20):** this entry → review → generator support
+for `V` + the noise parameter with the preflight assertions → regenerate D-D →
+the ablation sweep at fixed-step budget with converged fits.
 
 ### ⭐ Why D-D is the clean case: its proxies are COVARIATE-FREE
 
