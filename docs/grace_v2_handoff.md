@@ -550,6 +550,58 @@ covers it: observed and replicates share the procedure); (c) V-D must never
 read a raw ll difference across arms without its null — which its design
 already forbids, but this is now a measured reason rather than a policy.
 
+### THE RE-MEASUREMENT QUEUE — COMPLETED 2026-08-19/20, first quotable figures
+
+**2. Cost + fork (`results/cost/grace_fit_cost_gem.*`, 3000 episodes,
+fixed-step M-step, converged, clean C3):** CartPole **65.1 s**, Acrobot
+**42.7 s** — Acrobot FASTER despite 8.6× the transitions (the fixed-step
+budget decouples per-iteration cost from n; it needed 9 iterations to
+CartPole's 16). **THE FORK DOES NOT SPLIT: minutes everywhere, cadence refit
+viable in both environments, the per-cell architecture split is unnecessary,
+and the online Acrobot cells are unblocked.** M-step lever ×13.98 (CartPole)
+/ ×147.95 (Acrobot) — the lever is a function of n, which is what the old
+cross-run drift was.
+
+**3. V-D re-projection (`results/cost/vd_projection_gem.log`, declaration
+matrix, measured costs):** full grid B=99/dataset = 57,420 fits = 6.0 d at
+6-way; **+A (pooled nulls) = 1.2 d**; +A+B (B=39) = 0.5 d at p-resolution
+0.025. Option A is in reach.
+
+**4. Consolidate equivalence — CLOSED, BITWISE
+(`results/cost/consolidate_share_gem.*`):** determinism control identical;
+True vs False identical (n_iter, final_ll to the bit, ex-EWC params). Pure
+overhead ESTABLISHED; the divergence that opened the question was the Fisher
+pass consuming global RNG. Direction note: the SHARE rose to 83% under GEM
+(warm-start cheapens the denominator); the invariant is the absolute ~49
+s/iter. The `consolidate=False` default now rests on measurement.
+
+**5. D-D proxy ablation — FIRST measurement
+(`results/dd_ablation_gem.log`, matched random inits, 3×3×3×2):**
+
+**The proxies are DECORATIVE for latent recovery, everywhere.** The
+without-proxies arm recovers 0.995–1.000 (best-LL) in all six
+(env, dataset-seed) blocks and is ≥ the with-proxies arm in every one
+(with: 0.980–0.998). Under the fixed stack (GEM + anneal + discrete-R +
+deterministic), U is recoverable from (S, A, R) alone from a RANDOM init —
+so even the "load-bearing through initialisation only" role the proxies
+held under the old optimiser is gone. **The docstring's feared conclusion is
+the measured one: D-D currently functions as a back-door cell wearing
+proximal clothing — an estimator can succeed on it without exercising the
+proximal channel, and V-C would report success on machinery it never used.**
+This threatens the CELL'S PURPOSE and is a design decision for the author,
+not a parameter choice: candidate remedies are the reserve third proxy /
+weaker R-coupling (the catalogue's coupling note quantifies why R is doing
+all the work: episode-mean R separates U at AUC 1.0), or re-scoping D-D's
+claim. A1 applies — whatever is chosen is a new catalogue entry.
+
+Caveats carried on the numbers: the ablation ran the EPOCH-BASED M-step
+(the tool has no m_step_budget passthrough — worth adding before any re-run;
+a fixed-step re-run would be ~50× cheaper), and most verdict-arm fits are
+`conv=False` at max_iter=12 — recovery conclusions are plateaued and
+seed-stable, but the VALUE-LEVEL do-contrasts (CartPole spread 0.32–0.74
+across arms and seeds; Acrobot 0.48–0.55) are unconverged-fit numbers and
+carry their C3 labels; do not quote them as estimates.
+
 ### ⚠ WHAT WAS MEASURED THROUGH THE MIS-SPECIFIED REWARD — an audit
 
 Recovery **0.543 against 0.983** on CartPole means the MDN reward was not a
