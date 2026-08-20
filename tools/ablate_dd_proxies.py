@@ -63,6 +63,17 @@ def main() -> int:
     ap.add_argument("--episodes", type=int, default=400)
     ap.add_argument("--max-iter", type=int, default=12)
     ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument(
+        "--m-step-budget",
+        type=int,
+        default=None,
+        help="fixed gradient-step budget per M-step (estimator's O(steps) "
+        "path). None = epoch-based O(n*epochs) -- which is what made the "
+        "2026-08-19 run 17 h; the fixed-step path is ~50x cheaper at Acrobot "
+        "scale (measured lever x148 at n=475k) and is REQUIRED for any sweep "
+        "or converged value-level re-run.",
+    )
+    ap.add_argument("--batch-size", type=int, default=4096)
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--fit-seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument(
@@ -165,8 +176,17 @@ def main() -> int:
                     device=device,
                     seed=fs,
                 )
+                budget_kw = (
+                    {"m_step_budget": args.m_step_budget, "batch_size": args.batch_size}
+                    if args.m_step_budget
+                    else {}
+                )
                 fit = est.fit(
-                    data, max_iter=args.max_iter, epochs=args.epochs, init=init
+                    data,
+                    max_iter=args.max_iter,
+                    epochs=args.epochs,
+                    init=init,
+                    **budget_kw,
                 )
                 hard_ep = fit.hard_assignment().cpu().numpy()
                 bad = est.interventional_sweep(
