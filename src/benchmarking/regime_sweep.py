@@ -136,6 +136,19 @@ def arm_behavior(beta: float, sigma: float) -> Tuple[str, float]:
     return "bias_confounded_action", float(sigma)
 
 
+def _with_c_r(arm_kwargs: Dict, fallback_c_r: float) -> Dict:
+    """Merge the arm kwargs with the cell's scalar c_r, the DERIVED one winning.
+
+    Under the compensated gated-reward sweep, arm_generator_kwargs carries
+    confounder_c_r = M / d and the scalar must yield; everywhere else the
+    scalar is the value, exactly as before. One helper so the precedence rule
+    exists in one place instead of five call sites.
+    """
+    out = dict(arm_kwargs)
+    out.setdefault("confounder_c_r", fallback_c_r)
+    return out
+
+
 def c_r_for(default_c_r: float, beta: float, sigma: float):
     """The reward-confounder magnitude for a sweep point. basic AND confounded use the
     cell's ``confounder_c_r`` (both collect via bias_confounded_action, which records
@@ -303,6 +316,11 @@ class SweepSpec:
     instrument_strength: Optional[float] = None
     u_drift: Optional[float] = None
     gate_probs: Optional[Sequence[float]] = None
+    # Compensated gated-reward sweep (D-D revision 2026-08-21): M = c_r * d
+    # held fixed, c_r DERIVED as M / d in arm_knobs -- the single construction
+    # site. A YAML that sets this must NOT also set confounder_c_r (arm_knobs
+    # raises on the contradiction).
+    gate_mean_effect: Optional[float] = None
 
     def arm_generator_kwargs(self, sigma: float) -> Dict:
         """The diagram channels for a sweep point, or {} for a historical cell."""
@@ -313,18 +331,31 @@ class SweepSpec:
         k = arm_knobs(
             self.diagram,
             sigma=sigma,
-            confounder_c_r=self.confounder_c_r,
+            # Under the compensated sweep c_r is DERIVED from M and d;
+            # supplying the spec's scalar too would trip arm_knobs'
+            # contradiction check, which is the intended failure for a YAML
+            # that declares both.
+            confounder_c_r=(
+                None if self.gate_mean_effect is not None else self.confounder_c_r
+            ),
             proxy_strength=self.proxy_strength,
             instrument_strength=self.instrument_strength,
             u_drift=self.u_drift,
             gate_probs=self.gate_probs,
+            gate_mean_effect=self.gate_mean_effect,
         )
-        return {
+        out = {
             "proxy_strength": k.proxy_strength,
             "instrument_strength": k.instrument_strength,
             "u_drift": k.u_drift,
             "gate_probs": k.gate_probs,
+            "n_proxies": k.n_proxies,
         }
+        if self.gate_mean_effect is not None:
+            # The DERIVED c_r rides in the kwargs; call sites yield to it
+            # rather than passing their own (see the generation call sites).
+            out["confounder_c_r"] = k.confounder_c_r
+        return out
 
     def budget(self, key: str, default: int) -> int:
         return int(self.budgets.get(key, default))
@@ -401,6 +432,11 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         instrument_strength=_opt_float(pick("instrument_strength", None)),
         u_drift=_opt_float(pick("u_drift", None)),
         gate_probs=pick("gate_probs", None),
+        gate_mean_effect=(
+            None
+            if pick("gate_mean_effect", None) is None
+            else float(pick("gate_mean_effect", None))
+        ),
     )
 
 
@@ -724,8 +760,10 @@ def _run_point(
         behavior_policy=bp,
         behavior_strength=strength,
         pi_basic_epsilon=spec.pi_basic_epsilon,
-        confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
-        **spec.arm_generator_kwargs(sigma),
+        **_with_c_r(
+            spec.arm_generator_kwargs(sigma),
+            c_r_for(spec.confounder_c_r, beta, sigma),
+        ),
         mask_indices=(spec.mask_indices.get(env) if recurrent else None),
     )
     # offline_grad_steps (feat/offline-budget-key): the offline learner's total
@@ -818,8 +856,10 @@ def _run_point_classical(
         behavior_policy=bp,
         behavior_strength=strength,
         pi_basic_epsilon=spec.pi_basic_epsilon,
-        confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
-        **spec.arm_generator_kwargs(sigma),
+        **_with_c_r(
+            spec.arm_generator_kwargs(sigma),
+            c_r_for(spec.confounder_c_r, beta, sigma),
+        ),
         mask_indices=(spec.mask_indices.get(env) if recurrent else None),
     )
     _ogs = spec.budgets.get("offline_grad_steps")
@@ -914,8 +954,10 @@ def _run_point_online_ablation(
             behavior_policy=bp,
             behavior_strength=strength,
             pi_basic_epsilon=spec.pi_basic_epsilon,
-            confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
-            **spec.arm_generator_kwargs(sigma),
+            **_with_c_r(
+                spec.arm_generator_kwargs(sigma),
+                c_r_for(spec.confounder_c_r, beta, sigma),
+            ),
             mask_indices=(spec.mask_indices.get(env) if recurrent else None),
         )
         train_cfg = TrainingConfig(
@@ -1014,8 +1056,10 @@ def _reusable_dataset_hash(
             tier="random",
             behavior_policy=behavior_policy,
             behavior_strength=strength,
-            confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
-            **spec.arm_generator_kwargs(sigma),
+            **_with_c_r(
+                spec.arm_generator_kwargs(sigma),
+                c_r_for(spec.confounder_c_r, beta, sigma),
+            ),
             pi_basic_epsilon=spec.pi_basic_epsilon,
             a_bad=1,
             rollout_episodes=spec.budget("rollout_episodes", 30),
@@ -1197,8 +1241,10 @@ def run_cell(
                     behavior_policy=bp,
                     behavior_strength=strength,
                     pi_basic_epsilon=spec.pi_basic_epsilon,
-                    confounder_c_r=c_r_for(spec.confounder_c_r, beta, sigma),
-                    **spec.arm_generator_kwargs(sigma),
+                    **_with_c_r(
+                        spec.arm_generator_kwargs(sigma),
+                        c_r_for(spec.confounder_c_r, beta, sigma),
+                    ),
                     rollout_episodes=spec.budget("rollout_episodes", 30),
                     seed=seed,
                     dataset_id=did,

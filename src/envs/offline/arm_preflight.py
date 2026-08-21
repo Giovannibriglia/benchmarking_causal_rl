@@ -360,6 +360,8 @@ class ProxyReport:
     max_abs_corr_proxy_state: float
     corr_z_w_given_u: float
     max_abs_corr_proxy_action: float
+    # NaN when the arm has no V (pre-revision D-D and every other cell).
+    corr_v_u: float = float("nan")
     k_ranks: Dict[str, int] = field(default_factory=dict)
     singular_values: Dict[str, Sequence[float]] = field(default_factory=dict)
     condition_numbers: Dict[str, float] = field(default_factory=dict)
@@ -396,6 +398,7 @@ def check_proxies(
     z: np.ndarray,
     w: np.ndarray,
     u: np.ndarray,
+    v: np.ndarray | None = None,
     state: np.ndarray,
     action: np.ndarray,
     reward: np.ndarray | None = None,
@@ -416,6 +419,14 @@ def check_proxies(
     3. **Kruskal** -- the empirical k-ranks of the three views. For binary U the
        condition ``sum(k-rank) >= 2R + 2 = 6`` with each view capped at 2 means
        ALL THREE must have k-rank 2; there is no slack.
+
+    WITH V (the 2026-08-21 D-D revision): the Kruskal triple is ``{Z, W, V}``
+    -- three covariate-free views, decoupled from the reward channel -- and
+    ``R``'s k-rank is DEMOTED to reported-not-required: under the compensated
+    gate-separation sweep the weak end is EXPECTED to drive it to 1, and that
+    is the design working, not a failure. Without ``v`` the legacy
+    ``{Z, W, R}`` behaviour is byte-unchanged, so existing certifications
+    re-verify identically.
 
     GRANULARITY (S1b). ``Z``, ``W`` and ``U`` are episode-constant and enter as
     one row per episode. Their per-step companions are reduced to an episode
@@ -442,6 +453,8 @@ def check_proxies(
     n_ep = int(uniq.size)
     z_ep = _episode_constant(z, inv, n_ep, "Z")
     w_ep = _episode_constant(w, inv, n_ep, "W")
+    v_ep = None if v is None else _episode_constant(v, inv, n_ep, "V")
+    proxies_ep = (z_ep, w_ep) if v_ep is None else (z_ep, w_ep, v_ep)
     u_ep = _episode_constant(u, inv, n_ep, "U")
     a_ep = _episode_mean(action, inv, n_ep)
     s_ep = np.stack(
@@ -468,12 +481,12 @@ def check_proxies(
     state_family = [
         (proxy, (lambda b, c=col: _corr(_residualise(b, u_ep), c)))
         for col in s_resid
-        for proxy in (z_ep, w_ep)
+        for proxy in proxies_ep
     ]
     max_state, p_state, z_state = _permutation_family_test(state_family, strata_ep=u_ep)
     max_state_marginal = max(
         (
-            max(abs(_corr(z_ep, s_ep[:, j])), abs(_corr(w_ep, s_ep[:, j])))
+            max(abs(_corr(pe, s_ep[:, j])) for pe in proxies_ep)
             for j in range(s_ep.shape[1])
         ),
         default=0.0,
@@ -495,16 +508,28 @@ def check_proxies(
     #    and W are independent noise by construction -- the constancy across the
     #    sweep was the tell that it was measuring episode-count noise.
     w_resid = _residualise(w_ep, u_ep)
-    corr_zw_u, p_zw, z_zw = _signed_permutation_test(
-        z_ep,
-        lambda b: _corr(_residualise(b, u_ep), w_resid),
-        strata_ep=u_ep,
-    )
+    if v_ep is None:
+        corr_zw_u, p_zw, z_zw = _signed_permutation_test(
+            z_ep,
+            lambda b: _corr(_residualise(b, u_ep), w_resid),
+            strata_ep=u_ep,
+        )
+    else:
+        # Three pairs are a FAMILY (S3): judged against the null of the family
+        # maximum, exactly as the covariate-free family above -- a per-pair
+        # cutoff over three tests would run ~3x the intended false-alarm rate.
+        v_resid = _residualise(v_ep, u_ep)
+        pair_family = [
+            (z_ep, lambda b: _corr(_residualise(b, u_ep), w_resid)),
+            (z_ep, lambda b: _corr(_residualise(b, u_ep), v_resid)),
+            (w_ep, lambda b: _corr(_residualise(b, u_ep), v_resid)),
+        ]
+        corr_zw_u, p_zw, z_zw = _permutation_family_test(pair_family, strata_ep=u_ep)
     a_resid = _residualise(a_ep, u_ep)
     max_action, p_action, z_action = _permutation_family_test(
         [
             (proxy, lambda b: _corr(_residualise(b, u_ep), a_resid))
-            for proxy in (z_ep, w_ep)
+            for proxy in proxies_ep
         ],
         strata_ep=u_ep,
     )
@@ -526,6 +551,8 @@ def check_proxies(
     #    Z and W given U. Lossy in the safe direction, since a summary that
     #    clears k-rank 2 implies the full sequence does.
     views = {"Z": z_ep, "W": w_ep}
+    if v_ep is not None:
+        views["V"] = v_ep
     if reward is not None:
         views["R"] = _episode_mean(
             np.asarray(reward, dtype=np.float64).reshape(-1), inv, n_ep
@@ -541,7 +568,12 @@ def check_proxies(
 
     n_classes = int(np.unique(u_ep).size)
     required = 2 * n_classes + 2
-    achieved = sum(k_ranks.get(n, 0) for n in ("Z", "W", "R"))
+    # The REQUIRED triple: {Z, W, V} when V exists (decoupled from the reward
+    # channel -- R's k-rank stays measured and reported, but the weak end of
+    # the gate sweep is EXPECTED to drive it to 1 and must not fail the arm);
+    # the legacy {Z, W, R} otherwise, byte-unchanged.
+    triple = ("Z", "W", "V") if v_ep is not None else ("Z", "W", "R")
+    achieved = sum(k_ranks.get(n, 0) for n in triple)
     kruskal_ok = achieved >= required
     if not kruskal_ok:
         collapsed = [n for n, bad in degenerate.items() if bad]
@@ -553,8 +585,9 @@ def check_proxies(
             else ""
         )
         reasons.append(
-            f"Kruskal k-rank sum {achieved} < required {required} for R={n_classes}: "
-            f"the latent structure is NOT identified from these views{detail}"
+            f"Kruskal k-rank sum {achieved} < required {required} over "
+            f"{'/'.join(triple)} for R={n_classes}: the latent structure is NOT "
+            f"identified from these views{detail}"
         )
 
     return ProxyReport(
@@ -562,6 +595,7 @@ def check_proxies(
         n_episodes=n_ep,
         corr_z_u=_corr(z_ep, u_ep),
         corr_w_u=_corr(w_ep, u_ep),
+        corr_v_u=float("nan") if v_ep is None else _corr(v_ep, u_ep),
         max_abs_corr_proxy_state=max_state_marginal,
         corr_z_w_given_u=corr_zw_u,
         max_abs_corr_proxy_action=max_action,

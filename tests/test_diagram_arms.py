@@ -26,7 +26,12 @@ def test_channels_are_read_off_the_catalogue():
         "instrument": False,
         "drift": False,
         "latent": True,
+        # 2026-08-21 revision: the third proxy V, and the declared licence for
+        # the compensated gated-reward sweep.
+        "gated_reward_sweep": True,
+        "n_proxies": 3,
     }
+    assert declared_channels("D-B-prime")["gated_reward_sweep"] is False
     assert declared_channels("D-E")["instrument"] is True
     assert declared_channels("D-B-prime")["drift"] is True
     assert declared_channels("D-A-null")["latent"] is False
@@ -50,8 +55,38 @@ def test_an_instrument_arm_must_make_its_exclusion_testable():
     exactly that trap, so it is refused at resolve time."""
     with pytest.raises(ValueError, match="exclusion restriction cannot be tested"):
         arm_knobs("D-E", sigma=0.5, instrument_strength=0.3)
-    with pytest.raises(ValueError, match="declares no instrument"):
-        arm_knobs("D-D", sigma=0.5, proxy_strength=1.5, gate_probs=(0.2, 0.8))
+    # gate_probs on a cell with NEITHER an instrument NOR the declared
+    # gated-reward-sweep licence is still refused (D-B-prime here; D-D stopped
+    # being the example when its 2026-08-21 revision declared the licence).
+    with pytest.raises(ValueError, match="neither an instrument nor a gated"):
+        arm_knobs("D-B-prime", sigma=0.5, u_drift=0.05, gate_probs=(0.2, 0.8))
+
+
+def test_the_gated_reward_sweep_licence_admits_and_derives():
+    """D-D's declared licence: gate_probs is admitted as a reward
+    parameterisation, and c_r is DERIVED as M / d -- the estimand-invariant
+    compensated sweep. Declaring c_r alongside M is a contradiction and
+    raises rather than letting one silently win."""
+    k = arm_knobs(
+        "D-D",
+        sigma=0.25,
+        proxy_strength=1.5,
+        gate_probs=(0.1, 0.35),
+        gate_mean_effect=1.0,
+    )
+    assert abs(k.confounder_c_r - 4.0) < 1e-9  # M / d = 1.0 / 0.25
+    assert k.n_proxies == 3
+    with pytest.raises(ValueError, match="both gate_mean_effect"):
+        arm_knobs(
+            "D-D",
+            sigma=0.25,
+            proxy_strength=1.5,
+            gate_probs=(0.1, 0.35),
+            gate_mean_effect=1.0,
+            confounder_c_r=1.0,
+        )
+    with pytest.raises(ValueError, match="needs a separation"):
+        arm_knobs("D-D", sigma=0.25, proxy_strength=1.5, gate_mean_effect=1.0)
 
 
 def test_a_declared_channel_without_a_strength_is_refused():

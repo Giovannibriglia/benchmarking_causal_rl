@@ -141,6 +141,7 @@ def build_rollout_env(
     instrument_strength=None,
     u_drift=0.0,
     gate_probs=None,
+    n_proxies=2,
 ):
     """Build the rollout env, wrapped in the confounder iff bias_confounded[_action].
 
@@ -181,6 +182,7 @@ def build_rollout_env(
             confounder_kind=kind,
             a_bad=int(a_bad),
             proxy_strength=proxy_strength,
+            n_proxies=n_proxies,
             instrument_strength=instrument_strength,
             u_drift=u_drift,
             gate_probs=gate_probs,
@@ -224,9 +226,10 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     # Read at the SAME point as U (before the step), so a row's (U, Z, W, I) is
     # the tuple that this transition's action and reward actually shared.
     _has_proxy = getattr(env, "current_z", None) is not None
+    _has_v = getattr(env, "current_v", None) is not None
     _has_instr = getattr(env, "current_i", None) is not None
     sig_a, sig_r, sig_u, sig_iv, sig_ps = [], [], [], [], []
-    sig_z, sig_w, sig_i, sig_ep = [], [], [], []
+    sig_z, sig_w, sig_v, sig_i, sig_ep = [], [], [], [], []
     # The action-dependent gate needs the per-transition pi_basic(a_bad|s). The
     # marginally-matched policy exposes it via ``_base_action_probs`` (a READ of
     # pi_basic — no behavior change, and DQN's argmax path draws no RNG, so the
@@ -256,6 +259,7 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         ep_cmin: list[float] = []  # per-transition min_a p_b(a|s) (arms only)
         ep_z: list[float] = []  # D-D proxy Z (episode-constant, logged per row)
         ep_w: list[float] = []  # D-D proxy W
+        ep_v: list[float] = []  # D-D proxy V (third view, 2026-08-21 revision)
         ep_i: list[float] = []  # D-E instrument I
         done = False
         steps = 0
@@ -276,6 +280,8 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             if _has_proxy:
                 ep_z.append(float(env.current_z.reshape(-1)[0].item()))
                 ep_w.append(float(env.current_w.reshape(-1)[0].item()))
+                if _has_v:
+                    ep_v.append(float(env.current_v.reshape(-1)[0].item()))
             if _has_instr:
                 ep_i.append(float(env.current_i.reshape(-1)[0].item()))
             act_out = collection_policy.act(obs)
@@ -302,6 +308,8 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 if _has_proxy:
                     sig_z.append(ep_z[-1])
                     sig_w.append(ep_w[-1])
+                    if _has_v:
+                        sig_v.append(ep_v[-1])
                 if _has_instr:
                     sig_i.append(ep_i[-1])
                 # Scalar action: the index (discrete) or L2 norm (continuous).
@@ -346,6 +354,8 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         if ep_z:
             infos["proxy_z"] = np.asarray(ep_z, dtype=np.float32)
             infos["proxy_w"] = np.asarray(ep_w, dtype=np.float32)
+            if ep_v:
+                infos["proxy_v"] = np.asarray(ep_v, dtype=np.float32)
         if ep_i:
             infos["instrument_i"] = np.asarray(ep_i, dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
@@ -373,6 +383,7 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             # too tight (a zero-signal view was called rank 2).
             "z": np.asarray(sig_z, dtype=np.float64),
             "w": np.asarray(sig_w, dtype=np.float64),
+            "v": np.asarray(sig_v, dtype=np.float64),
             "i": np.asarray(sig_i, dtype=np.float64),
             "episode": np.asarray(sig_ep, dtype=np.int64),
         }
@@ -412,6 +423,7 @@ def _rollout_vectorized(
 
     confounded = hasattr(env, "current_u")
     _has_proxy = getattr(env, "current_z", None) is not None
+    _has_v = getattr(env, "current_v", None) is not None
     _has_instr = getattr(env, "current_i", None) is not None
     # Same optional per-transition readers as the scalar path (pure reads, no RNG).
     _ps_fn = getattr(collection_policy, "_base_action_probs", None)
@@ -432,6 +444,7 @@ def _rollout_vectorized(
             "iv": [],
             "cmin": [],
             "z": [],
+            "v": [],
             "w": [],
             "i": [],
             "sig_a": [],
@@ -484,6 +497,7 @@ def _rollout_vectorized(
         # Diagram channels, read at the same point as U (before the step).
         z_t = env.current_z.reshape(-1).detach().cpu().numpy() if _has_proxy else None
         w_t = env.current_w.reshape(-1).detach().cpu().numpy() if _has_proxy else None
+        v_t = env.current_v.reshape(-1).detach().cpu().numpy() if _has_v else None
         i_t_aux = (
             env.current_i.reshape(-1).detach().cpu().numpy() if _has_instr else None
         )
@@ -543,6 +557,8 @@ def _rollout_vectorized(
             if z_t is not None:
                 b["z"].append(float(z_t[i]))
                 b["w"].append(float(w_t[i]))
+                if v_t is not None:
+                    b["v"].append(float(v_t[i]))
             if i_t_aux is not None:
                 b["i"].append(float(i_t_aux[i]))
 
@@ -569,6 +585,7 @@ def _rollout_vectorized(
     sig_ps: list = []
     sig_z: list = []
     sig_w: list = []
+    sig_v: list = []
     sig_i: list = []
     sig_ep: list = []
     for ep_idx in range(n_episodes):
@@ -583,6 +600,8 @@ def _rollout_vectorized(
         if b["z"]:
             infos["proxy_z"] = np.asarray(b["z"], dtype=np.float32)
             infos["proxy_w"] = np.asarray(b["w"], dtype=np.float32)
+            if b["v"]:
+                infos["proxy_v"] = np.asarray(b["v"], dtype=np.float32)
         if b["i"]:
             infos["instrument_i"] = np.asarray(b["i"], dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
@@ -603,6 +622,7 @@ def _rollout_vectorized(
         sig_ps.extend(b["sig_ps"])
         sig_z.extend(b["z"])
         sig_w.extend(b["w"])
+        sig_v.extend(b["v"])
         sig_i.extend(b["i"])
         # The episode INDEX, not a running counter: the preflight's permutation
         # null must shuffle whole episodes (U and the proxies are
@@ -618,6 +638,7 @@ def _rollout_vectorized(
             "p_s": np.asarray(sig_ps, dtype=np.float64),
             "z": np.asarray(sig_z, dtype=np.float64),
             "w": np.asarray(sig_w, dtype=np.float64),
+            "v": np.asarray(sig_v, dtype=np.float64),
             "i": np.asarray(sig_i, dtype=np.float64),
             "episode": np.asarray(sig_ep, dtype=np.int64),
         }
@@ -669,9 +690,11 @@ def _preflight_certification(
         states = np.concatenate(
             [b.observations[:-1] for b in buffers[: int(max_episodes)]], axis=0
         )
+        _v = samples.get("v")
         rep = check_proxies(
             z=samples["z"][keep],
             w=samples["w"][keep],
+            v=None if _v is None or _v.size == 0 else _v[keep],
             u=samples["u"][keep],
             state=states[: int(keep.sum())],
             action=samples["a"][keep],
@@ -681,9 +704,25 @@ def _preflight_certification(
         ok = rep.covariate_free and rep.exclusions_hold and rep.kruskal_ok
         passed &= ok
         reasons += list(rep.reasons)
+        # Realised R-informativeness: episode-mean R AUC against logged U --
+        # binning-free, and the quantity the compensated gate sweep dials.
+        # Stamped per dataset so the decorative->load-bearing transition is
+        # LOCATED from certification stamps, never re-derived from memory.
+        _ep = samples["episode"][keep]
+        _r = samples["r"][keep]
+        _u = samples["u"][keep]
+        _eps = np.unique(_ep)
+        _rm = np.array([_r[_ep == e].mean() for e in _eps])
+        _um = np.array([_u[_ep == e][0] for e in _eps])
+        _pos, _neg = _rm[_um == 1], _rm[_um == 0]
+        if _pos.size and _neg.size:
+            _gt = (_pos[:, None] > _neg[None, :]).mean()
+            _eq = (_pos[:, None] == _neg[None, :]).mean()
+            out["preflight_r_auc_episode"] = float(_gt + 0.5 * _eq)
         out.update(
             {
                 "preflight_proxy_corr_z_u": rep.corr_z_u,
+                "preflight_proxy_corr_v_u": rep.corr_v_u,
                 "preflight_proxy_k_ranks": dict(rep.k_ranks),
                 # The MARGIN, not just the verdict: Kruskal is exactly tight at
                 # |U| = 2, so an arm near the boundary is fragile to sample size
@@ -1132,6 +1171,7 @@ def generation_fingerprint(
     instrument_strength=None,
     u_drift: float = 0.0,
     gate_probs=None,
+    n_proxies: int = 2,
 ) -> str:
     """Hash of EVERY input that determines a generated dataset's contents (S4).
 
@@ -1181,6 +1221,7 @@ def generation_fingerprint(
         ("instrument_strength", instrument_strength, None),
         ("u_drift", float(u_drift), 0.0),
         ("gate_probs", gate_probs, None),
+        ("n_proxies", int(n_proxies), 2),
     ):
         if val != off:
             parts.append((key, val))
@@ -1297,6 +1338,7 @@ def generate_offline_dataset(
     instrument_strength: float | None = None,
     u_drift: float = 0.0,
     gate_probs=None,
+    n_proxies: int = 2,
     preflight_episodes: int = 600,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
@@ -1391,6 +1433,7 @@ def generate_offline_dataset(
         instrument_strength=instrument_strength,
         u_drift=u_drift,
         gate_probs=gate_probs,
+        n_proxies=n_proxies,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
     # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +

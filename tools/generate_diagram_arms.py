@@ -36,13 +36,23 @@ def dataset_id_for(cell: str, k, env_id: str, seed: int, sigma: float) -> str:
     whole grid and assert injectivity without generating anything — which makes
     this bug class unreachable rather than merely fixed.
     """
+    from src.envs.offline.diagram_arms import declared_channels
     from src.envs.offline.generate import dataset_name
 
-    return (
+    base = (
         dataset_name(env_id, "medium", k.behavior_policy, sigma)
         .replace("generated/", f"grace-v2/{cell}-")
         .replace("-v0", f"-seed{seed}-v0")
     )
+    # Compensated gated-reward sweep (D-D revision): the separation d is a
+    # sweep axis, so it MUST distinguish ids (S6). Encoded as d x 100,
+    # 3-digit -- the same convention as sigma. Suffix ONLY under the declared
+    # licence: D-E's gate_probs are cell-constant, so its existing ids (and
+    # every other cell's) stay byte-stable.
+    if k.gate_probs is not None and declared_channels(k.diagram)["gated_reward_sweep"]:
+        d = float(k.gate_probs[1]) - float(k.gate_probs[0])
+        base = base.replace("-v0", f"-d{int(round(d * 100)):03d}-v0")
+    return base
 
 
 def grid_ids(cell: str, spec) -> list:

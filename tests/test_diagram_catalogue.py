@@ -119,13 +119,26 @@ def test_iv_cell_is_bounds_only_never_point_id():
     assert d_e.q1.status == "bounds_only" and d_e.q2.status == "bounds_only"
 
 
-def test_proximal_cell_declares_two_constructible_proxies():
+def test_proximal_cell_declares_three_constructible_proxies():
     """v1 declared proxy_nodes but never plumbed the concept; v2 constructs
-    them."""
+    them. Three since the 2026-08-21 revision: V is the enabler that decouples
+    the Kruskal triple {Z, W, V} from the reward view, so R's informativeness
+    can be swept without un-identifying the cell."""
     d_d = catalogue_entry("D-D")
-    assert d_d.proxy_nodes == ("Z", "W")
+    assert d_d.proxy_nodes == ("Z", "W", "V")
     for p in d_d.proxy_nodes:
         assert d_d.node(p).kind == "proxy" and d_d.node(p).observed
+        assert d_d.in_edges_of(p) == (("U", p),), f"{p} must be covariate-free"
+
+
+def test_gated_reward_sweep_is_a_declared_licence_not_a_default():
+    """gate_probs outside the instrument cells is admitted ONLY where the
+    catalogue entry declares the gated-reward sweep -- D-D after the revision,
+    and nothing else silently."""
+    assert catalogue_entry("D-D").gated_reward_sweep is True
+    for eid, entry in CATALOGUE.items():
+        if eid != "D-D":
+            assert entry.gated_reward_sweep is False, eid
 
 
 def test_completeness_is_declared_untestable_wherever_it_is_relied_on():

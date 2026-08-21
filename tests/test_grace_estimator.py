@@ -85,7 +85,12 @@ def test_monotonicity_is_reported_not_assumed():
     est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
     fit = est.fit(data, max_iter=4, epochs=10)
     assert isinstance(fit.monotone, bool)
-    assert len(fit.log_likelihood) == fit.n_iter
+    # History = the initial E-step entry + one entry per ACCEPTED step. The
+    # old equality len == n_iter held BY ACCIDENT of restart-EM: that fixture
+    # always ended on a rejected pass (exhaustion), so the initial entry
+    # balanced the one non-appending pass. Under GEM (warm_start default,
+    # 2026-08-21) every pass can accept and the honest bookkeeping bound is:
+    assert 1 <= len(fit.log_likelihood) <= fit.n_iter + 1
 
 
 def test_episode_data_refuses_misaligned_arrays():

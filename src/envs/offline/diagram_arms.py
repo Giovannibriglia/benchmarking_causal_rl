@@ -42,6 +42,9 @@ class ArmKnobs:
     instrument_strength: float | None = None
     u_drift: float = 0.0
     gate_probs: tuple | None = None
+    # Derived from the catalogue entry's proxy_nodes, never from config: the
+    # DIAGRAM says how many covariate-free proxies exist (D-D: 3 since V).
+    n_proxies: int = 2
 
     def generator_kwargs(self) -> Dict:
         return {
@@ -52,6 +55,7 @@ class ArmKnobs:
             "instrument_strength": self.instrument_strength,
             "u_drift": self.u_drift,
             "gate_probs": self.gate_probs,
+            "n_proxies": self.n_proxies,
         }
 
 
@@ -63,6 +67,10 @@ def declared_channels(diagram: str) -> Dict[str, bool]:
         "instrument": bool(g.instrument_nodes),
         "drift": bool(g.persistent_latent),
         "latent": any(not n.observed for n in g.nodes),
+        # The catalogue-declared licence for gate_probs outside the instrument
+        # cells (D-D's swept reward parameterisation). See CellGraph.
+        "gated_reward_sweep": bool(getattr(g, "gated_reward_sweep", False)),
+        "n_proxies": len(g.proxy_nodes),
     }
 
 
@@ -70,11 +78,12 @@ def arm_knobs(
     diagram: str,
     *,
     sigma: float,
-    confounder_c_r: float = 1.0,
+    confounder_c_r: float | None = None,
     proxy_strength: float | None = None,
     instrument_strength: float | None = None,
     u_drift: float | None = None,
     gate_probs=None,
+    gate_mean_effect: float | None = None,
 ) -> ArmKnobs:
     """Resolve a diagram id plus config strengths into generator knobs.
 
@@ -115,11 +124,40 @@ def arm_knobs(
             "bonus, which keeps R binary (so L4's Balke-Pearl anchor keeps its "
             "closed form) while giving the exclusion check real power."
         )
-    if gate_probs is not None and not ch["instrument"]:
+    if gate_probs is not None and not (ch["instrument"] or ch["gated_reward_sweep"]):
         raise ValueError(
-            f"{diagram} declares no instrument; gate_probs exists to make the "
-            "exclusion restriction testable and has no other arm to serve."
+            f"{diagram} declares neither an instrument nor a gated-reward "
+            "sweep; gate_probs serves those two declarations and no other. "
+            "If this cell's reward gate is meant to be swept, declare "
+            "gated_reward_sweep on its catalogue entry (an A1 surface change) "
+            "rather than passing the knob."
         )
+
+    # COMPENSATED GATE SEPARATION (D-D revision, 2026-08-21). The sweep
+    # parameter is d = q1 - q0; c_r is DERIVED as M / d so the mean effect
+    # M = c_r * d -- the do-contrast's gate component -- is invariant along
+    # the sweep. The dial moves how hard U is to SEE, never how much U
+    # matters. This is the single construction site for the derivation;
+    # supplying BOTH gate_mean_effect and confounder_c_r is a contradiction
+    # and raises rather than letting one silently win.
+    if gate_mean_effect is not None:
+        if gate_probs is None:
+            raise ValueError(
+                f"{diagram}: gate_mean_effect without gate_probs -- M = c_r * d "
+                "needs a separation d to derive c_r from."
+            )
+        if confounder_c_r is not None:
+            raise ValueError(
+                f"{diagram}: both gate_mean_effect ({gate_mean_effect}) and "
+                f"confounder_c_r ({confounder_c_r}) supplied. c_r is DERIVED "
+                "as M / d under the compensated sweep; declaring it too would "
+                "let the two disagree silently. Drop one."
+            )
+        d = float(gate_probs[1]) - float(gate_probs[0])
+        assert d > 0.0, f"gate separation must be positive, got {d}"
+        confounder_c_r = float(gate_mean_effect) / d
+    if confounder_c_r is None:
+        confounder_c_r = 1.0
 
     if not ch["latent"]:
         # No latent at all (D-A / D-A-null). Collect through the same
@@ -142,4 +180,5 @@ def arm_knobs(
         instrument_strength=instrument_strength,
         u_drift=0.0 if u_drift is None else float(u_drift),
         gate_probs=None if gate_probs is None else tuple(map(float, gate_probs)),
+        n_proxies=ch["n_proxies"],
     )

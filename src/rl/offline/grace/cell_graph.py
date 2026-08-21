@@ -167,6 +167,14 @@ class CellGraph:
     proxy_nodes: Tuple[str, ...] = ()
     instrument_nodes: Tuple[str, ...] = ()
     persistent_latent: bool = False
+    # The catalogue-declared licence for ``gate_probs`` OUTSIDE the instrument
+    # cells: True means this entry's U->R channel is a stochastic gate whose
+    # separation d = q1 - q0 is a SWEPT REWARD PARAMETERISATION (with c_r
+    # derived to hold the mean effect M = c_r * d fixed). Without this flag,
+    # diagram_arms refuses gate_probs for any non-instrument cell -- the guard
+    # that keeps D-E's mechanism from leaking. The refusal is conditional on
+    # THIS declaration, never a silent allowance (2026-08-21 D-D revision).
+    gated_reward_sweep: bool = False
     assumptions: Tuple[Assumption, ...] = ()
     testable_implications: Tuple[str, ...] = ()
     asserted_by: Tuple[str, ...] = ()
@@ -565,8 +573,17 @@ def _build() -> Dict[str, CellGraph]:
                 _U,
                 GraphNode("Z", "proxy", observed=True),
                 GraphNode("W", "proxy", observed=True),
+                # V (2026-08-21 revision): the ENABLER, not the fix. The
+                # measured defect was R being TOO informative (episode-mean
+                # AUC ~ 1.0), and weakening R drops its k-rank to 1 -- so the
+                # Kruskal triple must stop depending on R before R can be
+                # weakened. {Z, W, V} are three covariate-free views, each
+                # k-rank 2, sum 6: still exactly tight at |U| = 2, decoupled
+                # from the reward channel. See docs/diagram_catalogue.md.
+                GraphNode("V", "proxy", observed=True),
             ),
-            edges=_CORE_EDGES + (("U", "A"), ("U", "R"), ("U", "Z"), ("U", "W")),
+            edges=_CORE_EDGES
+            + (("U", "A"), ("U", "R"), ("U", "Z"), ("U", "W"), ("U", "V")),
             # COVARIATE-FREE proxies: parents(Z) = parents(W) = {U} exactly, so
             # P(Z|U) and P(W|U) do not depend on (s,a), the measurement matrices
             # are GLOBAL, and the labelling they induce is global. That -- not
@@ -574,7 +591,12 @@ def _build() -> Dict[str, CellGraph]:
             # cross_stratum_label_linking assumption and D-B does. Preflight
             # asserts independence from S, because proxy noise that scaled with
             # the state would silently make them covariate-conditional.
-            proxy_nodes=("Z", "W"),
+            proxy_nodes=("Z", "W", "V"),
+            # R's informativeness about U is a SWEPT parameter: gate
+            # separation d with c_r = M/d derived (estimand-invariant,
+            # two-valued R preserved). This flag is what licenses
+            # gate_probs here; see the field's comment.
+            gated_reward_sweep=True,
             q1=Verdict("point_id", "proximal", assumptions=("completeness",)),
             q2=Verdict(
                 "point_id",
@@ -582,7 +604,7 @@ def _build() -> Dict[str, CellGraph]:
                 assumptions=("completeness", "finite_K_latent_class"),
             ),
             assumptions=(_A_COMPLETENESS, _A_FINITE_K),
-            testable_implications=("rank <= |U| on P(Z, W | A, S)",),
+            testable_implications=("rank <= |U| on P(Z, W, V | A, S)",),
             asserted_by=("offline_mdp/proximal",),
         )
     )

@@ -42,6 +42,7 @@ class ConfoundedCollectionWrapper:
         confounder_kind: str = "additive",
         a_bad: int = 1,
         proxy_strength: float | None = None,
+        n_proxies: int = 2,
         instrument_strength: float | None = None,
         u_drift: float = 0.0,
         gate_probs: tuple[float, float] | None = None,
@@ -87,6 +88,14 @@ class ConfoundedCollectionWrapper:
         # Hence: the noise below is drawn from a dedicated generator and NEVER
         # reads obs.
         self.proxy_strength = None if proxy_strength is None else float(proxy_strength)
+        # 2 = the historical (Z, W) pair; 3 adds V (D-D revision 2026-08-21).
+        # Derived from the catalogue's proxy_nodes by diagram_arms, never a
+        # config knob. V is drawn AFTER Z and W from the same aux generator,
+        # so the two-proxy path consumes exactly the RNG it always did and
+        # stays byte-identical.
+        if int(n_proxies) not in (2, 3):
+            raise ValueError(f"n_proxies must be 2 or 3, got {n_proxies}")
+        self.n_proxies = int(n_proxies)
         # D-E instrument: drawn per episode INDEPENDENTLY of U, read by the
         # behaviour policy, with no path to the reward.
         self.instrument_strength = (
@@ -156,7 +165,7 @@ class ConfoundedCollectionWrapper:
             self._aux_gen = torch.Generator(device=self.device)
             self._aux_gen.manual_seed(int(seed) + 8_675_309)
         self.current_u = self._sample_u()
-        self.current_z, self.current_w = self._sample_proxies()
+        self.current_z, self.current_w, self.current_v = self._sample_proxies()
         self.current_i = self._sample_instrument()
         # action_gated is DISCRETE-ONLY: the a_bad reward gate has no meaning on a
         # continuous action space (a float action never equals a_bad -> the gate would
@@ -197,7 +206,7 @@ class ConfoundedCollectionWrapper:
         draws. Neither is a function of the action, so neither is affected by A.
         """
         if self.proxy_strength is None:
-            return None, None
+            return None, None, None
         centred = 2.0 * self.current_u - 1.0
         z = self.proxy_strength * centred + torch.randn(
             self.n_envs, device=self.device, generator=self._aux_gen
@@ -205,7 +214,16 @@ class ConfoundedCollectionWrapper:
         w = self.proxy_strength * centred + torch.randn(
             self.n_envs, device=self.device, generator=self._aux_gen
         )
-        return z, w
+        # V (third covariate-free view) is drawn LAST so the historical
+        # two-proxy stream is untouched -- byte-identity of the existing arms
+        # is what makes them the sweep's d = 1 point rather than new data.
+        v = (
+            self.proxy_strength * centred
+            + torch.randn(self.n_envs, device=self.device, generator=self._aux_gen)
+            if self.n_proxies == 3
+            else None
+        )
+        return z, w, v
 
     def _sample_instrument(self):
         """A per-episode instrument, drawn INDEPENDENTLY of U and never
@@ -235,6 +253,8 @@ class ConfoundedCollectionWrapper:
         if self.current_z is not None:
             out["proxy_z"] = self.current_z.clone()
             out["proxy_w"] = self.current_w.clone()
+            if self.current_v is not None:
+                out["proxy_v"] = self.current_v.clone()
         if self.current_i is not None:
             out["instrument_i"] = self.current_i.clone()
         return out
@@ -242,7 +262,7 @@ class ConfoundedCollectionWrapper:
     def reset(self, seed=None):
         obs, info = self.env.reset(seed=seed)
         self.current_u = self._sample_u()
-        self.current_z, self.current_w = self._sample_proxies()
+        self.current_z, self.current_w, self.current_v = self._sample_proxies()
         self.current_i = self._sample_instrument()
         info = {**info, "confounder_u": self.current_u.clone(), **self._aux_info()}
         return obs, info
@@ -276,10 +296,12 @@ class ConfoundedCollectionWrapper:
         done = torch.logical_or(terminated, truncated)
         if bool(done.any()):
             self.current_u = torch.where(done, self._sample_u(), self.current_u)
-            fresh_z, fresh_w = self._sample_proxies()
+            fresh_z, fresh_w, fresh_v = self._sample_proxies()
             if fresh_z is not None:
                 self.current_z = torch.where(done, fresh_z, self.current_z)
                 self.current_w = torch.where(done, fresh_w, self.current_w)
+                if fresh_v is not None:
+                    self.current_v = torch.where(done, fresh_v, self.current_v)
             fresh_i = self._sample_instrument()
             if fresh_i is not None:
                 self.current_i = torch.where(done, fresh_i, self.current_i)

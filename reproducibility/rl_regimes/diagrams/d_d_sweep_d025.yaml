@@ -1,0 +1,43 @@
+# D-D compensated gate-separation sweep -- EXEMPLAR POINT (d = 0.25).
+#
+# One YAML per sweep point: each point is a DECLARED configuration reviewable
+# on its own, sharing diagram D-D -- the sweep is a set of files, not a loop
+# knob. The grid itself is chosen in the pre-regeneration review.
+#
+# The compensated instrument (docs/diagram_catalogue.md, 2026-08-21 revision):
+# gate_probs supplies (q0, q1) with d = q1 - q0 the swept separation;
+# gate_mean_effect is M, and c_r is DERIVED as M / d in arm_knobs -- the
+# estimand is invariant along the sweep while the per-gated-step SNR falls.
+# Declaring confounder_c_r alongside gate_mean_effect is a contradiction and
+# arm_knobs raises on it, which is why this file has no confounder_c_r line.
+#
+# sigma = 0.25 uniform (both envs' demonstration point; naive-bias gate
+# cleared 2026-08-21 at 4.5x / 18.4x the sigma = 0 null). The sigma = 1.0
+# contrast REUSES the existing frozen datasets and needs no file here.
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+max_workers: 4
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.10, 0.35]      # d = 0.25
+gate_mean_effect: 1.0         # M; c_r derived = 4.0 at this point
+proxy_strength: 1.5
+
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25] }
+
+critics:
+  basic:      [observational, proximal, oracle_u]
+  confounded: [observational, proximal, oracle_u]
