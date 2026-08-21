@@ -15,6 +15,14 @@ variance.
 from __future__ import annotations
 
 import argparse
+import os
+
+# The GRACE v2 store, same setdefault as every measurement tool in tools/: a
+# driver launched without the env var must not silently write 3000-episode
+# datasets into ~/.minari where nothing downstream reads them -- which is
+# exactly what happened on 2026-08-21 (9 datasets generated into the default
+# store before the run was stopped; deleted, regenerated correctly).
+os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grace-v2"))
 import json
 import time
 from pathlib import Path

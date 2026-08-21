@@ -30,7 +30,12 @@ algos:
   - iql
 
 sweep:
-  basic:      { beta: 0.0, sigma: 0.0 }
+  # basic: false ACKNOWLEDGES the loader's null-anchor warning deliberately:
+  # the sweep's deliverables use NO per-point null calibration (recovery reads
+  # logged U, the do-contrast reads the known M, and the naive-bias null scales
+  # from the FROZEN sigma=0 arms by c_r). Per-point sigma=0 companions would be
+  # redundant generation; the approved grid is sigma = 0.25 only, 30 datasets.
+  basic:      false
   biased:     false
   confounded: { beta: 0.0, sigma: [0.25] }
 
