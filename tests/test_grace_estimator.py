@@ -243,7 +243,13 @@ def test_em_is_monotone_under_the_guard():
     est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
     fit = est.fit(data, max_iter=8, epochs=30, lr=1e-2)
     assert fit.monotone, fit.log_likelihood
-    assert fit.converged or fit.backtrack_exhausted or fit.n_iter == 8
+    # The complete end-state set: converged, stationary (including the
+    # fixed-point grant from the 2026-08-21 binding audit), a genuinely
+    # exhausted line search, or the iteration budget -- the old enumeration
+    # (converged/exhausted/n_iter == max_iter) predates both the stationary
+    # route and the anneal prefix, so it named outcomes rather than the
+    # invariant.
+    assert fit.finished or fit.backtrack_exhausted or fit.tau1_budget_bound, fit
 
 
 def test_an_exhausted_backtrack_budget_stops_rather_than_proceeding():

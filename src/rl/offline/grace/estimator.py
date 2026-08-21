@@ -213,6 +213,7 @@ class Estimate:
     reward_mechanism: str = ""
     algorithm: str = "restart-EM"
     deterministic: bool = False
+    tau1_budget_bound: bool = False
 
     def label(self) -> str:
         # The resolved R mechanism rides on every number: a likelihood read
@@ -251,6 +252,11 @@ class Estimate:
             bits.append("NON-MONOTONE-EM")
         if not self.converged:
             bits.append("NOT-CONVERGED")
+        if self.tau1_budget_bound:
+            # The iteration cap acted as a TUNING KNOB for this fit: it ran
+            # out of budget mid-ascent. The number is budget-truncated (S11's
+            # broken-experiment direction) and any consumer must know.
+            bits.append("TAU1-BUDGET-BOUND")
         if self.backtrack_exhausted:
             bits.append("BACKTRACK-EXHAUSTED")
         if self.backtracks:
@@ -310,6 +316,15 @@ class LatentClassFit:
     deterministic: bool = False
     initial_saturation: float = 0.0
     final_saturation: float = 0.0
+    # DID THE tau=1 ITERATION CAP BIND? True iff the loop spent its whole
+    # budget without reaching an end state (converged / stationary /
+    # exhausted). The binding rule (method-parameter audit, 2026-08-21): a
+    # limit that never binds across the grid is a safety guard; one that
+    # binds is a tuning knob and must be derived or disclosed. This flag is
+    # what makes that checkable per run instead of rhetorical. Note the
+    # anneal already sits OUTSIDE the cap by construction (total iterations =
+    # max_iter + derived rungs), so the cap has no hidden tau0 dependence.
+    tau1_budget_bound: bool = False
     separation_per_step: float = 0.0
     mechanism_degeneracy: Dict[str, float] = field(default_factory=dict)
     reward_mechanism: str = ""
@@ -333,6 +348,7 @@ class LatentClassFit:
             reward_mechanism=self.reward_mechanism,
             algorithm=self.algorithm,
             deterministic=self.deterministic,
+            tau1_budget_bound=self.tau1_budget_bound,
         )
 
     @property
@@ -970,7 +986,14 @@ class LatentClassEstimator:
         max_iter: int = 30,
         tol: float = 1e-4,
         init: str = "proxy",
-        max_backtracks: int = 3,
+        # 6, raised from 3 by the 2026-08-21 binding audit: at depth 3 a
+        # production-config CartPole fit exhausted MID-ASCENT on a step-size
+        # cliff (best rejected step worsened the objective by 3.3e-2 while
+        # accepted improvements were still 0.3-4%), and the deeper search
+        # recovered ~98 further nats before reaching a genuine fixed point.
+        # Depth 6 spans a 64x lr range; measured never-binding at the
+        # production configuration once the fixed-point grant below landed.
+        max_backtracks: int = 6,
         temperature: float | None = None,
         n_anneal: int | None = None,
         deterministic: bool = True,
@@ -1209,7 +1232,22 @@ class LatentClassEstimator:
                 # rejection at ~1e-4 relative means the optimiser genuinely
                 # cannot ascend, which is a weaker claim and must read as one.
                 rejected_step_rel = float((obj - new_obj) / max(abs(obj), 1e-12))
-                if improvement_rel is not None and improvement_rel < tol:
+                # TWO routes to stationary, both at resolution ``tol`` and
+                # neither introducing a constant (A2): (a) the recent ACCEPTED
+                # improvements were already sub-tolerance -- the original
+                # test; (b) the best REJECTED step's worsening is itself below
+                # tolerance -- the objective is flat at the optimiser's
+                # resolution in both directions. (b) closes the
+                # ABRUPT-CONVERGENCE GAP the binding audit measured: a fit
+                # whose final accepted step was large (5e-4 rel) reached a
+                # fixed point (rejected step flat to 3e-6) and was classified
+                # STUCK because test (a) only reads the accepted tail. Without
+                # (b), max_backtracks binds on exactly those fits and becomes
+                # a tuning knob; with it, exhaustion at a flat point is what
+                # finishing LOOKS like under a line search.
+                if (improvement_rel is not None and improvement_rel < tol) or abs(
+                    rejected_step_rel
+                ) < tol:
                     stationary = True
                 exhausted = True
                 break
@@ -1300,6 +1338,7 @@ class LatentClassEstimator:
             epoch_escalations=epoch_escalations,
             algorithm="gem" if warm_start else "restart-EM",
             deterministic=deterministic,
+            tau1_budget_bound=(it >= total_iter and not converged and not exhausted),
             n_anneal=n_anneal_used,
             initial_saturation=sat0,
             final_saturation=sat,

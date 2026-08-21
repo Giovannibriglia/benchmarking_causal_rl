@@ -1,4 +1,4 @@
-# D-D compensated gate-separation sweep -- point d = 0.25 (q = 0.375, 0.625).
+# D-D compensated gate-separation sweep -- point d = 0.05 (q = 0.475, 0.525).
 #
 # One YAML per sweep point; the grid (approved 2026-08-21): d in
 # {1.00, 0.50, 0.25, 0.10, 0.05} at M = 1.0, sigma = 0.25 uniform. Pairs are
@@ -19,7 +19,7 @@ diagram: D-D
 max_workers: 4
 generator_algo: dqn
 pi_basic_epsilon: 0.5
-gate_probs: [0.375, 0.625]
+gate_probs: [0.475, 0.525]
 gate_mean_effect: 1.0
 proxy_strength: 1.5
 seeds: [0, 1, 2]
