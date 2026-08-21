@@ -66,11 +66,18 @@ def grid_ids(cell: str, spec) -> list:
                 k = arm_knobs(
                     spec.diagram,
                     sigma=sigma,
-                    confounder_c_r=spec.confounder_c_r,
+                    # Compensated sweep: c_r is DERIVED from M and d; passing
+                    # the spec scalar too would trip the contradiction check.
+                    confounder_c_r=(
+                        None
+                        if getattr(spec, "gate_mean_effect", None) is not None
+                        else spec.confounder_c_r
+                    ),
                     proxy_strength=spec.proxy_strength,
                     instrument_strength=spec.instrument_strength,
                     u_drift=spec.u_drift,
                     gate_probs=spec.gate_probs,
+                    gate_mean_effect=getattr(spec, "gate_mean_effect", None),
                 )
                 out.append(dataset_id_for(cell, k, env_id, seed, sigma))
     return out
@@ -177,11 +184,16 @@ def main() -> int:
                     k = arm_knobs(
                         spec.diagram,
                         sigma=sigma,
-                        confounder_c_r=spec.confounder_c_r,
+                        confounder_c_r=(
+                            None
+                            if getattr(spec, "gate_mean_effect", None) is not None
+                            else spec.confounder_c_r
+                        ),
                         proxy_strength=spec.proxy_strength,
                         instrument_strength=spec.instrument_strength,
                         u_drift=spec.u_drift,
                         gate_probs=spec.gate_probs,
+                        gate_mean_effect=getattr(spec, "gate_mean_effect", None),
                     )
                     did = dataset_id_for(cell, k, env_id, seed, sigma)
                     # Idempotent: a partial or interrupted V-B run must be
@@ -197,13 +209,17 @@ def main() -> int:
                         fp = dict(existing.storage.metadata).get(
                             "generation_fingerprint"
                         )
+                        # kw may carry the DERIVED confounder_c_r (compensated
+                        # sweep); it must win over the k fallback, and passing
+                        # both explicitly would be a duplicate kwarg.
+                        fkw = dict(kw)
+                        fkw.setdefault("confounder_c_r", k.confounder_c_r)
                         want = generation_fingerprint(
                             env_id=env_id,
                             generator_algo=spec.generator_algo,
                             tier="medium",
                             behavior_policy=k.behavior_policy,
                             behavior_strength=k.behavior_strength,
-                            confounder_c_r=k.confounder_c_r,
                             pi_basic_epsilon=spec.pi_basic_epsilon,
                             a_bad=1,
                             rollout_episodes=n_ep,
@@ -212,7 +228,7 @@ def main() -> int:
                             rollout_device=spec.rollout_device,
                             rollout_n_envs=spec.rollout_n_envs,
                             legacy_rollout=spec.legacy_rollout,
-                            **kw,
+                            **fkw,
                         )
                         if args.resume and fp == want:
                             print(f"  {did}: reusing (fingerprint match)", flush=True)
@@ -238,7 +254,6 @@ def main() -> int:
                         "medium",
                         behavior_policy=k.behavior_policy,
                         behavior_strength=k.behavior_strength,
-                        confounder_c_r=k.confounder_c_r,
                         pi_basic_epsilon=spec.pi_basic_epsilon,
                         a_bad=1,
                         rollout_episodes=n_ep,
@@ -247,7 +262,7 @@ def main() -> int:
                         agent=agent,
                         rollout_device=spec.rollout_device,
                         rollout_n_envs=spec.rollout_n_envs,
-                        **kw,
+                        **{**{"confounder_c_r": k.confounder_c_r}, **kw},
                     )
                     row = _row_from(
                         ds,
