@@ -408,6 +408,34 @@ wrong number with a seed-dependent SIGN, which strengthens the cell's case.
 before it was moved to episode granularity — the fourth S1b instance in the
 project's record.)
 
+**The instability is GRANULARITY-SPECIFIC — measured 2026-08-21, and it
+sharpens both the finding and the baseline choice.** The same selection
+computed at episode granularity (each episode contributing its `a_bad`
+propensity once) is **uniformly positive on every CartPole seed**
+(+0.002 … +0.047 at σ = 0.25 against ±0.1 transition-pooled), while
+Acrobot's two granularities nearly coincide. So on CartPole most of the
+transition-pooled magnitude IS the collider term, and the sign flip is
+entirely its doing; on Acrobot the bias is mostly genuine selection.
+Baseline consequence for the sweep: the **transition-pooled naive is the
+headline baseline** — it is what a naive consumer actually computes, and its
+sign instability is part of the demonstration — with the **episode-level
+naive reported as the companion** that isolates the collider term from the
+selection term.
+
+**REPORTING CONSTRAINTS (binding on any figure made from the sweep, not
+advisory):**
+1. **Naive bias and its correction are reported PER SEED.** A seed-averaged
+   signed bias on CartPole is ≈ 0 by sign cancellation — the cell would
+   demonstrate nothing while appearing to. Where a scalar summary is
+   unavoidable, use `|bias|` or the per-seed paired difference
+   (naive − corrected), never the signed mean.
+2. **Every swept quantity is reported as a FRACTION of `M`.** As `d → 0`,
+   `c_r = M/d` grows and the reward scale grows with it, so absolute biases,
+   value errors and do-contrasts drift along the sweep for reasons that are
+   not the thing being swept. Normalising by `M` makes points comparable
+   along the whole axis; the realised `c_r` stays a stamped diagnostic, not
+   a hidden scale factor inside every number.
+
 **σ = 1.0 is RETAINED as a declared contrast, and the limitation is a
 FINDING:** episode length and mixing strength convert the behaviour policy
 itself into a measurement of the latent — at T ≈ 150, σ = 1.0 the action

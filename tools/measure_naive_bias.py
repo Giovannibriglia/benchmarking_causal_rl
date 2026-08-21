@@ -88,9 +88,19 @@ def main() -> int:
     out = []
     for (env, sig, sd), s in sorted(samples.items()):
         a, u, ep = s["a"], s["u"], s["episode"]
-        p_u_ep = float(np.mean([u[ep == e][0] for e in np.unique(ep)]))
+        ep_ids = np.unique(ep)
+        u_ep = np.array([u[ep == e][0] for e in ep_ids])
+        p_u_ep = float(u_ep.mean())
         m = a == a_bad[env]
         bias = args.c_r * (float(u[m].mean()) - p_u_ep)
+        # EPISODE-granularity analogue: one row per episode, each episode
+        # contributing its a_bad PROPENSITY once -- removing the
+        # length x frequency weighting (the collider term) while keeping the
+        # between-episode selection the naive estimator is naive about. (A
+        # WITHIN-episode contrast would difference U out entirely -- that is
+        # a fixed-effects estimator, not a naive one.)
+        f_ep = np.array([(a[ep == e] == a_bad[env]).mean() for e in ep_ids])
+        bias_ep = args.c_r * (float((u_ep * f_ep).sum() / f_ep.sum()) - p_u_ep)
         out.append(
             {
                 "env": env,
@@ -99,15 +109,23 @@ def main() -> int:
                 "p_u1_episode": round(p_u_ep, 4),
                 "p_u1_given_abad": round(float(u[m].mean()), 4),
                 "bias": round(bias, 4),
+                "bias_episode": round(bias_ep, 4),
             }
         )
 
-    print(f"\n{'env':<12} {'sigma':>5}  bias per seed")
+    print(f"\n{'env':<12} {'sigma':>5}  transition-pooled per seed  |  episode-level")
     gate = {}
     for env in sorted({o["env"] for o in out}):
         for sig in sorted({o["sigma"] for o in out}):
-            b = [o["bias"] for o in out if o["env"] == env and o["sigma"] == sig]
-            print(f"{env:<12} {sig:>5}  " + " ".join(f"{x:+.4f}" for x in b))
+            sel = [o for o in out if o["env"] == env and o["sigma"] == sig]
+            b = [o["bias"] for o in sel]
+            be = [o["bias_episode"] for o in sel]
+            print(
+                f"{env:<12} {sig:>5}  "
+                + " ".join(f"{x:+.4f}" for x in b)
+                + "  |  "
+                + " ".join(f"{x:+.4f}" for x in be)
+            )
             gate[(env, sig)] = b
     print()
     for env in sorted({o["env"] for o in out}):

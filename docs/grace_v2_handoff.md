@@ -152,6 +152,22 @@ behaviour-policy quality through an undeclared channel. A close cousin of the R4
 finding, and a trap specific to sequential settings that the proximal literature
 never has to confront.
 
+**ELEVATED TO A PATTERN (2026-08-21) — a stated property of sequential
+benchmarks for the paper, not a lab note.** Four independent instances, each
+found the hard way: (1) the length-weighted exogeneity statistic
+(corr(I,U) −0.590 pooled vs −0.034 per episode); (2) the k-rank permutation
+null; (3) the D-D proxy-vs-state test; (4) the `a_bad` identity inference in
+the naive-bias gate (row-level tilt flipped the inferred action on low-σ
+CartPole seeds). And a fifth manifestation INSIDE a demonstrand rather than a
+check: the transition-pooled naive bias on CartPole flips SIGN across policy
+seeds while the episode-level version is uniformly positive — the collider
+term can dominate and invert a naive estimate, not merely blur it
+(`results/cost/naive_bias_gate.log`). The general statement: **in sequential
+data, any transition-pooled statistic involving an episode-constant quantity
+is implicitly reweighted by a collider that policy quality controls; at low
+coupling strength the collider term can exceed and re-sign the effect being
+measured.**
+
 ### PREDICTIONS, recorded before the measurement that resolves them
 
 Written down *before* step 3 was run, so the re-measurement is a **test** of the
