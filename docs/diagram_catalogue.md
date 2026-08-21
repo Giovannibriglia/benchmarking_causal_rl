@@ -346,24 +346,79 @@ what makes that safe.
 | Kruskal triple | **`{Z, W, V}`** — three covariate-free views, each k-rank 2, sum 6: still exactly tight at |U| = 2, but **decoupled from `R`**, whose k-rank may now fall to 1 with nothing lost |
 | Testable implication | extends: `P(Z, W, V \| A, S)` has rank ≤ |U| (M3 unchanged in kind — `W` remains the invalidated proxy) |
 
-**Parameterisation (NOT a diagram change): the `U → R` channel's per-episode
-signal-to-noise becomes a swept parameter.** Two levers exist; they are not
-equivalent and the choice is part of this review:
+**Parameterisation (NOT a diagram change): COMPENSATED GATE SEPARATION.**
+The sweep parameter is the gate separation `d = q1 − q0`, with `c_r = M / d`
+**derived** so the mean effect `M = c_r · d` is held fixed. (Two earlier
+candidates are recorded as rejected, with the reasons: *uncompensated* gate
+narrowing shrinks `M` itself — the confounding would vanish along with the
+recoverability, degenerating the cell toward D-A; and *exogenous reward
+noise* gives `R` continuous support, sending type resolution back to the MDN
+path whose `min_scale` degeneracy was a solved defect — recovery 0.543 vs
+0.983. An early S1b objection to the gate lever was wrong and is withdrawn:
+`gate_probs` lives entirely in the reward wrapper (`confounded.py`), so
+neither actions nor episode lengths move with it.)
 
-* **Exogenous reward noise (recommended primary axis):** scales the per-step
-  SNR of the gated reward with *everything else held fixed* — policy, action
-  law, episode lengths all untouched.
-* **Gate probabilities (secondary check only):** moving them changes the
-  action law, and episode length is an OUTCOME (S1b) — points along that axis
-  differ in behaviour and length distribution, not only in `R`-informativeness,
-  so a transition located on it is confounded by construction.
+Properties, which are exactly the three the sweep needs:
+* the estimand is **invariant by construction** — `M` is the do-contrast's
+  gate component and does not move;
+* per-observation variance `c_r² · q_U(1 − q_U)` grows as `d` shrinks and
+  `c_r` compensates, so per-gated-step SNR falls smoothly to zero — the dial
+  is *how hard `U` is to see*, never *how much `U` matters*;
+* `R` keeps two-valued support `{r_base, r_base + c_r}`, so type resolution
+  stays categorical and the MDN path is never touched.
 
-Per A1/A2 discipline: YAML declares the noise strength; each generated point's
-**realised** informativeness is measured (episode-mean-`R` AUC against logged
-`U`) and reported alongside — the transition is *located by measurement*,
-never tuned for. The current setting is retained as the **`R`-strong end** of
-the sweep, so the existing 40 datasets and the 2026-08-19 ablation remain
-interpretable as one point on the curve rather than being discarded.
+**Weak-end numerics, reported not assumed:** `c_r = M/d` grows as `d → 0`
+(at `M = 1.0`, `d = 0.05` gives `c_r = 20` and rewards in `{r_base,
+r_base + 20}`) — finite and admissible, but the **realised `c_r` is reported
+per sweep point**, and its interaction with the MC return-to-go anchor's
+scale is checked rather than presumed harmless. Per A1/A2: YAML declares
+`d`; each generated point's realised informativeness (episode-mean-`R` AUC
+against logged `U`) and realised `c_r` are measured and stamped — the
+decorative→load-bearing transition is *located by measurement*, never tuned
+for. The current deterministic gate is the `d = 1` end of the sweep, so the
+existing datasets and the 2026-08-19 ablation remain interpretable as the
+`R`-strong point.
+
+**σ DESIGN (decided 2026-08-21, gated on measurement): σ = 0.25, UNIFORM
+across environments.** The action-channel probe
+(`results/cost/action_channel_probe*.log`) showed the `(S, A)` sequence is
+itself a `U`-proxy whose informativeness scales as separation × E[T]: at
+σ = 1.0 it identifies `U` outright on Acrobot (recovery 1.000, T ≈ 150) and
+substantially on CartPole (0.905, T ≈ 18), so no reward-side lever could
+make the proxies load-bearing there. At σ = 0.25 the channel falls to chance
+on CartPole (0.550) and opens Acrobot's only real gap (0.788 vs 0.975 with
+proxies). Uniform rather than per-env because: it is where BOTH environments
+demonstrate most (CartPole's gap is 0.435 at σ = 0.25 against 0.068 at
+σ = 1.0); per-env parameters are a declared-configuration hazard with no
+need paying for it here; and one σ keeps the sweep two-dimensional. σ moves
+the **selection bias**, not the do-target (`M` is σ-independent), and the
+**gate cleared (2026-08-21, `results/cost/naive_bias_gate.log`)**: at
+σ = 0.25 the naive selection bias sits outside the σ = 0 empirical null in
+every seed of both environments — Acrobot +0.030…+0.084 vs null
+[−0.007, +0.000] (4.5×), CartPole |0.090…0.112| vs [−0.005, +0.003]
+(18.4×). There is still something to correct.
+
+**Measured alongside, and worth its own line: CartPole's naive bias is not
+even DIRECTIONALLY stable** — 3 policy seeds positive, 2 negative,
+consistent across σ. The length-collider (S1b) acts inside the demonstrand:
+whether transition-pooling over- or under-represents `U = 1`'s gated rows
+depends on the learned policy's survival behaviour. A naive consumer gets a
+wrong number with a seed-dependent SIGN, which strengthens the cell's case.
+(The same trap bit this measurement's own `a_bad` inference at row level
+before it was moved to episode granularity — the fourth S1b instance in the
+project's record.)
+
+**σ = 1.0 is RETAINED as a declared contrast, and the limitation is a
+FINDING:** episode length and mixing strength convert the behaviour policy
+itself into a measurement of the latent — at T ≈ 150, σ = 1.0 the action
+sequence alone identifies `U` with certainty, and no reward-side lever
+touches that. Third instance of the separation × E[T] law (after `R`'s
+gated-steps product and the S1b length-weighting), which is what makes it a
+law rather than an observation. Field-level consequence, stated with
+measurements behind it: proximal machinery is unnecessary in exactly the
+long-horizon, strongly-mixing regimes RL benchmarks favour. The sweep runs
+at σ = 0.25 as the headline; the σ = 1.0 point (datasets already exist)
+shows the proxies decorative there. Reported together.
 
 **The result to report is the sweep, not a point:** the with/without-proxies
 ablation at every sweep point, fixed-step budget, converged fits, value-level
@@ -385,10 +440,14 @@ non-proxy channels lose `U`, not where `R` alone does.
    nulls (S3), margins reported.
 3. `R`'s k-rank **reported but no longer required** — at the weak end it is
    *expected* to fall to 1, and that is the design working, not a failure.
-4. Realised `R`-AUC recorded in the dataset's certification stamp, and the
-   **sweep parameter is part of the dataset id** (S6 — identity has one
-   construction site; a sweep that collides ids across noise levels would
-   repeat the 27-rows-8-datasets failure).
+4. Realised `R`-AUC and realised `c_r` recorded in the dataset's
+   certification stamp, and the **sweep parameters (`d`, σ) are part of the
+   dataset id** (S6 — identity has one construction site; a sweep that
+   collides ids across levels would repeat the 27-rows-8-datasets failure).
+5. **Fit-seed count raised at the weak end specifically** (not uniformly):
+   the basin lottery returns there — measured at Acrobot σ = 0.25 weak-end,
+   mean 0.868 against best-LL 0.975 — and best-LL selection needs draws to
+   select over.
 
 **Consequences to propagate on acceptance:**
 * The V-D declaration matrix changes — D-D gains a view, hence constraints;
@@ -398,10 +457,20 @@ non-proxy channels lose `U`, not where `R` alone does.
   derived key (the Cluster-B lesson).
 * `diagram_arms.py` derives the `V` channel from the catalogue entry; YAML
   supplies strengths only (A1).
+* **`diagram_arms.py` currently RAISES on `gate_probs` for any cell without a
+  declared instrument** — the guard that keeps D-E's mechanism from leaking.
+  The revision admits `gate_probs` for D-D as a *reward parameterisation*
+  (distinct from its instrument role), which is an A1 surface change and is
+  called out here precisely so review sees it: the refusal becomes
+  conditional on the catalogue entry declaring the gated-reward sweep, never
+  a silent allowance.
 
-**Sequencing (agreed 2026-08-20):** this entry → review → generator support
-for `V` + the noise parameter with the preflight assertions → regenerate D-D →
-the ablation sweep at fixed-step budget with converged fits.
+**Sequencing (revised 2026-08-21, pre-checks complete):** action-channel
+probe ✓ (bounded the reachable region) → naive-bias gate ✓ (σ = 0.25 clears
+in both envs) → **this revision → short re-review** → generator support for
+`V` + the `d` parameter with the preflight assertions → regenerate D-D at
+σ = 0.25 (+ the σ = 1.0 contrast reusing existing data) → the ablation sweep
+at fixed-step budget with converged fits, extra seeds at the weak end.
 
 ### ⭐ Why D-D is the clean case: its proxies are COVARIATE-FREE
 
