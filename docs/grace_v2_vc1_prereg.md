@@ -106,3 +106,37 @@ paragraph on whether the predictions held, including the Acrobot half.
    against noise, largest +0.24 at mid-d, vs the recovery gap of +0.5). A
    value-level proximal demonstration would need per-class contrasts or an
    asymmetric gate — out of V-C1 scope, reported rather than widened.
+
+
+## ADJUDICATION (2026-08-23) and prospective amendments
+
+* **`d_a_null` CartPole V1: INCONCLUSIVE — criterion undefined on a
+  zero-variance reference.** Not a pass (unearned under the registered
+  wording), not a fail (it reflects the criterion, not the method). Measured
+  value on record: GRACE |error| ≤ 0.001 (0.1% of M).
+* **Prospective zero-spread rule, stated before any block it applies to:**
+  when the reference's per-seed spread is zero, GRACE's |error| is compared
+  against **GRACE's own per-seed spread** — the question becomes "consistent
+  with zero at the precision available", with the method's own noise as the
+  only yardstick present. Derived, no constant. Applies to future blocks
+  only, never retroactively.
+* **V5 stands exactly as registered**: joint d ≤ 0.10 FAILS; d = 0.10 passes
+  3/3 at ~3× spread.
+
+## REGISTERED BEFORE RUNNING — the V5-failure scaling prediction (2026-08-23)
+
+Mechanism conjectured for the d = 0.05 failure, in the same family as the
+corrected floor algebra: a probability-estimation error δ in the categorical
+reward becomes a value error c_r · δ, i.e. **δ/d after M-normalisation** —
+bias stays zero, variance grows as 1/d: a bias–variance trade along the
+informativeness axis with a predicted optimum where one was observed.
+Since δ ∝ 1/√n, the prediction is
+
+    normalised |error| ∝ 1 / (d · √n)
+
+checkable by subsampling episodes: at fixed d, err(n)/err(3000) ≈ √(3000/n)
+(2.0 at n = 750, 1.41 at n = 1500); across d at fixed n,
+err(d = 0.05)/err(d = 0.10) ≈ 2. If it holds, the d = 0.05 gate failure is a
+**quantified sample-size requirement (~4× the data)**, not a structural
+limit. Falsifier: no √n improvement at fixed d would mean the error is not
+estimation noise and the mechanical story is wrong again.

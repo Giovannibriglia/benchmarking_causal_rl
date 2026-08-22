@@ -91,7 +91,8 @@ C3 labels (`tau1_budget_bound`, `backtrack_exhausted`, `degenerate_mechanism`,
 
 | parameter | status |
 |---|---|
-| *(EMPTY as of the 2026-08-21 audit. `max_backtracks` was here for one afternoon — measured binding at depth 3 — and left by measurement: the depth raise plus the fixed-point stationarity grant, both derived or tol-reusing, re-measured non-binding at the production configuration.)* | |
+| **`u_card` = 2** | **DECLARED ASSUMPTION, category 4 with justification (adjudicated 2026-08-23).** Not derived, not selected — a modelling commitment living on the assumption surface as `finite_K_latent_class`, declared per catalogue entry (A1-consistent), and it must be stated as an assumption wherever the method's parameters are listed, never implied data-driven. Environment-independent in the LETTER (same K everywhere) but scenario-dependent in SUBSTANCE: `\|U\| = 2` is true by construction in these cells and would be wrong elsewhere. Selection is future work with its trade recorded: raising `u_card` hardens the Kruskal condition (sum ≥ 2R + 2, each view capped at 2). The `K = 1` non-constructibility is a real gap that surfaces on null arms as the degenerate MDN-on-constant fit (all 15 V-C1 binding events); routing constant support to `DiracGaussianMechanism` is the queued fix. |
+| *(`max_backtracks` was here for one afternoon — measured binding at depth 3 — and left by measurement: the depth raise plus the fixed-point stationarity grant, both derived or tol-reusing, re-measured non-binding at the production configuration.)* | |
 
 **Disclosed model-class choices (fixed everywhere, adequacy tested by the
 benchmark itself):** MDN `num_components = 3`, `hidden = (64, 64)`,
