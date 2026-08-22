@@ -75,6 +75,18 @@ C3 labels (`tau1_budget_bound`, `backtrack_exhausted`, `degenerate_mechanism`,
   work downward from 1e-3; a disclosed starting point with a measured
   self-correction mechanism, spanning 64× under the new depth.
 
+* **AT SWEEP SCALE (2026-08-22 stratified re-run, d = 1.00 and 0.05, both
+  environments, 96 fits with full C3 flags —
+  `results/dd_sweep_ablation/binding_*.json`):** the caps do not bind on the
+  arm the cell reports. The with-arm ({Z, W, V}, the production
+  configuration): 2/48 binding events, both single exhaustions at the axis
+  extremes, zero budget-bound. Binding concentrates in the DIAGNOSTIC
+  without-arm at the weak end — 12/18 `tau1_budget_bound` events are
+  CartPole d = 0.05 without proxies, i.e. the deliberately
+  information-starved fits for which not finishing is the honest
+  description. Read per-arm or not at all: the 19% aggregate rate is a
+  property of the ablation's control arm, not of the method.
+
 ## 4. Hand-set and binding — MUST BE EMPTY, or each entry justified
 
 | parameter | status |
