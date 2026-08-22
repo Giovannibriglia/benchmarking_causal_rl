@@ -224,6 +224,11 @@ def main() -> int:
                         "monotone": bool(fit.monotone),
                         "converged": bool(fit.converged),
                         "final_ll": float(fit.final_ll),
+                        "stationary": bool(fit.stationary),
+                        "finished": bool(fit.finished),
+                        "backtrack_exhausted": bool(fit.backtrack_exhausted),
+                        "tau1_budget_bound": bool(fit.tau1_budget_bound),
+                        "backtracks": int(fit.backtracks),
                         "do_contrast_a_bad_minus_other": float(
                             (bad.value - good.value).mean().cpu()
                         ),
