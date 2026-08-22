@@ -448,6 +448,31 @@ long-horizon, strongly-mixing regimes RL benchmarks favour. The sweep runs
 at σ = 0.25 as the headline; the σ = 1.0 point (datasets already exist)
 shows the proxies decorative there. Reported together.
 
+**MEASURED OUTCOME (2026-08-22, `results/dd_sweep_ablation/summary.txt`) —
+the demonstration is CARTPOLE-SCOPED, and the scoping is a finding, not an
+apology.** On CartPole the transition is located: decorative at d = 1.0,
+opening at d = 0.5, total by d ≤ 0.10 (without-arm at chance on 2/3 dataset
+seeds, with-arm ≥ 0.995). On Acrobot the transition sits beyond the grid's
+weak end for 2/3 seeds, and the structural reason is the fourth and sharpest
+instance of the separation × E[T] law:
+
+> In a sequential setting, the action channel's informativeness about `U`
+> and the confounding both scale with σ, while the reward channel's scales
+> with `d × E[T]`. At long horizon both channels saturate, so **there may
+> exist no regime in which the proxies are load-bearing AND confounding is
+> present.** Weakening the reward channel does not help — the action
+> sequence alone identifies the latent; weakening the action channel removes
+> the thing to be corrected.
+
+Field-level consequence, substantiated across two environments, five
+reward-informativeness points and a σ contrast: proximal machinery is
+necessary in short-horizon, weakly-mixing regimes and unnecessary in exactly
+the long-horizon, strongly-mixing settings RL benchmarks favour. Acrobot's
+role in this cell is therefore **the boundary case that locates the limit**,
+not a second demonstration. The estimand-invariance of the compensated
+instrument is likewise measured, not argued: M-normalised do-contrast errors
+within ±0.15 M across c_r 1 → 20, no drift.
+
 **The result to report is the sweep, not a point:** the with/without-proxies
 ablation at every sweep point, fixed-step budget, converged fits, value-level
 do-contrasts included (the 2026-08-19 run's contrasts are not-quotable

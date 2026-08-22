@@ -566,7 +566,32 @@ covers it: observed and replicates share the procedure); (c) V-D must never
 read a raw ll difference across arms without its null — which its design
 already forbids, but this is now a measured reason rather than a policy.
 
-### THE D-D SWEEP — the decorative→load-bearing curve, measured (2026-08-22)
+### THE D-D REVISION — OUTCOME (2026-08-22, the one-place record)
+
+What a fresh session needs to know about why the cell looks the way it does;
+close to paper-ready. The chain: ablation found the proxies decorative → the
+diagnosis was R too strong, not proxies too weak → V added as the ENABLER
+({Z, W, V} triple decoupled from R) → R's informativeness swept via
+compensated gate separation (d swept, c_r = M/d derived, estimand invariant)
+→ σ = 0.25 uniform (gate: naive bias clears its σ = 0 null at 4.5× / 18.4×)
+→ regenerated, certified, swept.
+
+**The four results:** (1) the decorative→load-bearing transition exists and
+is LOCATED on CartPole (details below); (2) **the demonstration is
+CartPole-scoped by measurement** — Acrobot is the boundary case locating the
+limit, by the structural claim now in the catalogue entry: action-channel
+informativeness and confounding both scale with σ while the reward channel's
+scales with d × E[T], so at long horizon there may exist NO regime where the
+proxies are load-bearing and confounding is present; (3) estimand invariance
+of the compensated instrument is measured (M-normalised do-contrast errors
+within ±0.15 M across c_r 1 → 20, no drift); (4) the generalisation test
+passes — ONE configuration, zero per-environment values, 176/228 converged,
+0 non-monotone, across the full decorative→load-bearing range and an order
+of magnitude in episode length. Non-convergence CONCENTRATES where expected:
+44/52 in the without-arm, 23 of them at CartPole d ≤ 0.10 — the fits whose
+information was removed; the with-arm converged 93%.
+
+### The sweep, measured (2026-08-22)
 
 One GRACE configuration (the audited defaults, nothing per-environment)
 across d ∈ {1.0, 0.5, 0.25, 0.10, 0.05} at M = 1.0, σ = 0.25, both
