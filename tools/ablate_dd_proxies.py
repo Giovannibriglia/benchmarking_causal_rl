@@ -85,6 +85,12 @@ def main() -> int:
     ap.add_argument("--envs", nargs="+", default=["CartPole-v1", "Acrobot-v1"])
     ap.add_argument("--sigma", type=float, default=1.0)
     ap.add_argument(
+        "--cell",
+        default="d_d",
+        help="report cell name -- 'd_d' for the frozen arms, 'd_d_sweep_dNNN' "
+        "for the 2026-08-21 revision's gate-separation sweep points.",
+    )
+    ap.add_argument(
         "--device",
         default=None,
         help="torch device; defaults to cuda when available. The MDN reward and "
@@ -112,7 +118,7 @@ def main() -> int:
     rows = [
         r
         for r in json.loads(Path(args.recert).read_text())
-        if r["cell"] == "d_d"
+        if r["cell"] == args.cell
         and r["env"] in args.envs
         and r["seed"] in args.seeds
         and r["sigma"] == args.sigma
@@ -133,7 +139,13 @@ def main() -> int:
 
             kw = {}
             if with_proxies:
+                # The with-arm uses EVERY proxy the arm declares: {Z, W} on the
+                # frozen two-proxy datasets, {Z, W, V} on the revision's -- a
+                # with-arm whose proxy count varied along the sweep would
+                # confound the axis with the thing being swept.
                 kw["proxy"] = {"Z": t(s["z"]), "W": t(s["w"])}
+                if s["v"].size:
+                    kw["proxy"]["V"] = t(s["v"])
             return EpisodeData(
                 state=t(state),
                 action=t(s["a"], torch.long),
@@ -172,7 +184,11 @@ def main() -> int:
                 est = LatentClassEstimator(
                     state_dim=state.shape[1],
                     n_actions=int(s["a"].max()) + 1,
-                    proxy_names=("Z", "W") if with_p else (),
+                    proxy_names=(
+                        (("Z", "W", "V") if s["v"].size else ("Z", "W"))
+                        if with_p
+                        else ()
+                    ),
                     device=device,
                     seed=fs,
                 )

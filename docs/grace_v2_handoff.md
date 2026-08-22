@@ -810,6 +810,14 @@ design document, which needs no optimiser.
 
 * **pre-commit reformats and aborts the commit.** Always `git log` after committing; re-`git add -A` and re-commit.
 * **One agent per worktree.** Kill by **PID**, never a bare pattern (`pkill -f regime_sweep` matches `test_regime_sweep.py`). Note also that `pgrep -f <own pattern>` **matches its own shell**, so "still running" can be entirely self-reference — check `ps -eo args | grep -v grep` before concluding a job survived a kill.
+  **It bit anyway, twice in one day (2026-08-22):** a watcher shell watching
+  `pgrep -f generate_diagram_arms` matched ITSELF and reported a dead
+  generation as alive for 24 hours; the replacement monitor had the same bug
+  and was caught only on re-read. The guard that works: put a bracket in the
+  pattern — `pgrep -f 'generate_diagram_[a]rms'` — so the watcher's own
+  command line no longer contains the literal it greps for. Rule-form: any
+  self-spawned watcher must quote its target pattern in a form that does not
+  match the watcher.
 * **`cd X && ... &` BACKGROUNDS THE `cd` TOO — a silent write into a sibling checkout.** The `&` applies to the whole `&&` chain, so any *following* line in the same tool call runs in the ORIGINAL cwd. A heredoc written that way landed a script in the frozen `benchmarking_causal_rl` checkout instead of this worktree, with no error anywhere. Guards: parenthesise, `(cd X && ...) &`, or use absolute paths in anything backgrounded. **The sharper risk is the one that did not happen this time:** it created an *untracked* file, which was harmless and visible in `git status`. The same slip onto an *existing* path would have been a silent modification to the frozen v1 branch with nothing to signal it. Check the sibling checkout is clean after any backgrounded write.
   **UPDATE (2026-08-19): the sharper risk then happened, by a different route.**
   Post-crash assessment found the frozen checkout with 25 *modified tracked

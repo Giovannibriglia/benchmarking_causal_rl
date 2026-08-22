@@ -53,7 +53,7 @@ def rebuild_samples(ds, max_episodes: int):
     the logged latent, and the episode INDEX -- not a running counter -- is what
     lets the permutation nulls move whole episodes.
     """
-    a, r, u, z, w, i, ep = [], [], [], [], [], [], []
+    a, r, u, z, w, v, i, ep = [], [], [], [], [], [], [], []
     obs_blocks = []
     for k, episode in enumerate(ds.iterate_episodes()):
         if k >= max_episodes:
@@ -68,6 +68,8 @@ def rebuild_samples(ds, max_episodes: int):
         if "proxy_z" in infos:
             z.append(np.asarray(infos["proxy_z"], dtype=np.float64).reshape(-1))
             w.append(np.asarray(infos["proxy_w"], dtype=np.float64).reshape(-1))
+            if "proxy_v" in infos:
+                v.append(np.asarray(infos["proxy_v"], dtype=np.float64).reshape(-1))
         if "instrument_i" in infos:
             i.append(np.asarray(infos["instrument_i"], dtype=np.float64).reshape(-1))
         ep.append(np.full(t, k, dtype=np.int64))
@@ -87,6 +89,7 @@ def rebuild_samples(ds, max_episodes: int):
         "u": cat(u),
         "z": cat(z),
         "w": cat(w),
+        "v": cat(v),  # empty for pre-revision arms; the consumers key on size
         "i": cat(i),
         "episode": cat(ep).astype(np.int64),
     }
