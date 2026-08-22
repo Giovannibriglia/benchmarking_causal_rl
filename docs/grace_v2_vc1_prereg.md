@@ -77,3 +77,32 @@ finding and reopen it.
 V1 and V5 verdicts under the criteria above; the decomposed curve on both
 environments against these predictions; the binding-flag aggregate; one
 paragraph on whether the predictions held, including the Acrobot half.
+
+
+---
+
+## POST-HOC AMENDMENTS (2026-08-22, marked as such — written AFTER the run)
+
+1. **Component (1) as registered was WRONG, by algebra, and the data shows
+   the correct form.** Registered: floor error grows ∝ c_r·|tilt|. Correct:
+   the naive transition-pooled bias is `c_r · d · tilt = M · tilt` — the
+   compensation pins the naive bias exactly as it pins the estimand, so the
+   floor is FLAT along the axis. Measured: CartPole 0.086–0.116, matching
+   the naive-bias gate's independent tilt measurements (0.090–0.112) almost
+   digit-for-digit; Acrobot 0.033–0.118 vs gate 0.030–0.084. The original
+   review intuition — that raw advantage growth would be meaningful — is
+   thereby partially restored: the floor does not grow, so any advantage
+   shape comes from GRACE's side alone.
+2. **Component (iii) is evaluated WITHIN the sweep ablation only** (matched
+   configuration, matched random init, 400 episodes) and never combined
+   numerically with V-C1's production fits: the two runs differ in episodes
+   (400 vs 3000) and with-arm init (random vs proxy), so a cross-run gap
+   would mix a configuration difference with the proxy difference.
+3. **A finding the registration did not anticipate: the symmetric gate makes
+   the VALUE contrast forgiving of latent collapse.** With q̄ = 0.5, a
+   class-collapsed fit still estimates E[bonus | a_bad] ≈ q̄ · c_r ≈ truth —
+   so the value-level with/without gap is intrinsically weaker than the
+   latent-level one (measured: positive in 11/15 CartPole seeds but weak
+   against noise, largest +0.24 at mid-d, vs the recovery gap of +0.5). A
+   value-level proximal demonstration would need per-class contrasts or an
+   asymmetric gate — out of V-C1 scope, reported rather than widened.

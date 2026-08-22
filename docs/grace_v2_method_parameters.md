@@ -25,7 +25,7 @@ C3 labels (`tau1_budget_bound`, `backtrack_exhausted`, `degenerate_mechanism`,
 | R's type (categorical vs MDN) | support saturation: uniques(first half) vs uniques(full) — a derived criterion, no magnitude threshold |
 | proxy-init split | median of the first proxy's episode mean — a data quantile |
 | degeneracy ceiling | `−log(min_scale·√2π)` per dim, derived from the mechanism's OWN declared floor |
-| `u_card` | cell-declared here (`\|U\| = 2` is part of the scenario); where unknown it is selected by held-out likelihood, which is the method's business and stays environment-independent |
+| `u_card` | **CORRECTED 2026-08-22: a DECLARED modelling commitment, not a derived quantity.** The estimator's own docstring says so (`finite_K_latent_class`, named in the catalogue); no held-out selection machinery exists (`u_card < 2` raises, so K = 1 is not even constructible) and the earlier "selected by held-out likelihood" wording was aspirational. On the diagram cells it matches the declared `\|U\|` (catalogue-derived, A1-consistent); on `d_a_null` it is a deliberate mis-specification whose harmlessness is exactly what V1 measures — GRACE's \|error\| ≤ 0.001 on a no-latent arm while its C3 labels loudly report the degenerate fit (MDN on a constant reward, all 15 binding events of the V-C1 run). Selection remains future work and would be the method's business. |
 
 ## 2. Disclosed reporting choices (reported like a confidence level)
 
