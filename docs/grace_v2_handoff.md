@@ -566,6 +566,43 @@ covers it: observed and replicates share the procedure); (c) V-D must never
 read a raw ll difference across arms without its null — which its design
 already forbids, but this is now a measured reason rather than a policy.
 
+### THE D-D SWEEP — the decorative→load-bearing curve, measured (2026-08-22)
+
+One GRACE configuration (the audited defaults, nothing per-environment)
+across d ∈ {1.0, 0.5, 0.25, 0.10, 0.05} at M = 1.0, σ = 0.25, both
+environments, 228 converged-budget fits
+(`results/dd_sweep_ablation/summary.txt`; per-seed, M-normalised, per the
+entry's binding reporting constraints):
+
+* **The transition exists and is LOCATED on CartPole**: proxies decorative at
+  d = 1.0 (gap ≈ 0, replicating the original finding with V present), the
+  gap opens at d = 0.5 (+0.15 on s0), is decisive by d = 0.25 (+0.42), and
+  by d ≤ 0.10 the without-arm sits at chance on 2/3 dataset seeds while the
+  with-arm holds ≥ 0.995 (gaps +0.43…+0.50).
+* **Acrobot's transition is beyond the grid's weak end for 2/3 seeds** —
+  gaps reach only +0.18 at d ≤ 0.10 and its without-arm holds 0.81–0.98 even
+  at d = 0.05. The separation × E[T] law, quantified: at T ≈ 150 the
+  episode-mean R keeps AUC ≥ 0.86 at d = 0.05 and the action channel adds
+  the rest, so the reward-side lever alone cannot make the proxies fully
+  load-bearing there. That asymmetry is a RESULT (the same law, fourth
+  appearance), not a failure of the sweep.
+* **The compensation works at the value level**: M-normalised do-contrast
+  errors stay within ±0.15 M across the whole sweep with no drift in c_r
+  (1 → 20), so the estimand-invariance claim is measured, not argued.
+* **Per-seed reporting earned its keep**: CartPole's s1 without-arm resists
+  collapse (0.86–0.99) where s0/s2 fall to chance — the policy-seed
+  dependence the reporting constraint anticipated.
+* **Generalisation reading**: 176/228 fits converged, 0 non-monotone, one
+  configuration throughout — the direct answer to "are you overfitting to
+  CartPole and Acrobot", pending the caveat that the ablation records
+  predate the C3 binding flags (the tool must record
+  `tau1_budget_bound`/`backtrack_exhausted` before the paper's binding table
+  can cite this sweep; the audit's own probes carried them).
+
+The σ = 1.0 contrast stands on the frozen datasets (2026-08-19 ablation:
+without ≥ with in all six blocks) — reported together with the curve as the
+declared contrast per the catalogue entry.
+
 ### THE RE-MEASUREMENT QUEUE — COMPLETED 2026-08-19/20, first quotable figures
 
 **2. Cost + fork (`results/cost/grace_fit_cost_gem.*`, 3000 episodes,
