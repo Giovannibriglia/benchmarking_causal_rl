@@ -244,3 +244,26 @@ scoped to latent-reading quantities; no further cycle.
 
 Truth at this point: `contrast = c_r · q̄ = 1.0`; floor bias `M · tilt` as
 everywhere.
+
+
+## ASYMMETRIC TEST RESULT (2026-08-23) — the decision rule fires the scoping branch
+
+Measured (CartPole, matched full scale, truth = c_r·q̄ = 1.0): differential
+share **+0.17/+0.22/+0.20** — tripled versus the symmetric point and
+sign-consistent, but NOT "large, approaching the correctable bias". The
+registered prediction fails quantitatively, and the premise that missed is
+identified: "a collapsed fit carries the full M·tilt bias" assumed TOTAL
+collapse, while weak-end without-arms are partially informed (recovery
+0.66–0.94 via the action channel and R), carrying only ~0.45 of the floor's
+bias; with the with-arm's own weak-end noise at ~0.28 of floor, the
+ACHIEVABLE differential between the two arms is ~0.2 — exactly what was
+measured. Co-reading on record: the proxies deliver essentially all the
+differential available between the arms; the HEADROOM is what is small.
+
+**Per the pre-committed rule: D-D's value-level proximal claim is SCOPED TO
+LATENT-READING QUANTITIES** (per-class contrasts, heterogeneous effects,
+L5's statistics); V-C2 does not serve the marginal contrast as the proximal
+demonstration. Recovery control held (with/without gap matches the symmetric
+point). No further cycle. Third registered prediction falsified by its own
+check in this exercise — each time with the failing premise named, which is
+the discipline's product.
