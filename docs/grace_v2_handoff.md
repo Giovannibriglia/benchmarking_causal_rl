@@ -566,6 +566,21 @@ covers it: observed and replicates share the procedure); (c) V-D must never
 read a raw ll difference across arms without its null — which its design
 already forbids, but this is now a measured reason rather than a policy.
 
+### OPEN ARCHITECTURAL ITEM FOR THE CRITIC-SEAM BLOCK (recorded 2026-08-23)
+
+**L2's verdict does not select the estimator.** L2 returns point-ID for
+`d_a_null` by back-door adjustment on S with NO latent required — and nothing
+in the pipeline acts on that: L3 is always the latent-class model regardless
+of the verdict. The architecture's promise is that L2 delivers the estimand
+FORM and L3 estimates that form; in practice the verdict is not consulted.
+Tolerable now (the value estimate is right either way — V-C1's V1 measured
+no harm at ≤ 0.001), but it bites at the critic seam: a critic applying
+latent machinery to unconfounded cells will abstain or waste effort where the
+observational estimate is exactly correct. Why it never surfaced: every cell
+exercised in anger has a latent. L4's smoke surfaced it through the
+`d_a_null` abstention (resolved at the mechanism level by the Dirac routing;
+the estimator-selection gap remains).
+
 ### THE D-D REVISION — OUTCOME (2026-08-22, the one-place record)
 
 What a fresh session needs to know about why the cell looks the way it does;
