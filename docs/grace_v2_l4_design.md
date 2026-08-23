@@ -129,6 +129,13 @@ way to exonerate the optimiser.
 
 ## 3. Measured cost of a bootstrap replicate under the monotone guard
 
+> **SUPERSEDED IN PLACE (2026-08-23, L4 read-through).** Every number below
+> was taken under restart-EM, contended, pre-fixed-step -- the regime the
+> instrument boundary retired. Current measured reality: converged production
+> fits 43-65 s (3000 episodes), warm+deterministic diagnostic fits 30-60 s;
+> B = 99 at S11 scale is ~1-2 h serial and embarrassingly parallel. Kept as
+> the record of why the block plan once looked impossible.
+
 Pre-measured because it changes the V-D block plan, and is better known now than
 discovered mid-run. **Caveat on every number here: taken on 2 threads while V-B
 was generating**, so these are upper bounds on a contended machine, not clean
@@ -176,6 +183,13 @@ that is exactly the bias the module refuses (see `bootstrap.py`).
 
 ### 3a. Is `lr` only a wall-clock knob? **NOT ESTABLISHED — treat it as disclosed**
 
+> **EVIDENCE SUPERSEDED IN PLACE (2026-08-23): the table below was measured
+> under restart-EM, where lr meant fresh-fit quality — the monotone-LL trend
+> and the LL/recovery disagreement were properties of that regime.** The
+> RULING (lr disclosed, reported with every result) stands on NEW grounds:
+> the method-parameter audit classifies lr as a disclosed starting point with
+> a measured line-search self-correction (halving from lr under GEM).
+
 Checked directly, because mixture EM has multiple local optima and a step size
 that lands in a different one changes the *estimand*, not merely the time to
 reach it. 200 episodes x 10, two seeds per setting:
@@ -209,7 +223,10 @@ answer.
 1. **Parallelism across replicates** — statistically neutral, implemented
    (`n_jobs`, thread pool, deterministic by index). Take this first.
 2. **Fewer SGD epochs per M-step** — GEM permits a partial M-step, so this is
-   legitimate. **Symmetrically only.**
+   legitimate. **Symmetrically only.** *(Superseded in form 2026-08-23: the
+   audited `m_step_budget` fixed-step path is this lever done properly —
+   O(steps), estimand-invariant across a 16× range, symmetric by construction
+   since `epochs` is derived from the budget.)*
 3. **Reducing B** — honest degradation, with the MC error reported alongside.
    After the free levers, never instead of them.
 
@@ -219,6 +236,11 @@ start the observed fit never got, and the replicate statistics come out
 systematically better-optimised. Same asymmetry as an uneven fit budget. The
 general rule now lives in `bootstrap.py`'s docstring: **the procedure that
 produces the observed statistic must produce the replicate statistics.**
+*(Post-R3 clarification, 2026-08-23: every fit is internally GEM-warm but
+explicitly COLD at its own start — the reuse guard — identically for observed
+and replicate fits, so the symmetry holds by construction. The exclusion
+continues to bar exactly one thing: seeding a replicate from the
+null-generating θ.)*
 
 
 ## Path-chaos vs identification width — a check to build in (added 2026-08-23, from V-C1)
@@ -230,9 +252,24 @@ perturb the data, and on a chaotic likelihood surface the replicate fits will
 vary widely — the interval stays conservative (sound) but may be VACUOUS at
 the weak end, wide for the wrong reason.
 
-**Build the diagnostic in from the start:** compare the bootstrap replicate
-spread against the spread of repeated fits on IDENTICAL data with perturbed
-initialisation only. Comparable spreads mean the interval is measuring the
-optimiser, not the identification uncertainty, and the interval must be
-labelled accordingly (C3) rather than served as an identification statement.
-Much cheaper built in now than discovered as a vacuous interval during V-C3.
+**Build the diagnostic in from the start** — as ruled 2026-08-23, a
+**VARIANCE SHARE, not a ratio against a cut.** Reframed: with determinism on
+and a fixed fit-seed, replicate variation comes ONLY from resampled data, so
+the check separates **estimand uncertainty** (the data does not pin the value
+down; more data narrows it) from **procedural instability** (small data
+perturbations produce large fit changes; the width is real but reflects an
+unstable procedure, and more data will not reliably narrow it — the falsified
+1/√n check). Both are real; the label says which dominates:
+`optimiser_var / replicate_var`, reported as "this interval is X% procedural
+instability", constant-free, always on the C3 label. No binary flag; a
+consumer needing one picks their own line, explicitly.
+
+**Refusal semantics (ruled 2026-08-23): `L4Result` has THREE kinds —
+`interval`, `bounds`, `abstain`.** No bare point: an identified cell returns
+an interval whose width collapses toward zero, the collapse property doing
+double duty as the serving semantics — "no number without its uncertainty".
+`abstain` is NO statement (dirty fit conditions, with the reason first-class);
+`bounds` is a valid non-point statement (L2 bounds-only verdicts); conflating
+them would read silence as an infinitely wide bound. The LR-region min/max
+optimiser — the one genuinely new machine — is exercised ONLY on bounds-only
+cells, so a defect in it cannot silently touch the point-ID results.
