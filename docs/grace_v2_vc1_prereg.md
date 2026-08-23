@@ -140,3 +140,38 @@ err(d = 0.05)/err(d = 0.10) ≈ 2. If it holds, the d = 0.05 gate failure is a
 **quantified sample-size requirement (~4× the data)**, not a structural
 limit. Falsifier: no √n improvement at fixed d would mean the error is not
 estimation noise and the mechanical story is wrong again.
+
+
+## SCALING CHECK RESULT (2026-08-23) — the registered prediction is FALSIFIED
+
+Error vs n on CartPole (per seed, M-normalised): NON-monotone in 5 of 6
+(cell, seed) series — n = 1500 beats n = 3000 in five of them (e.g. d = 0.05
+s1: 0.035 → 0.006 → 0.041 across 750/1500/3000). There is no 1/√n decay: the
+weak-end value error is NOT estimation variance. It is the
+**chaotic-optimiser-path regime** (the measured input-fragility family: a
+1e-7 perturbation moves final_ll by 60 nats; a subsample change is a vastly
+larger input change) arriving at the value level. Consequences:
+* the "quantified sample-size requirement (~4× data)" story is dead — more
+  data does not reliably move the demonstration point outward;
+* the ANTI-CORRELATION finding takes its sharper form: the proximal channel
+  becomes necessary exactly where value estimation enters the path-chaotic
+  regime, and the tension is structural at this configuration, not
+  sample-limited;
+* the second registered component falsified by its own check this round —
+  the registration discipline is doing its job in both directions.
+
+## NEGATIVE-SHARE CROSS-TAB (2026-08-23) — the SERIOUS branch
+
+The four negative-share (harmful) best-LL fits carry labels
+INDISTINGUISHABLE from the high-share fits at the same points: all converged,
+finished, un-exhausted, un-bound, sep/step 13.6–15.1, SATURATED-AT-INIT on
+every weak-end fit (a risk flag with zero discrimination there). **GRACE at
+the weak end can be confidently wrong — value error of order the floor's own
+bias — with no C3 label separating harm from help.** The C3 system detects
+PROCESS pathologies; this error is not a process failure but estimation in a
+chaotic landscape, invisible to process labels by construction. Serving
+consequence for V-C2, stated for that conversation: a point-serving critic is
+NOT safe at the weak end on fit labels alone — refusal there needs an
+UNCERTAINTY statement, which is L4's job; at d ≥ 0.25 the shares are
++0.80…+0.97 with small stable errors and point-serving on labels is
+defensible.
