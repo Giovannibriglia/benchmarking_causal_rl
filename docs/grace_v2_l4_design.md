@@ -219,3 +219,20 @@ start the observed fit never got, and the replicate statistics come out
 systematically better-optimised. Same asymmetry as an uneven fit budget. The
 general rule now lives in `bootstrap.py`'s docstring: **the procedure that
 produces the observed statistic must produce the replicate statistics.**
+
+
+## Path-chaos vs identification width — a check to build in (added 2026-08-23, from V-C1)
+
+V-C1's falsified scaling check showed the weak-end value error is
+OPTIMISER-PATH-CHAOTIC, not sample-limited (error non-monotone in n; the
+1e-7-perturbation fragility family). Consequence for L4: bootstrap replicates
+perturb the data, and on a chaotic likelihood surface the replicate fits will
+vary widely — the interval stays conservative (sound) but may be VACUOUS at
+the weak end, wide for the wrong reason.
+
+**Build the diagnostic in from the start:** compare the bootstrap replicate
+spread against the spread of repeated fits on IDENTICAL data with perturbed
+initialisation only. Comparable spreads mean the interval is measuring the
+optimiser, not the identification uncertainty, and the interval must be
+labelled accordingly (C3) rather than served as an identification statement.
+Much cheaper built in now than discovered as a vacuous interval during V-C3.

@@ -208,3 +208,39 @@ collapse, measured cleanly at matched full scale.
 prospective rule recorded). V5 as registered: fail on the joint d ≤ 0.10
 criterion; pass 3/3 at d = 0.10 at ~3× spread. V-C1 CLOSED; V-C2 scoping
 takes §1's serving-safety input and §3's number as its premises.
+
+
+## THE ASYMMETRIC TEST — registered 2026-08-23, BEFORE generation
+
+**Correction of framing first: the symmetric gate is not "forgiving" — it
+makes the marginal correct BY CONSTRUCTION.** With `q0 + q1 = 1`, `q̄ = 0.5`
+exactly at every sweep point, so `E[R | do(a_bad)] = 1 + c_r · q̄` is
+independent of the latent structure under balanced `P(U)`: a fully collapsed
+fit estimates the pooled rate, which sits at the right marginal by
+arithmetic. Symmetry was chosen to hold the marginal bonus rate constant
+along the sweep — a reasonable control that turns out to trade away the
+thing the cell exists to demonstrate at the value level. Arithmetic, not a
+property of the estimator — and therefore fixable.
+
+**The test:** ONE asymmetric variant at the demonstration point —
+`(q0, q1) = (0.05, 0.15)`: `d = 0.10`, `c_r = M/d = 10`, `q̄ = 0.10`.
+CartPole, 3 dataset seeds, matched pair (both arms random-init, full scale,
+production configuration), 18 fits. No sweep.
+
+**Registered prediction, with its arithmetic:** a collapsed fit now estimates
+the observationally tilted pooled rate, whose error is `c_r·d·(P(U|a_bad) −
+P(U)) = M·tilt` — the FULL confounding bias, the same as the naive floor —
+while a latent-recovering fit corrects it. The differential share at the
+asymmetric point should therefore be **large, approaching the correctable
+bias** (≈ +1 up to the with-arm's own noise), where the symmetric point gave
++0.08. Control expectation: the with/without recovery gap should look like
+the symmetric d = 0.10 point's (proxies load-bearing either way — asymmetry
+changes the VALUE arithmetic, not the latent problem).
+
+**Decision rule, fixed in advance:** large differential → D-D carries the
+value-level proximal claim and V-C2 may serve marginal contrasts. Not large →
+the value-level case is genuinely unavailable on this cell; D-D's claim is
+scoped to latent-reading quantities; no further cycle.
+
+Truth at this point: `contrast = c_r · q̄ = 1.0`; floor bias `M · tilt` as
+everywhere.
