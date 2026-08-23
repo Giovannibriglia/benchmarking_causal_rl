@@ -59,6 +59,7 @@ from nbn import (
     NeuralBayesianNetwork,
     NeuralCategoricalMechanism,
 )
+from nbn.mechanisms.parametric.dirac_gaussian import DiracGaussianMechanism
 
 __all__ = ["EpisodeData", "Estimate", "LatentClassFit", "LatentClassEstimator"]
 
@@ -489,6 +490,12 @@ class LatentClassEstimator:
         # provisional build below lets callers inspect ``self.model`` before
         # fitting, and ``fit`` rebuilds if the resolution disagrees.
         self._reward_levels: torch.Tensor | None = None
+        # Set when R has SUPPORT CARDINALITY 1 (a constant channel — the null
+        # arms): the Dirac routing (ruled 2026-08-23). An MDN on a constant
+        # drives its scale to the floor and burned 100+ backtracks per fit on
+        # d_a_null; a Dirac at the constant is the honest mechanism — finite
+        # log-density, nothing to estimate, zero class discrimination.
+        self._reward_const: float | None = None
         self.resolved_reward_mechanism = (
             None if reward_mechanism == "auto" else reward_mechanism
         )
@@ -516,6 +523,12 @@ class LatentClassEstimator:
         data. A categorical mechanism gives proper probabilities over the
         observed support, no floor, and meaningful likelihood magnitudes.
         """
+        if self._reward_const is not None:
+            # Constant support: a do-intervention CPD at the constant. Its
+            # fit_local is a documented no-op, so the M-step spends nothing on
+            # a channel with nothing to learn, and its log-density is finite
+            # rather than a min_scale floor.
+            return DiracGaussianMechanism(value=self._reward_const)
         if self._reward_is_discrete:
             return NeuralCategoricalMechanism(
                 n_classes=int(self._reward_levels.numel())
@@ -559,6 +572,20 @@ class LatentClassEstimator:
         half = int(torch.unique(r[: max(n // 2, 1)]).numel())
         levels = torch.unique(r)
         full = int(levels.numel())
+        if full == 1:
+            const = float(levels[0])
+            changed = (
+                self.resolved_reward_mechanism is None
+                or not str(self.resolved_reward_mechanism).startswith("dirac")
+                or self._reward_const != const
+            )
+            self._reward_levels = None
+            self._reward_const = const
+            self.resolved_reward_mechanism = f"dirac[{const:g}]"
+            if changed:
+                self.model = self._build()
+            return
+        self._reward_const = None
         discrete = full == half and 1 < full < n
         new_levels = levels.sort().values if discrete else None
         changed = (new_levels is None) != (self._reward_levels is None) or (
