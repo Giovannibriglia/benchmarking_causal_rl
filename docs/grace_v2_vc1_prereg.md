@@ -175,3 +175,36 @@ NOT safe at the weak end on fit labels alone — refusal there needs an
 UNCERTAINTY statement, which is L4's job; at d ≥ 0.25 the shares are
 +0.80…+0.97 with small stable errors and point-serving on labels is
 defensible.
+
+
+## V-C1 CLOSE-OUT (2026-08-23)
+
+**Matched pair (full scale, both arms random-init, CartPole):** the d = 1.0
+control's differential share is ≈ 0 (+0.02/−0.17/+0.08) — the registered
+false-positive check PASSES. At d = 0.10 the differential share is
++0.12/+0.22/−0.09 (mean ≈ +0.08), INSIDE the control's noise band, while the
+same fits carry a latent-level recovery gap of +0.09…+0.35 — and the
+collapsed without-arm (recovery 0.65) still removes 65–85% of the floor's
+bias. The symmetric gate's contrast is intrinsically robust to latent
+collapse, measured cleanly at matched full scale.
+
+**The four deliverables:**
+1. Cross-tab: harmful fits label-indistinguishable from helpful ones — the
+   serious branch; serving safety at the weak end needs L4-style uncertainty,
+   labels suffice at d ≥ 0.25.
+2. Scaling: the registered 1/(d√n) prediction FALSIFIED — weak-end value
+   error is path-chaotic, not estimation variance; more data does not
+   reliably help.
+3. Differential share: control ≈ 0 ✓; at the claim point genuinely low
+   (≈ +0.08, within control noise) against a latent gap of +0.35.
+4. Anti-correlation, in the reading the scaling check supports: STRUCTURAL —
+   the proximal channel becomes necessary exactly where value estimation
+   enters the path-chaotic regime; the value-level proximal proposition on
+   the symmetric contrast is small because that estimand forgives latent
+   collapse, so the proximal value case lives in latent-reading quantities
+   (per-class contrasts, L5 statistics).
+
+**Verdicts:** V1 pass (3 blocks) + inconclusive (zero-variance reference,
+prospective rule recorded). V5 as registered: fail on the joint d ≤ 0.10
+criterion; pass 3/3 at d = 0.10 at ~3× spread. V-C1 CLOSED; V-C2 scoping
+takes §1's serving-safety input and §3's number as its premises.
