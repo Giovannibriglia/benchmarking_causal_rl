@@ -194,6 +194,7 @@ def point_id_interval(
             alpha=alpha,
             label=label0,
             failure_rate=null.failure_rate,
+            meta={"bootstrap_diagnostics": null.diagnostics()},
         )
     lo, hi = (
         float(np.quantile(vals, alpha / 2)),
@@ -215,6 +216,10 @@ def point_id_interval(
             "optimiser_var": optimiser_var,
             "replicate_var": replicate_var,
             "n_init_fits": len(init_vals),
+            # The module's founding rule: failures may correlate with the
+            # statistic, so their REASONS travel with every interval -- a rate
+            # without reasons is uninterpretable (ruled 2026-08-23).
+            "bootstrap_diagnostics": null.diagnostics(),
         },
     )
 
