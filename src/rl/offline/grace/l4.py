@@ -262,3 +262,161 @@ def balke_pearl_contrast_bounds(
             highs.append(p_y1_x + p_not_x)
         L[xv], U[xv] = max(lows), min(highs)
     return L[1] - U[0], U[1] - L[0]
+
+
+# ------------------------------------------------------------- LR-region bounds
+def _observed_ll_differentiable(model, prior_logits, est, data: EpisodeData):
+    """The observed-data mixture log-likelihood, DIFFERENTIABLE in the model's
+    parameters and the prior logits.
+
+    Mirrors ``e_step``'s computation (per-class complete-data row log-liks,
+    summed per episode, logsumexp over classes with the log prior) WITHOUT the
+    ``no_grad`` — the LR constraint needs gradients through ``model.log_prob``,
+    which R1 pins as gradient-transparent upstream.
+    """
+    ep = data.episode_ids
+    uniq = torch.unique(ep)
+    n_ep = int(uniq.numel())
+    # dense episode index for index_add
+    remap = torch.searchsorted(uniq, ep)
+    cols = []
+    for k in range(est.u_card):
+        u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
+        rows = model.log_prob(est._frame(data, u_k))  # [N], differentiable
+        col = torch.zeros(n_ep, device=rows.device, dtype=rows.dtype)
+        col = col.index_add(0, remap, rows)
+        cols.append(col)
+    ll = torch.stack(cols, dim=1) + torch.log_softmax(prior_logits, dim=0).reshape(
+        1, -1
+    )
+    return torch.logsumexp(ll, dim=1).sum()
+
+
+def lr_region_bounds(
+    *,
+    estimator: LatentClassEstimator,
+    fit,
+    data: EpisodeData,
+    target_of_model: Callable,  # (model, prior: Tensor) -> scalar Tensor, differentiable
+    make_estimator: Callable[[int], LatentClassEstimator],
+    fit_kwargs: Optional[Dict] = None,
+    alpha: float = 0.1,
+    b: int = 39,
+    fit_seed: int = 0,
+    steps: int = 300,
+    opt_lr: float = 1e-3,
+    penalty: float = 100.0,
+    n_jobs: int = 1,
+) -> L4Result:
+    """Min/max of the target over the LR confidence region — bounds-only cells.
+
+    ``C(α) = {θ : 2(ℓ(θ̂) − ℓ(θ)) ≤ c(α)}`` with ``c(α)`` calibrated by the
+    within-dataset parametric bootstrap (episode-level, refit each replicate,
+    the SAME fit procedure — the one calibration device shared with L5; χ²
+    asymptotics are unavailable on the mixture boundary by design-doc
+    argument). The optimiser is penalised Adam over a CLONE of the fitted
+    model's parameters plus the prior logits, through the two differentiable
+    paths R1 pins: ``model.log_prob`` for the constraint, the caller's
+    ``target_of_model`` (built on ``sample(do=)``, N1) for the objective.
+    Only FEASIBLE iterates (LR ≤ c) update the bound, so a penalty violation
+    can never widen the answer.
+
+    ``penalty`` and ``steps``/``opt_lr`` are optimisation-quality knobs, not
+    calibration constants: they can only make the bounds NARROWER than the
+    true min/max over C(α) (a weak optimiser under-explores), never wider,
+    and the Balke–Pearl reproduction is the check that they explore enough.
+    """
+    import copy
+
+    fk = dict(fit_kwargs or {})
+    ll_hat = float(fit.final_ll)
+
+    # ---- c(alpha) by parametric bootstrap of the LR statistic --------------
+    def statistic(rep_seed: int):
+        rng = np.random.default_rng(rep_seed)
+        rdata = _resample_episode_data(data, rng)
+        est_r = make_estimator(fit_seed)
+        fit_r = est_r.fit(rdata, **fk)
+        # LR_r = 2(l_r(theta_hat_r) - l_r(theta_hat)): the replicate's own
+        # optimum against the OBSERVED parameters, both on replicate data.
+        _, ll_obs_on_r, _, _ = estimator.e_step(rdata, fit.prior)
+
+        class _Rep:
+            value = max(0.0, 2.0 * (float(fit_r.final_ll) - float(ll_obs_on_r)))
+            converged = bool(fit_r.converged)
+            stationary = bool(fit_r.stationary)
+            finished = bool(fit_r.finished)
+            monotone = bool(fit_r.monotone)
+            backtracks = int(fit_r.backtracks)
+            backtrack_exhausted = bool(fit_r.backtrack_exhausted)
+            reached_tau_one = bool(fit_r.reached_tau_one)
+            degenerate_mechanism = bool(fit_r.degenerate_mechanism)
+
+        return _Rep()
+
+    null = bootstrap_null(
+        statistic, b=b, seed=fit_seed, statistic_name="l4_lr_calibration", n_jobs=n_jobs
+    )
+    vals = np.asarray(null.successes, dtype=float)
+    if vals.size < 2:
+        return L4Result(
+            kind="abstain",
+            reason=f"LR calibration produced {vals.size} usable replicates",
+            alpha=alpha,
+            failure_rate=null.failure_rate,
+            meta={"bootstrap_diagnostics": null.diagnostics()},
+        )
+    c = float(np.quantile(vals, 1 - alpha))
+
+    # ---- two-sided penalised optimisation over a clone ----------------------
+    def extremum(sign: float) -> float:
+        model_c = copy.deepcopy(estimator.model)
+        for p_ in model_c.parameters():
+            p_.requires_grad_(True)
+        prior_logits = torch.nn.Parameter(
+            torch.log(fit.prior.detach().clamp_min(1e-8)).clone()
+        )
+        params = [p_ for p_ in model_c.parameters() if p_.requires_grad]
+        params.append(prior_logits)
+        opt = torch.optim.Adam(params, lr=opt_lr)
+        best = None
+        for _ in range(steps):
+            opt.zero_grad()
+            prior = torch.softmax(prior_logits, dim=0)
+            tgt = target_of_model(model_c, prior)
+            ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
+            lr_stat = 2.0 * (ll_hat - ll)
+            loss = -sign * tgt + penalty * torch.relu(lr_stat - c) ** 2
+            loss.backward()
+            opt.step()
+            with torch.no_grad():
+                if float(lr_stat) <= c:  # FEASIBLE iterate only
+                    v = float(tgt)
+                    if best is None or sign * v > sign * best:
+                        best = v
+        if best is None:
+            # never feasible after the first step -- fall back to theta_hat's
+            # own target (always feasible: LR(theta_hat) = 0)
+            with torch.no_grad():
+                best = float(target_of_model(estimator.model, fit.prior))
+        return best
+
+    hi = extremum(+1.0)
+    lo = extremum(-1.0)
+    return L4Result(
+        kind="bounds",
+        lo=min(lo, hi),
+        hi=max(lo, hi),
+        alpha=alpha,
+        b=b,
+        failure_rate=null.failure_rate,
+        label=fit.estimate(torch.tensor(0.0)).label(),
+        meta={
+            "c_alpha": c,
+            "lr_calibration_quantiles": {
+                "q50": float(np.quantile(vals, 0.5)),
+                "q90": float(np.quantile(vals, 0.9)),
+            },
+            "bootstrap_diagnostics": null.diagnostics(),
+        },
+    )
