@@ -305,7 +305,9 @@ def lr_region_bounds(
     fit_seed: int = 0,
     steps: int = 300,
     opt_lr: float = 1e-3,
-    penalty: float = 100.0,
+    penalty: float = 100.0,  # retained in the signature; the projected walk
+    # replaced the penalty pattern (exactness test, first failure) and the
+    # knob is currently unread -- removing it would break callers silently
     n_jobs: int = 1,
 ) -> L4Result:
     """Min/max of the target over the LR confidence region — bounds-only cells.
@@ -368,7 +370,14 @@ def lr_region_bounds(
         )
     c = float(np.quantile(vals, 1 - alpha))
 
-    # ---- two-sided penalised optimisation over a clone ----------------------
+    # ---- two-sided PROJECTED-WALK optimisation over a clone -----------------
+    # The stiff-penalty pattern is retired by measurement (the exactness
+    # test's first recorded failure): it cannot traverse the constraint
+    # surface and collapses at theta-hat, which for a BOUNDS claim is
+    # anti-conservative -- too-narrow bounds. The walk moves ALONG the LR
+    # surface: the target gradient is projected onto the constraint's tangent
+    # space, feasibility is restored by constraint-ascent steps when the walk
+    # drifts, and only feasible iterates update the bound.
     def extremum(sign: float) -> float:
         model_c = copy.deepcopy(estimator.model)
         for p_ in model_c.parameters():
@@ -378,25 +387,53 @@ def lr_region_bounds(
         )
         params = [p_ for p_ in model_c.parameters() if p_.requires_grad]
         params.append(prior_logits)
-        opt = torch.optim.Adam(params, lr=opt_lr)
+
+        def flat_grad(scalar, retain=False):
+            gs = torch.autograd.grad(
+                scalar, params, retain_graph=retain, allow_unused=True
+            )
+            return [torch.zeros_like(q) if g is None else g for g, q in zip(gs, params)]
+
+        def dot(a, b):
+            return sum((x * y).sum() for x, y in zip(a, b))
+
         best = None
         for _ in range(steps):
-            opt.zero_grad()
             prior = torch.softmax(prior_logits, dim=0)
             tgt = target_of_model(model_c, prior)
             ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
-            lr_stat = 2.0 * (ll_hat - ll)
-            loss = -sign * tgt + penalty * torch.relu(lr_stat - c) ** 2
-            loss.backward()
-            opt.step()
+            g_t = flat_grad(tgt, retain=True)
+            g_l = flat_grad(ll)
+            denom = dot(g_l, g_l).clamp_min(1e-12)
+            coef = dot(g_t, g_l) / denom
             with torch.no_grad():
-                if float(lr_stat) <= c:  # FEASIBLE iterate only
-                    v = float(tgt)
-                    if best is None or sign * v > sign * best:
-                        best = v
+                norm = torch.sqrt(
+                    sum(((a - coef * b) ** 2).sum() for a, b in zip(g_t, g_l))
+                ).clamp_min(1e-12)
+                for q, a, b_ in zip(params, g_t, g_l):
+                    q += sign * opt_lr * (a - coef * b_) / norm
+            # feasibility restoration: constraint-ascent until inside (capped)
+            for _ in range(20):
+                ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
+                if float(2.0 * (ll_hat - ll)) <= c:
+                    break
+                g_l = flat_grad(ll)
+                with torch.no_grad():
+                    n2 = torch.sqrt(dot(g_l, g_l)).clamp_min(1e-12)
+                    for q, b_ in zip(params, g_l):
+                        q += opt_lr * b_ / n2
+            with torch.no_grad():
+                prior = torch.softmax(prior_logits, dim=0)
+                tgt_v = float(target_of_model(model_c, prior))
+                ll_v = _observed_ll_differentiable(
+                    model_c, prior_logits, estimator, data
+                )
+                if float(2.0 * (ll_hat - ll_v)) <= c:  # FEASIBLE iterate only
+                    if best is None or sign * tgt_v > sign * best:
+                        best = tgt_v
         if best is None:
-            # never feasible after the first step -- fall back to theta_hat's
-            # own target (always feasible: LR(theta_hat) = 0)
+            # never feasible -- fall back to theta_hat's own target (always
+            # feasible: LR(theta_hat) = 0)
             with torch.no_grad():
                 best = float(target_of_model(estimator.model, fit.prior))
         return best
