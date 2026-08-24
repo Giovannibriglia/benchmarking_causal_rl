@@ -55,6 +55,14 @@ class L4Result:
     procedural_share: float = float("nan")
     failure_rate: float = 0.0
     observed: float = float("nan")
+    # LR-walk bounds are INNER approximations (ruled 2026-08-24): only
+    # feasible iterates report, so every bound is achieved by SOME compatible
+    # model -- "the identified set contains at least this interval". The
+    # precise claim, not a hedge; production regions over network weights are
+    # smooth but not guaranteed convex and no oracle exists there, so the
+    # limitation is disclosed rather than tested away. False for closed-form
+    # bounds (Balke-Pearl is exact given the data).
+    inner_approximation: bool = False
     label: str = ""
     meta: Dict = field(default_factory=dict)
 
@@ -70,8 +78,9 @@ class L4Result:
             if np.isfinite(self.procedural_share)
             else ""
         )
+        inner = " INNER-APPROX" if self.inner_approximation else ""
         return (
-            f"{self.kind} [{self.lo:+.4f}, {self.hi:+.4f}] width={self.width:.4f} "
+            f"{self.kind}{inner} [{self.lo:+.4f}, {self.hi:+.4f}] width={self.width:.4f} "
             f"alpha={self.alpha} B={self.b} fail={self.failure_rate:.0%}{ps} "
             f"[{self.label}]"
         )
@@ -305,6 +314,7 @@ def lr_region_bounds(
     fit_seed: int = 0,
     steps: int = 300,
     opt_lr: float = 1e-3,
+    n_starts: int = 4,
     penalty: float = 100.0,  # retained in the signature; the projected walk
     # replaced the penalty pattern (exactness test, first failure) and the
     # knob is currently unread -- removing it would break callers silently
@@ -378,10 +388,13 @@ def lr_region_bounds(
     # surface: the target gradient is projected onto the constraint's tangent
     # space, feasibility is restored by constraint-ascent steps when the walk
     # drifts, and only feasible iterates update the bound.
-    def extremum(sign: float) -> float:
+    def extremum(sign: float, perturb: float = 0.0) -> float:
         model_c = copy.deepcopy(estimator.model)
         for p_ in model_c.parameters():
             p_.requires_grad_(True)
+            if perturb:
+                with torch.no_grad():
+                    p_ += perturb * torch.randn_like(p_) * p_.abs().clamp_min(1e-3)
         prior_logits = torch.nn.Parameter(
             torch.log(fit.prior.detach().clamp_min(1e-8)).clone()
         )
@@ -438,10 +451,25 @@ def lr_region_bounds(
                 best = float(target_of_model(estimator.model, fit.prior))
         return best
 
-    hi = extremum(+1.0)
-    lo = extremum(-1.0)
+    # MULTI-START (ruled 2026-08-24): reduces under-exploration risk on a
+    # region with no convexity guarantee; the per-start spread is reported --
+    # material disagreement across starts means the region is non-convex in
+    # practice, which is worth knowing. Start k perturbs the clone's
+    # parameters deterministically by seed before the walk.
+    def extremum_multi(sign: float):
+        vals = [extremum(sign)]
+        for k in range(1, n_starts):
+            torch.manual_seed(fit_seed * 1000 + k)  # perturbation stream
+            vals.append(extremum(sign, perturb=0.01 * k))
+        return vals
+
+    his = extremum_multi(+1.0)
+    los = extremum_multi(-1.0)
+    hi = max(his)
+    lo = min(los)
     return L4Result(
         kind="bounds",
+        inner_approximation=True,
         lo=min(lo, hi),
         hi=max(lo, hi),
         alpha=alpha,
@@ -450,6 +478,10 @@ def lr_region_bounds(
         label=fit.estimate(torch.tensor(0.0)).label(),
         meta={
             "c_alpha": c,
+            "start_spread": {
+                "lo": [round(v, 4) for v in sorted(los)],
+                "hi": [round(v, 4) for v in sorted(his)],
+            },
             "lr_calibration_quantiles": {
                 "q50": float(np.quantile(vals, 0.5)),
                 "q90": float(np.quantile(vals, 0.9)),
