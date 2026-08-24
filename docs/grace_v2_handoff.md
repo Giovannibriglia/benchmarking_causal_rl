@@ -568,7 +568,8 @@ already forbids, but this is now a measured reason rather than a policy.
 
 ### OPEN ARCHITECTURAL ITEM FOR THE CRITIC-SEAM BLOCK (recorded 2026-08-23)
 
-**L2's verdict does not select the estimator.** L2 returns point-ID for
+**L2's verdict does not select the estimator — OR ITS CHANNELS (one item,
+two faces; merged 2026-08-24).** L2 returns point-ID for
 `d_a_null` by back-door adjustment on S with NO latent required — and nothing
 in the pipeline acts on that: L3 is always the latent-class model regardless
 of the verdict. The architecture's promise is that L2 delivers the estimand
@@ -579,7 +580,20 @@ latent machinery to unconfounded cells will abstain or waste effort where the
 observational estimate is exactly correct. Why it never surfaced: every cell
 exercised in anger has a latent. L4's smoke surfaced it through the
 `d_a_null` abstention (resolved at the mechanism level by the Dirac routing;
-the estimator-selection gap remains).
+the estimator-selection gap remains). The SAME item's second face, surfaced
+by L4's D-E work: GRACE's model has no INSTRUMENT channel, so an LR region
+over the I-blind latent-class model is validly wider than Balke–Pearl.
+Ruled 2026-08-24: **serving the closed form on D-E is the seam WORKING, not
+a workaround** — L2's verdict there is "bounds-only via Balke–Pearl" and L4
+implementing exactly that estimand form is verdict-directed estimation,
+hand-wired for one cell; the general mechanism (verdict selects estimator
+AND channels) is the seam block's job, and both faces must be fixed
+together. The LR-region optimiser's production home is **D-B-prime**
+(bounds-only with no instrument, 40 certified datasets): exact method where
+the diagram licenses one, LR region where it does not. On D-E both are
+reported — the closed form as what the DECLARED DIAGRAM licenses, the
+I-blind LR region as what the latent-class model alone licenses; the gap
+between them is the measured value of declaring the instrument.
 
 ### THE D-D REVISION — OUTCOME (2026-08-22, the one-place record)
 
