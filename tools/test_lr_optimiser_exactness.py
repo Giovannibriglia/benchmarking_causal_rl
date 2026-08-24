@@ -84,15 +84,19 @@ def main() -> int:
         p = torch.einsum("zxyt,t->zxy", memb, theta).clamp_min(1e-12)
         return (n_t * torch.log(p)).sum()
 
-    # MLE by direct optimisation (the flat manifold's ll value).
-    logits0 = torch.zeros(16, dtype=torch.float64, requires_grad=True)
-    opt = torch.optim.Adam([logits0], lr=0.05)
-    for _ in range(3000):
-        opt.zero_grad()
-        loss = -ll_of(torch.softmax(logits0, dim=0))
-        loss.backward()
-        opt.step()
-    ll_hat = float(ll_of(torch.softmax(logits0, dim=0)))
+    # ll_hat is the CLOSED-FORM saturated conditional-multinomial maximum --
+    # Adam's iterative "MLE" was measured 2.45 nats SHORT, which thickened the
+    # c->0 "flat manifold" into a shell and let the walk edge past BP by
+    # 0.003 (the recorded phase-1 hi discrepancy, now explained).
+    n_np = n_t.numpy().reshape(8)
+    ll_hat = 0.0
+    for zi in (0, 1):
+        nz = n_np[zi * 4 : (zi + 1) * 4]
+        tot = nz.sum()
+        for v in nz:
+            if v > 0:
+                ll_hat += float(v * np.log(v / tot))
+    logits0 = torch.zeros(16, dtype=torch.float64)
     print(f"RF MLE ll        : {ll_hat:.2f}", flush=True)
 
     # ---- PROJECTED manifold walk at c -> 0+, SIMPLEX parametrisation --------
@@ -111,6 +115,16 @@ def main() -> int:
 
     c = 0.1
     theta_hat = torch.softmax(logits0.detach(), dim=0)
+    # restore the start onto the manifold (uniform types are NOT on it)
+    _th = theta_hat.clone().requires_grad_(True)
+    for _ in range(2000):
+        if float(2.0 * (ll_hat - ll_of(_th))) <= c:
+            break
+        _g = torch.autograd.grad(ll_of(_th), _th)[0]
+        with torch.no_grad():
+            _th = proj_simplex(_th + 0.02 * _g / _g.norm().clamp_min(1e-12))
+        _th.requires_grad_(True)
+    theta_hat = _th.detach()
     results = {}
     gen = torch.Generator().manual_seed(0)
     for sign in (+1.0, -1.0):
@@ -334,9 +348,19 @@ def phase2_production_c() -> int:
                 method="trust-constr",
                 options={"maxiter": 8000, "gtol": 1e-10, "xtol": 1e-12},
             )
-            v = float(tgt @ r.x)
-            if best is None or sign * v > sign * best:
-                best = v
+            # THE ORACLE IS HELD TO THE WALK'S STANDARD: trust-constr can
+            # return bound-violating iterates whose apparent ll EXCEEDS the
+            # saturated maximum (measured: an 'LR' of -188 from a theta with
+            # negative components). Project back to the simplex, recompute
+            # target and LR exactly, and accept only genuinely feasible
+            # solutions.
+            th_v = np.clip(r.x, 0.0, None)
+            th_v = th_v / th_v.sum()
+            lr_v = 2.0 * (ll_hat + neg_ll(th_v))
+            if lr_v <= c + 1e-6:
+                v = float(tgt @ th_v)
+                if best is None or sign * v > sign * best:
+                    best = v
         sols[sign] = best
     solver_lo, solver_hi = sols[-1.0], sols[+1.0]
     print(f"trust-constr at c: [{solver_lo:+.4f}, {solver_hi:+.4f}]", flush=True)
