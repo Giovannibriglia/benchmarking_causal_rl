@@ -49,7 +49,14 @@ def main() -> int:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     out_path = Path("results/v4/report.json")
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # RESUME: rows already in the report are skipped on relaunch. Sound
+    # because determinism makes a redone row bitwise identical -- skipping
+    # loses nothing and repeats nothing.
     out: list = []
+    if out_path.exists():
+        out = json.loads(out_path.read_text())
+        print(f"  resuming: {len(out)} rows already done", flush=True)
+    done = {(r["row"], r["cell"], r["env"], r["seed"]) for r in out}
 
     def save():
         out_path.write_text(json.dumps(out, indent=1))
@@ -135,6 +142,8 @@ def main() -> int:
                 )
 
     for cell, env, sd, did, truth in jobs:
+        if ("interval", cell, env, sd) in done:
+            continue
         s, state = load(did)
         has_p = bool(s["z"].size)
         data = mk(s, state, has_p)
@@ -192,6 +201,8 @@ def main() -> int:
         ]
         for r in rows:
             env, sd, did = r["env"], r["seed"], r["dataset_id"]
+            if ("bounds", cell, env, sd) in done:
+                continue
             s, state = load(did)
             rec = {"row": "bounds", "cell": cell, "env": env, "seed": sd}
             if cell == "d_e":
