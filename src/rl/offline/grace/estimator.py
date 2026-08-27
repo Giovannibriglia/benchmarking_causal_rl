@@ -40,7 +40,7 @@ import copy
 import math
 import os
 from dataclasses import dataclass, field, replace
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 # Required by torch for deterministic cuBLAS; must be in the environment
 # before the first CUDA matmul creates the workspace, so it is set at
@@ -161,6 +161,25 @@ class EpisodeData:
         for k, v in self.proxy.items():
             if v.shape[0] != n:
                 raise ValueError(f"proxy {k!r} has {v.shape[0]} rows against {n}")
+        self._first_rows: Optional[torch.Tensor] = None
+        # S1c, enforced rather than assumed: the declared diagram draws each
+        # proxy ONCE per episode from p(.|U), so its rows are copies of one
+        # draw and must be bitwise identical within an episode. The likelihood
+        # counts them once on that basis (``_episode_log_liks``); a per-step
+        # proxy would make that reduction silently wrong. No tolerance: the
+        # rows are copies, so exact equality is the honest test.
+        for k, v in self.proxy.items():
+            flat = v.reshape(-1)
+            if not bool(torch.equal(flat, self.broadcast_rows(self.first_rows(flat)))):
+                raise ValueError(
+                    f"proxy {k!r} varies WITHIN an episode. This estimator's "
+                    "proxy channels are declared episode-constant (drawn once "
+                    "per episode from p(.|U)) and the likelihood counts them "
+                    "once per episode on that basis. A genuinely per-step "
+                    "proxy (D-B's lagged construction) is a different channel "
+                    "and needs its own treatment -- it must not be routed "
+                    "through this one."
+                )
 
     @property
     def n(self) -> int:
@@ -180,6 +199,31 @@ class EpisodeData:
 
     def broadcast(self, per_episode: torch.Tensor) -> torch.Tensor:
         """Expand a per-episode quantity back over its rows. ``(E, K) -> (n, K)``."""
+        _, inv = self.blocks()
+        return per_episode[inv]
+
+    def first_rows(self, per_row: torch.Tensor) -> torch.Tensor:
+        """Each episode's FIRST row value. ``(n,) -> (E,)``.
+
+        The S1c reduction for an EPISODE-CONSTANT quantity: it enters once per
+        episode, so the episode's value is any one of its rows. Paired with the
+        constructor's guard that proxy rows really are identical within an
+        episode, "first" is the value, not a sample of it. (For a quantity that
+        genuinely varies within an episode, this is the wrong reduction and the
+        guard is what stops it being reached.)
+        """
+        uniq, inv = self.blocks()
+        if self._first_rows is None:
+            order = torch.argsort(inv, stable=True)
+            self._first_rows = order[
+                torch.searchsorted(
+                    inv[order], torch.arange(uniq.numel(), device=inv.device)
+                )
+            ]
+        return per_row[self._first_rows]
+
+    def broadcast_rows(self, per_episode: torch.Tensor) -> torch.Tensor:
+        """Expand a 1-D per-episode quantity over its rows. ``(E,) -> (n,)``."""
         _, inv = self.blocks()
         return per_episode[inv]
 
@@ -789,15 +833,25 @@ class LatentClassEstimator:
         ``model`` lets L4 evaluate a walked CLONE; ``differentiable=True``
         keeps the graph for the LR constraint's gradients.
 
-        ⚠ KNOWN, MEASURED misspecification carried unchanged by this refactor:
-        the proxies are episode-constant yet enter PER ROW, weighting each
-        proxy channel by the episode length (measured factor = T exactly;
-        d100 CartPole s0: Z/W/V gaps 78–90 nats as coded vs ~5 counted once).
-        Changing that is an estimator-semantics decision (S10: every
-        downstream condition re-examines), not a refactor.
+        **S1c — PER-STEP AND EPISODE-CONSTANT CHANNELS ENTER DIFFERENTLY.**
+        ``A`` and ``R`` are drawn every step, so they are summed over the
+        episode's rows. The proxies are drawn ONCE per episode from
+        ``p(·|U)``, so they are added ONCE. Summing them per row implements
+        ``p(Z|U)^T`` — a model the declared diagram does not describe, and
+        the most serious violation available under A1, since the diagram is
+        the sole assumption. It is textbook pseudo-replication: one
+        observation counted ``T`` times as though it were ``T`` independent
+        draws. Measured before the fix (d100 CartPole s0, per-episode
+        between-class gaps): Z/W/V **78–90 nats as coded against ~5 counted
+        once**, versus R's 39.7 and A's 0.78 — so the proxies were the
+        dominant channels purely by weighting, by a factor of exactly ``T``.
+        At ``T = 500`` the term was ~2,500 nats against ~5. Ruled a BUG and
+        corrected 2026-08-27; pre-fix numbers are preserved as the record and
+        every result measured through it is re-run, not re-labelled.
         """
         net = self.model if model is None else model
-        channels = ["A", "R"] + list(self.proxy_names)
+        per_step = ["A", "R"]
+        episode_constant = list(self.proxy_names)
         cols = []
         # The E-step is evaluated with the CURRENT parameters held fixed: in EM
         # the responsibilities are constants that the M-step maximises against,
@@ -808,14 +862,19 @@ class LatentClassEstimator:
             u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
             if differentiable:
                 per_node = net.log_prob(self._frame(data, u_k), per_node=True)
-                row = sum(per_node[c].reshape(-1) for c in channels)
+                step_row = sum(per_node[c].reshape(-1) for c in per_step)
+                col = data.episode_sum(step_row.reshape(-1, 1)).reshape(-1)
+                for c in episode_constant:
+                    col = col + data.first_rows(per_node[c].reshape(-1))
             else:
                 with torch.no_grad():
                     per_node = net.log_prob(self._frame(data, u_k), per_node=True)
-                row = sum(per_node[c].reshape(-1).detach() for c in channels)
-            cols.append(row)
-        per_row = torch.stack(cols, dim=1)  # (n, K)
-        return data.episode_sum(per_row)  # (E, K)
+                step_row = sum(per_node[c].reshape(-1).detach() for c in per_step)
+                col = data.episode_sum(step_row.reshape(-1, 1)).reshape(-1)
+                for c in episode_constant:
+                    col = col + data.first_rows(per_node[c].reshape(-1).detach())
+            cols.append(col)
+        return torch.stack(cols, dim=1)  # (E, K)
 
     def e_step(
         self, data: EpisodeData, prior: torch.Tensor, temperature: float = 1.0
@@ -1060,8 +1119,52 @@ class LatentClassEstimator:
             steps_per_epoch = max(1, math.ceil(stacked_rows(stacked) / bs))
             fit_kwargs["epochs"] = max(1, round(int(budget) / steps_per_epoch))
         self.model.fit(stacked, weights=w, **fit_kwargs)
+        self._m_step_proxies(data, resp, dict(fit_kwargs))
         # Prior from the EPISODE responsibilities, never the row ones.
         return resp.mean(dim=0)
+
+    def _m_step_proxies(self, data: EpisodeData, resp: torch.Tensor, fk: dict) -> None:
+        """Refit the proxy channels at EPISODE granularity (S1c).
+
+        **Why this is part of the same fix, not scope creep.** The stacked
+        M-step above fits every node on per-ROW copies, so ``p(Z|U)`` is
+        estimated from ``T`` duplicates of one draw and each episode enters
+        weighted by its own length — pseudo-replication in the M-step, and
+        length-weighting of an episode-constant quantity in the S1b sense
+        (episode length is an OUTCOME correlated with ``U`` through the
+        policy, so ``E_w[Z|U] != E[Z|U]``). Left alone it is also
+        INCOHERENT: EM would maximise ``p(Z|U)^T`` while the E-step scores
+        ``p(Z|U)``, so the M-step would no longer be maximising the objective
+        the fit reports, and the monotonicity guard would be watching the
+        wrong quantity.
+
+        One row per episode, the responsibility as the weight, the same
+        weighted-fit contract (N3). The proxies were already fitted by the
+        stacked call — this OVERWRITES that with the correct fit; the
+        redundant work is a small 1-D fit and is the price of ``model.fit``
+        having no node subset, not a design choice.
+        """
+        if not self.proxy_names:
+            return
+        uniq, _ = data.blocks()
+        n_ep = int(uniq.numel())
+        dev = data.state.device
+        u_ep = torch.cat(
+            [
+                torch.full((n_ep,), k, dtype=torch.long, device=dev)
+                for k in range(self.u_card)
+            ]
+        )
+        w_ep = torch.cat([resp[:, k] for k in range(self.u_card)])
+        fk.pop("m_step_budget", None)  # the stacked call already derived epochs
+        from nbn.core.network import pack_parents
+
+        for name in self.proxy_names:
+            mech = self.model.mechanisms[name]
+            vals = data.first_rows(data.proxy[name].reshape(-1))  # (E,) — the draw
+            x = vals.repeat(self.u_card).reshape(-1, 1)
+            pa = pack_parents({"U": u_ep}, self.model.dag.parents(name))
+            mech.fit_local(x, pa, weights=w_ep, **fk)
 
     # -------------------------------------------------------------------- EM --
     def _snapshot(self) -> dict:

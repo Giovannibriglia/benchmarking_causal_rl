@@ -669,3 +669,68 @@ def test_reward_resolution_half_is_stratified_by_episode_not_row_order():
     assert resolve(in_half) == "categorical[2]"
     out_half = int(perm[-1])
     assert resolve(out_half) == "mdn"  # the documented conservative direction
+
+
+def test_episode_constant_channels_enter_once_per_episode():
+    """S1c pinned at the likelihood: lengthening an episode must not
+    re-multiply its proxy draw.
+
+    The proxies are drawn ONCE per episode from p(.|U); summing them per row
+    implements p(Z|U)^T -- a model the declared diagram does not describe
+    (A1), and measured at 78-90 nats against R's 39.7 before the fix. The
+    test doubles every episode's rows, which doubles the per-step channels
+    (A, R) exactly and must leave the proxy term untouched: ll(2T) = 2*S + P,
+    ll(T) = S + P, so 2*ll(T) - ll(2T) == P. Pre-fix that identity fails by
+    a factor of T.
+    """
+    _, data = _fixture(n_ep=40, T=5)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
+    fit = est.fit(data, max_iter=3, epochs=20, init="proxy")
+
+    dup = EpisodeData(  # every episode's rows doubled, same proxy draw
+        state=data.state.repeat_interleave(2, dim=0),
+        action=data.action.repeat_interleave(2),
+        reward=data.reward.repeat_interleave(2),
+        episode_ids=data.episode_ids.repeat_interleave(2),
+        proxy={k: v.repeat_interleave(2) for k, v in data.proxy.items()},
+    )
+    ll1 = est._episode_log_liks(data)
+    ll2 = est._episode_log_liks(dup)
+    implied_proxy = 2.0 * ll1 - ll2  # == P if and only if P entered once
+
+    # P read directly off the mechanism, one row per episode
+    with torch.no_grad():
+        cols = []
+        for k in range(est.u_card):
+            u_k = torch.full((data.n,), k, dtype=torch.long)
+            per_node = est.model.log_prob(est._frame(data, u_k), per_node=True)
+            cols.append(data.first_rows(per_node["Z"].reshape(-1)))
+        direct_proxy = torch.stack(cols, dim=1)
+
+    assert torch.allclose(implied_proxy, direct_proxy, atol=1e-2), (
+        implied_proxy[:3],
+        direct_proxy[:3],
+    )
+    # and the per-step channels DID double, or the test proves nothing
+    assert not torch.allclose(ll1, ll2, atol=1.0), (ll1[:3], ll2[:3])
+
+
+def test_a_within_episode_varying_proxy_is_refused():
+    """The guard behind the reduction: a per-step proxy must not be routed
+    through the episode-constant channel (D-B's lagged construction is a
+    different channel, and taking row 0 of it would be silently wrong)."""
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 10, 4
+    ep = torch.arange(n_ep).repeat_interleave(T)
+    kw = dict(
+        state=torch.randn(n_ep * T, 2, generator=g),
+        action=(torch.rand(n_ep * T, generator=g) < 0.5).long(),
+        reward=torch.randn(n_ep * T, generator=g),
+        episode_ids=ep,
+    )
+    EpisodeData(proxy={"Z": torch.arange(n_ep).float().repeat_interleave(T)}, **kw)
+    try:
+        EpisodeData(proxy={"Z": torch.arange(n_ep * T).float()}, **kw)
+        raise AssertionError("a within-episode-varying proxy must be refused")
+    except ValueError as e:
+        assert "WITHIN an episode" in str(e)
