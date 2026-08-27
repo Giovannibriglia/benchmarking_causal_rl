@@ -532,3 +532,39 @@ def test_a_discrete_reward_is_decoded_back_into_reward_units():
     assert 9.0 < v0 < 21.0, v0
     assert 9.0 < v1 < 21.0, v1
     assert v1 > v0, (v0, v1)
+
+
+def test_lr_at_theta_hat_is_zero():
+    """The V4 walk regression, pinned as an INVARIANT: LR(theta-hat) == 0.
+
+    L4's LR constraint and ``fit.final_ll`` must be the SAME functional. V4's
+    entire bounds block failed because a second implementation that "mirrored"
+    e_step did not mirror it (per-row U term + S marginal), putting
+    LR(theta-hat) = 70,686 against c = 821 on the frozen row -- every walk
+    started far outside its own region and the fallback returned width 0.
+    Both paths now call ``_episode_log_liks`` (one construction site); this
+    test pins the invariant rather than the implementation, and would have
+    caught the bug in one line. WITH proxies, deliberately: the proxy channel
+    is where a second divergence would land. Also asserts the constraint
+    still carries gradients (the other way this could silently break).
+    """
+    import copy
+
+    from src.rl.offline.grace.l4 import _observed_ll_differentiable
+
+    _, data = _fixture(n_ep=60, T=6)
+    est = LatentClassEstimator(state_dim=2, n_actions=2, proxy_names=("Z",), seed=0)
+    fit = est.fit(data, max_iter=4, epochs=30, init="proxy")
+
+    model_c = copy.deepcopy(est.model)
+    for p in model_c.parameters():
+        p.requires_grad_(True)
+    prior_logits = torch.nn.Parameter(torch.log(fit.prior.detach().clamp_min(1e-8)))
+    ll = _observed_ll_differentiable(model_c, prior_logits, est, data)
+    lr = 2.0 * (float(fit.final_ll) - float(ll.detach()))
+    assert abs(lr) < 1e-2, f"LR(theta-hat) = {lr}, invariant says 0"
+    # the constraint must remain differentiable in the clone's parameters
+    ll.backward()
+    grads = [p.grad for p in model_c.parameters() if p.grad is not None]
+    assert grads and any(float(g.abs().sum()) > 0 for g in grads)
+    assert prior_logits.grad is not None

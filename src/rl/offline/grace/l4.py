@@ -278,26 +278,20 @@ def _observed_ll_differentiable(model, prior_logits, est, data: EpisodeData):
     """The observed-data mixture log-likelihood, DIFFERENTIABLE in the model's
     parameters and the prior logits.
 
-    Mirrors ``e_step``'s computation (per-class complete-data row log-liks,
-    summed per episode, logsumexp over classes with the log prior) WITHOUT the
-    ``no_grad`` — the LR constraint needs gradients through ``model.log_prob``,
-    which R1 pins as gradient-transparent upstream.
+    DEDUPLICATED (2026-08-27, the V4 walk root cause): this used to be a
+    second implementation "mirroring" ``e_step`` and did not mirror it — it
+    called full ``model.log_prob``, which also sums the S marginal and ``U``'s
+    mechanism log-prob PER ROW (``T·log p_U(k)`` per episode instead of once),
+    putting ``LR(θ̂) = 70,686`` against ``c = 821`` where the invariant says
+    exactly 0. Every V4 bounds row was invalid — the 8 frozen rows via the
+    never-feasible fallback, the 4 "moving" rows via an offset region. It now
+    DELEGATES to ``_episode_log_liks`` — the one construction site — so
+    agreement with ``fit.final_ll`` is structural; the invariant is pinned by
+    ``test_lr_at_theta_hat_is_zero``. The prior enters once per episode
+    through ``prior_logits`` (the walk's free parameter).
     """
-    ep = data.episode_ids
-    uniq = torch.unique(ep)
-    n_ep = int(uniq.numel())
-    # dense episode index for index_add
-    remap = torch.searchsorted(uniq, ep)
-    cols = []
-    for k in range(est.u_card):
-        u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
-        rows = model.log_prob(est._frame(data, u_k))  # [N], differentiable
-        col = torch.zeros(n_ep, device=rows.device, dtype=rows.dtype)
-        col = col.index_add(0, remap, rows)
-        cols.append(col)
-    ll = torch.stack(cols, dim=1) + torch.log_softmax(prior_logits, dim=0).reshape(
-        1, -1
-    )
+    ll = est._episode_log_liks(data, model=model, differentiable=True)
+    ll = ll + torch.log_softmax(prior_logits, dim=0).reshape(1, -1)
     return torch.logsumexp(ll, dim=1).sum()
 
 

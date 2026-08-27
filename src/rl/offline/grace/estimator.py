@@ -713,7 +713,9 @@ class LatentClassEstimator:
         return levels[x.reshape(-1).long().clamp(0, levels.numel() - 1)]
 
     # ---------------------------------------------------------------- E-step --
-    def _episode_log_liks(self, data: EpisodeData) -> torch.Tensor:
+    def _episode_log_liks(
+        self, data: EpisodeData, *, model=None, differentiable: bool = False
+    ) -> torch.Tensor:
         """``(E, K)`` complete-data log-likelihood of each EPISODE under each class.
 
         Per row we take the log-density of the OBSERVED children of ``U`` only —
@@ -722,7 +724,27 @@ class LatentClassEstimator:
         cancels in the posterior, and the prior is added once per episode rather
         than once per row. Adding a per-row prior is the classic bug that makes
         the posterior scale with episode length.
+
+        **This is the ONE construction site for the observed-data likelihood**
+        (S6's discipline applied to a functional): ``e_step``/``final_ll`` and
+        L4's LR constraint both call it, so their agreement is structural
+        rather than maintained. Two implementations that must agree by
+        discipline is exactly what produced the V4 walk failure — the L4 copy
+        included the S marginal and a PER-ROW ``U`` term, putting
+        ``LR(θ̂) = 70,686`` where the invariant says 0 (handoff, V4 section).
+        The invariant is pinned by ``test_lr_at_theta_hat_is_zero``.
+
+        ``model`` lets L4 evaluate a walked CLONE; ``differentiable=True``
+        keeps the graph for the LR constraint's gradients.
+
+        ⚠ KNOWN, MEASURED misspecification carried unchanged by this refactor:
+        the proxies are episode-constant yet enter PER ROW, weighting each
+        proxy channel by the episode length (measured factor = T exactly;
+        d100 CartPole s0: Z/W/V gaps 78–90 nats as coded vs ~5 counted once).
+        Changing that is an estimator-semantics decision (S10: every
+        downstream condition re-examines), not a refactor.
         """
+        net = self.model if model is None else model
         channels = ["A", "R"] + list(self.proxy_names)
         cols = []
         # The E-step is evaluated with the CURRENT parameters held fixed: in EM
@@ -732,9 +754,13 @@ class LatentClassEstimator:
         # (and would be the wrong objective even if it did not).
         for k in range(self.u_card):
             u_k = torch.full((data.n,), k, dtype=torch.long, device=data.state.device)
-            with torch.no_grad():
-                per_node = self.model.log_prob(self._frame(data, u_k), per_node=True)
-            row = sum(per_node[c].reshape(-1).detach() for c in channels)
+            if differentiable:
+                per_node = net.log_prob(self._frame(data, u_k), per_node=True)
+                row = sum(per_node[c].reshape(-1) for c in channels)
+            else:
+                with torch.no_grad():
+                    per_node = net.log_prob(self._frame(data, u_k), per_node=True)
+                row = sum(per_node[c].reshape(-1).detach() for c in channels)
             cols.append(row)
         per_row = torch.stack(cols, dim=1)  # (n, K)
         return data.episode_sum(per_row)  # (E, K)
