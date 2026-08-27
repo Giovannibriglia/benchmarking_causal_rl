@@ -1049,7 +1049,61 @@ replicate resampling):
   budget is ~30 support-growth mis-resolutions (Acrobot s1) + ~39 proxy
   point-mass collapses (background, length-elevated).
 
-#### ⚠ THE PROXIES ENTER THE LIKELIHOOD PER ROW — confirmed 2026-08-27, the S1c fourth instance
+#### ✅ THE PROXY PSEUDO-REPLICATION BUG — RULED A BUG AND FIXED (2026-08-27)
+
+**Ruled (not an estimator-semantics choice): a misspecification, and the most
+serious violation available under A1.** The declared diagram draws Z/W/V once
+per episode from `p(·|U)`; entering them per row implements `p(Z|U)^T` — a
+model the diagram does not describe — while every other decision in this
+project has been defended on the grounds that the diagram drives the
+estimator. Textbook pseudo-replication: one observation counted `T` times as
+`T` independent draws.
+
+**Fixed in two commits, because the E-step alone is incoherent.**
+
+* `ee2c0f6` — **E-step**: per-step channels (A, R) summed per row,
+  episode-constant channels added ONCE, prior once. Same construction site as
+  the walk dedup, so L4 inherits it. `EpisodeData` now REFUSES a proxy that
+  varies within an episode (exact equality — the rows are copies), so D-B's
+  genuinely per-step lagged construction cannot be routed through this
+  channel silently. Tests pin the semantics: doubling every episode's rows
+  doubles A/R and leaves the proxy term untouched (`2·ll(T) − ll(2T) == P`,
+  which fails by a factor of T pre-fix).
+* `68908cc` — **M-step**, part of the same bug: `model.fit` has no node
+  subset, so one stacked call necessarily fits the proxies on per-ROW
+  duplicates. EM would then maximise `p(Z|U)^T` while the E-step scores
+  `p(Z|U)`, and the monotonicity guard would watch a quantity the fit is not
+  optimising. Fitting them again afterwards does NOT fix it — the two pull
+  against each other every M-step and the corrected objective DECREASES
+  (measured: backtrack exhaustion at 24 backtracks / 5 iterations). Each
+  channel is now fitted once at its own granularity, with the fixed step
+  budget derived per node from that node's rows, and `set_mechanism`
+  (public) re-registering each fit so the factor cache cannot go stale.
+
+**Measured after, on real data (d100):** proxy gaps **0.58–0.60 nats**
+against R 4.03 (CartPole s0) and R **134.7** (Acrobot s1, T = 500) — where
+pre-fix the proxies read 78–90 and dominated everything. Recovery **1.0000**
+on both, CartPole converged and monotone with 7 backtracks. So the corrected
+estimator is materially different exactly as predicted, R now dominates by a
+wide margin, and **the D-D decorative-proxies finding should be expected to
+STRENGTHEN** — but every result measured through the old likelihood is
+re-run, not re-labelled.
+
+**⚠ OPEN, and it gates the Acrobot re-runs.** Acrobot s1 (T = 500) recovers
+1.0000 and stays MONOTONE but exhausts its backtrack budget (48) at
+iteration 9, so `finished=False` — which is an L4 abstention condition, i.e.
+Acrobot rows would abstain rather than report. Monotone + exhausted +
+correct is the signature of a line search whose DEPTH binds, and S10 applies
+directly: `max_backtracks = 6` was measured *never-binding* under the
+pre-S1c likelihood, and removing the T-fold proxy term changes the
+objective's curvature. That is a claim to measure, not assert:
+`tools/probe_backtrack_depth_s1c.py` sweeps the depth on the binding row
+with a converging CartPole row as control (a deeper budget must not change a
+fit that already converges). **Do not raise the depth on the strength of the
+argument alone**, and do not relabel the condition — that is precisely the
+S10 trap.
+
+#### The measurement that established it — confirmed 2026-08-27, the S1c fourth instance
 
 Checked before any fix was applied, on Giovanni's direction, because it
 outranks the fixes: under the true generative model an episode's likelihood
