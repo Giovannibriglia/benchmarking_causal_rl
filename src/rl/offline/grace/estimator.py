@@ -602,7 +602,26 @@ class LatentClassEstimator:
             return  # replicate estimators keep the observed fit's class (symmetry)
         r = data.reward.reshape(-1)
         n = int(r.numel())
-        half = int(torch.unique(r[: max(n // 2, 1)]).numel())
+        # HALF-SAMPLE STRATIFIED BY EPISODE (2026-08-27). The half used to be
+        # the first n//2 rows IN DATA ORDER, so a rare level living only in a
+        # late episode read as "support grows" and resolved continuous -- a
+        # fragility of the OBSERVED fit too, not only of resamples: V4's
+        # Acrobot-s1 datasets resolved correctly by luck of where their single
+        # terminating episode sat. A fixed-seed random half of EPISODES
+        # removes the order dependence and makes the criterion mean what it
+        # claims ("support is stable across an episode split"). The residual
+        # coin-flip on a level carried by exactly one episode is inherent to
+        # any half-based criterion and errs toward continuous, the documented
+        # direction. The seed is an RNG stream choice, not a tuned constant
+        # (A2-compatible), fixed so resolution is a deterministic function of
+        # the data.
+        uniq_eps = torch.unique(data.episode_ids)
+        perm = torch.randperm(
+            int(uniq_eps.numel()), generator=torch.Generator().manual_seed(0)
+        ).to(uniq_eps.device)
+        half_eps = uniq_eps[perm[: max(int(uniq_eps.numel()) // 2, 1)]]
+        mask = torch.isin(data.episode_ids, half_eps)
+        half = int(torch.unique(r[mask]).numel())
         levels = torch.unique(r)
         full = int(levels.numel())
         if full == 1:

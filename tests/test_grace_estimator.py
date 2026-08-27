@@ -584,7 +584,10 @@ def test_replicate_pinning_prevents_mechanism_class_flip():
     ep = torch.arange(n_ep).repeat_interleave(T)
     action = (torch.rand(n_ep * T, generator=g) < 0.5).long()
     reward = torch.ones(n_ep * T)
-    reward[0] = 2.0  # the rare level
+    # the rare level, in an episode the stratified half INCLUDES so the
+    # observed data resolves categorical (mirrors the criterion's own split)
+    rare_ep = int(torch.randperm(n_ep, generator=torch.Generator().manual_seed(0))[0])
+    reward[rare_ep * T] = 2.0
     observed = EpisodeData(
         state=torch.randn(n_ep * T, 2, generator=g),
         action=action,
@@ -595,11 +598,12 @@ def test_replicate_pinning_prevents_mechanism_class_flip():
     src._resolve_reward_type(observed)
     assert src.resolved_reward_mechanism == "categorical[2]"
 
-    resample = EpisodeData(  # the rare-level episode was not drawn
-        state=observed.state[T:],
-        action=observed.action[T:],
-        reward=observed.reward[T:],
-        episode_ids=observed.episode_ids[T:],
+    keep = ep != rare_ep  # the rare-level episode was not drawn
+    resample = EpisodeData(
+        state=observed.state[keep],
+        action=observed.action[keep],
+        reward=observed.reward[keep],
+        episode_ids=observed.episode_ids[keep],
     )
     control = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
     control._resolve_reward_type(resample)
@@ -622,3 +626,46 @@ def test_replicate_pinning_prevents_mechanism_class_flip():
         raise AssertionError("pinning from an unresolved source must raise")
     except ValueError:
         pass
+
+
+def test_reward_resolution_half_is_stratified_by_episode_not_row_order():
+    """The half-sample keys on episode membership, not data order.
+
+    Pre-fix, the half was the FIRST n//2 rows, so a two-valued reward whose
+    second level sat only in the LAST episode always read "support grows" and
+    resolved continuous -- deterministically wrong on finite support. Post-fix
+    the half is a fixed-seed random half of episodes: a rare level in an
+    IN-HALF episode resolves categorical no matter where that episode sits in
+    data order. (A rare level in an out-of-half episode still resolves
+    continuous -- the criterion's inherent coin-flip, erring in the documented
+    direction -- which is what replicate PINNING neutralises where it
+    matters.)
+    """
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 20, 6
+    ep = torch.arange(n_ep).repeat_interleave(T)
+
+    # which episodes the fixed-seed split puts in the half, per the criterion
+    perm = torch.randperm(n_ep, generator=torch.Generator().manual_seed(0))
+    in_half = int(perm[0])
+
+    def resolve(rare_ep):
+        reward = torch.ones(n_ep * T)
+        reward[rare_ep * T] = 2.0
+        est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+        est._resolve_reward_type(
+            EpisodeData(
+                state=torch.randn(n_ep * T, 2, generator=g),
+                action=(torch.rand(n_ep * T, generator=g) < 0.5).long(),
+                reward=reward,
+                episode_ids=ep,
+            )
+        )
+        return est.resolved_reward_mechanism
+
+    # rare level in an in-half episode -> categorical, wherever it sits in
+    # data order (the last episode included, which the old row-half ALWAYS
+    # misread whenever it was not literally in the first half of rows)
+    assert resolve(in_half) == "categorical[2]"
+    out_half = int(perm[-1])
+    assert resolve(out_half) == "mdn"  # the documented conservative direction
