@@ -1110,6 +1110,42 @@ distinct data distributions are d_a_null + one per (env, seed).
   support and explode for BOTH mechanisms on CartPole s1 (h=200: ~4,500) —
   expected extrapolation, recorded so nobody reads it as a fit defect.
 
+#### Q2-A step 2 — the d_a_null machinery check (2026-08-27): CartPole works, Acrobot does not, and the cost question is closed
+
+`tools/run_q2a_danull.py` → `results/q2a_danull/report.json` (K = 500;
+the K = 60 first pass is preserved at `report_k60_cartpole.json` as the
+horizon-truncation measurement — each sweep extends the backup horizon ~one
+step, so K must exceed the discount horizon; at K = 60, CartPole s1 came
+back biased −13.3 on RTG ≈ 57 and the bias vanished at K = 500).
+
+* **Cost: NOT prohibitive — the design stands.** ~0.02 s per sweep; 80M
+  transition samples per row-pair; VI 10–12 s per mechanism per row;
+  estimator fit 5–7 s; target-policy rebuild ~60 s. The prereg's "many
+  sample(do=) calls per backup" worry is answered at cell one.
+* **CartPole, LinearGaussian: the machinery WORKS.** V̂ vs exact on-policy
+  RTG: RMSE 0.36 / 2.86 / 0.97 on mean |RTG| 6.5 / 56.6 / 17.3 (≈ 5–6%
+  relative), biases −0.02 / −0.69 / −0.38. With per-step reward error ~0
+  (Dirac R) this error is pure transition + termination-boundary — no
+  amplification. MDN is 3–10× worse throughout, matching step 1.
+* **Acrobot: NEITHER mechanism is usable as-is** — the check did its job
+  before any substantive cell. LG: RMSE 26–31 on |RTG| 36–80 with large
+  biases of BOTH signs (its 0.2–0.4 one-step error compounds). MDN: s0 is
+  its best row (RMSE 17.5, bias −0.6) but s1 is biased −42 and **s2
+  DIVERGES outright — RMSE 34,188, sup-change 18,377**: step 1's MDN
+  rollout divergence materialising as fitted-iteration divergence.
+  **Registered prediction 1's amplification branch FIRED here** ("much
+  worse means the fitted iteration AMPLIFIES rather than accumulates — a
+  finding about the iteration"): function approximation + bootstrapping +
+  off-support model samples. The Acrobot transition mechanism is now a
+  REQUIRED design decision before any Acrobot q2 cell (a mechanism class
+  fitted for deterministic multi-dim dynamics — neither an LG nor a 3-MDN).
+* Two pipeline notes for the assembled q2 block: (1) a diverging fitted
+  iteration must FAIL a cell, never report a number — wire sup-change into
+  the C3 conditions (the s2 row shows the failure shape); (2) the final
+  sup-change can be large at buffer states outside the anchor's support
+  while anchor-region V is stable (CartPole s1: supΔ 31 with RMSE 2.86) —
+  report it, don't gate on it blindly.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.
