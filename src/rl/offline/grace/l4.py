@@ -176,6 +176,10 @@ def point_id_interval(
         rng = np.random.default_rng(rep_seed)
         rdata = _resample_episode_data(data, rng)
         est_r = make_estimator(fit_seed)
+        # Symmetry rule, applied to the model CLASS: re-resolving the reward
+        # type on the resample let replicates fit a different mechanism than
+        # the observed fit (V4's Acrobot-s1 failure cluster). Pin it.
+        est_r.pin_reward_resolution(est0)
         fit_r = est_r.fit(rdata, **fk)
 
         class _Rep:
@@ -342,6 +346,8 @@ def lr_region_bounds(
         rng = np.random.default_rng(rep_seed)
         rdata = _resample_episode_data(data, rng)
         est_r = make_estimator(fit_seed)
+        # Symmetry rule, applied to the model CLASS (see point_id_interval).
+        est_r.pin_reward_resolution(estimator)
         fit_r = est_r.fit(rdata, **fk)
         # LR_r = 2(l_r(theta_hat_r) - l_r(theta_hat)): the replicate's own
         # optimum against the OBSERVED parameters, both on replicate data.

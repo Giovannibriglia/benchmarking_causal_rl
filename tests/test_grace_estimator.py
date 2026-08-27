@@ -568,3 +568,57 @@ def test_lr_at_theta_hat_is_zero():
     grads = [p.grad for p in model_c.parameters() if p.grad is not None]
     assert grads and any(float(g.abs().sum()) > 0 for g in grads)
     assert prior_logits.grad is not None
+
+
+def test_replicate_pinning_prevents_mechanism_class_flip():
+    """The symmetry rule applied to the model CLASS (the V4 s1 cluster).
+
+    Re-resolving the reward type per replicate let a resample that dropped a
+    rare level fit a DIFFERENT mechanism than the observed fit. The scenario
+    below is the exact replicate case: the observed data resolves
+    categorical[2]; a resample missing the rare level would resolve dirac
+    unpinned. Pinned, the replicate keeps the observed class.
+    """
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 20, 6
+    ep = torch.arange(n_ep).repeat_interleave(T)
+    action = (torch.rand(n_ep * T, generator=g) < 0.5).long()
+    reward = torch.ones(n_ep * T)
+    reward[0] = 2.0  # the rare level
+    observed = EpisodeData(
+        state=torch.randn(n_ep * T, 2, generator=g),
+        action=action,
+        reward=reward,
+        episode_ids=ep,
+    )
+    src = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    src._resolve_reward_type(observed)
+    assert src.resolved_reward_mechanism == "categorical[2]"
+
+    resample = EpisodeData(  # the rare-level episode was not drawn
+        state=observed.state[T:],
+        action=observed.action[T:],
+        reward=observed.reward[T:],
+        episode_ids=observed.episode_ids[T:],
+    )
+    control = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    control._resolve_reward_type(resample)
+    assert control.resolved_reward_mechanism.startswith("dirac"), (
+        "the control must flip, or this test is vacuous: "
+        f"{control.resolved_reward_mechanism}"
+    )
+
+    pinned = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    pinned.pin_reward_resolution(src)
+    pinned._resolve_reward_type(resample)
+    assert pinned.resolved_reward_mechanism == "categorical[2]"
+    assert pinned._reward_levels.tolist() == src._reward_levels.tolist()
+
+    unfitted = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    try:
+        LatentClassEstimator(state_dim=2, n_actions=2, seed=1).pin_reward_resolution(
+            unfitted
+        )
+        raise AssertionError("pinning from an unresolved source must raise")
+    except ValueError:
+        pass

@@ -499,6 +499,37 @@ class LatentClassEstimator:
         self.resolved_reward_mechanism = (
             None if reward_mechanism == "auto" else reward_mechanism
         )
+        # Set by pin_reward_resolution: replicate estimators adopt the observed
+        # fit's resolved mechanism class instead of re-resolving (symmetry).
+        self._reward_resolution_pinned = False
+        self.model = self._build()
+
+    def pin_reward_resolution(self, source: "LatentClassEstimator") -> None:
+        """Adopt ``source``'s resolved reward-mechanism class; never re-resolve.
+
+        THE SYMMETRY RULE, applied to the model CLASS: the procedure that
+        produced the observed statistic must produce the replicate statistics,
+        and re-resolving the reward type per replicate let some replicates fit
+        a DIFFERENT mechanism class than the observed fit. Measured in V4: on
+        Acrobot s1 (one terminating episode in 3000) 6/19 resamples flipped
+        the support-growth criterion to MDN-R -> scale floor -> failed
+        replicate -- a 20-40% failure budget that was an artifact of the flip,
+        not of the data (handoff, V4 s1 section). A replicate's resample draws
+        from the observed episodes, so the pinned support always covers it.
+        """
+        if source.resolved_reward_mechanism is None:
+            raise ValueError(
+                "source estimator has no resolution to pin (fit it, or call "
+                "_resolve_reward_type, first)"
+            )
+        self._reward_levels = (
+            None
+            if source._reward_levels is None
+            else source._reward_levels.clone().to(self.device)
+        )
+        self._reward_const = source._reward_const
+        self.resolved_reward_mechanism = source.resolved_reward_mechanism
+        self._reward_resolution_pinned = True
         self.model = self._build()
 
     # ---------------------------------------------------------------- build --
@@ -567,6 +598,8 @@ class LatentClassEstimator:
         """
         if self._reward_mechanism != "auto":
             return
+        if self._reward_resolution_pinned:
+            return  # replicate estimators keep the observed fit's class (symmetry)
         r = data.reward.reshape(-1)
         n = int(r.numel())
         half = int(torch.unique(r[: max(n // 2, 1)]).numel())
