@@ -1089,19 +1089,47 @@ wide margin, and **the D-D decorative-proxies finding should be expected to
 STRENGTHEN** — but every result measured through the old likelihood is
 re-run, not re-labelled.
 
-**⚠ OPEN, and it gates the Acrobot re-runs.** Acrobot s1 (T = 500) recovers
-1.0000 and stays MONOTONE but exhausts its backtrack budget (48) at
-iteration 9, so `finished=False` — which is an L4 abstention condition, i.e.
-Acrobot rows would abstain rather than report. Monotone + exhausted +
-correct is the signature of a line search whose DEPTH binds, and S10 applies
-directly: `max_backtracks = 6` was measured *never-binding* under the
-pre-S1c likelihood, and removing the T-fold proxy term changes the
-objective's curvature. That is a claim to measure, not assert:
-`tools/probe_backtrack_depth_s1c.py` sweeps the depth on the binding row
-with a converging CartPole row as control (a deeper budget must not change a
-fit that already converges). **Do not raise the depth on the strength of the
-argument alone**, and do not relabel the condition — that is precisely the
-S10 trap.
+**The line-search depth expired with it — RESOLVED BY MEASUREMENT (`d60cb23`).**
+Acrobot s1 (T = 500) recovered 1.0000 and stayed MONOTONE but exhausted its
+backtrack budget at iteration 9, so `finished=False` — an L4 abstention
+condition, i.e. Acrobot rows would have abstained rather than reported.
+Monotone + exhausted + correct is the signature of a line search whose DEPTH
+binds, and S10 applies exactly: `max_backtracks = 6` was measured
+*never-binding* **under the pre-S1c likelihood**, and removing the T-fold
+proxy term changes the objective's curvature. Measured rather than argued
+(`tools/probe_backtrack_depth_s1c.py`, `results/s1c_backtrack_depth.json`):
+
+| row | depth 6 | depth 10 | depth 14 |
+|---|---|---|---|
+| Acrobot s1 (binds) | exhausted, `finished=False`, ll −1,556,324 | **finished**, ll −1,312,563 | identical to 10 |
+| CartPole s0 (control) | finished, ll −42,654.398, n_iter 22 | identical | identical |
+
+Depth 10 recovers **243,761 further nats** and finishes; 14 is identical, so
+10 is non-binding rather than merely deeper. **The control is the half that
+makes it a measurement**: an already-converging fit is bit-identical at every
+depth, so a deeper budget cannot perturb a fit that already converges.
+Default raised 6 → 10. `backtrack_exhausted` still reports if it binds again
+— that is the flag working, not licence to raise again without measuring.
+
+#### The walk's stop is now DERIVED, not a step count (`02b275f`, ruling 2)
+
+A fixed step count is a constant and a relative-improvement threshold is a
+constant wearing a different hat; neither survives A2. The bound already
+carries a Monte-Carlo error, because `c(α)` is a QUANTILE of B replicates and
+`bootstrap.mc_error` is its resampling SE — in LR units. Converting it to
+TARGET units is free: the walk records every feasible iterate, so the bound
+under a perturbed threshold is the best target among iterates satisfying it,
+and the tolerance is the bound's spread across `c(α)`'s own MC interval.
+Below that, further movement is unmeasurable — smaller than the noise in the
+region the bound is taken over.
+
+`steps` becomes a SAFETY LIMIT (4000 in V4, since the 600-step probe was
+still descending where the old fixed 150 stopped at 0.67). Per the binding
+audit's own rule — a budget that never binds is a safety limit, one that
+binds is a knob and must be disclosed — a truncated walk keeps its valid
+INNER-APPROX semantics but gains a **`BUDGET-TRUNCATED`** sub-condition on
+the label, and `meta` records which of plateau/budget ended each start. So a
+truncated bound can never be mistaken for a converged one.
 
 #### The measurement that established it — confirmed 2026-08-27, the S1c fourth instance
 
