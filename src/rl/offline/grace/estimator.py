@@ -1113,58 +1113,69 @@ class LatentClassEstimator:
         # never read. Overridable, so a caller who wants it can ask.
         fit_kwargs.setdefault("consolidate", False)
         budget = fit_kwargs.pop("m_step_budget", None)
-        if budget is not None:
-            bs = int(fit_kwargs.get("batch_size") or 1024)
-            fit_kwargs["batch_size"] = bs
-            steps_per_epoch = max(1, math.ceil(stacked_rows(stacked) / bs))
-            fit_kwargs["epochs"] = max(1, round(int(budget) / steps_per_epoch))
-        self.model.fit(stacked, weights=w, **fit_kwargs)
-        self._m_step_proxies(data, resp, dict(fit_kwargs))
-        # Prior from the EPISODE responsibilities, never the row ones.
-        return resp.mean(dim=0)
+        bs = int(fit_kwargs.get("batch_size") or 1024)
+        fit_kwargs["batch_size"] = bs
 
-    def _m_step_proxies(self, data: EpisodeData, resp: torch.Tensor, fk: dict) -> None:
-        """Refit the proxy channels at EPISODE granularity (S1c).
-
-        **Why this is part of the same fix, not scope creep.** The stacked
-        M-step above fits every node on per-ROW copies, so ``p(Z|U)`` is
-        estimated from ``T`` duplicates of one draw and each episode enters
-        weighted by its own length — pseudo-replication in the M-step, and
-        length-weighting of an episode-constant quantity in the S1b sense
-        (episode length is an OUTCOME correlated with ``U`` through the
-        policy, so ``E_w[Z|U] != E[Z|U]``). Left alone it is also
-        INCOHERENT: EM would maximise ``p(Z|U)^T`` while the E-step scores
-        ``p(Z|U)``, so the M-step would no longer be maximising the objective
-        the fit reports, and the monotonicity guard would be watching the
-        wrong quantity.
-
-        One row per episode, the responsibility as the weight, the same
-        weighted-fit contract (N3). The proxies were already fitted by the
-        stacked call — this OVERWRITES that with the correct fit; the
-        redundant work is a small 1-D fit and is the price of ``model.fit``
-        having no node subset, not a design choice.
-        """
-        if not self.proxy_names:
-            return
-        uniq, _ = data.blocks()
-        n_ep = int(uniq.numel())
-        dev = data.state.device
-        u_ep = torch.cat(
-            [
-                torch.full((n_ep,), k, dtype=torch.long, device=dev)
-                for k in range(self.u_card)
-            ]
-        )
-        w_ep = torch.cat([resp[:, k] for k in range(self.u_card)])
-        fk.pop("m_step_budget", None)  # the stacked call already derived epochs
+        # PER-NODE, BECAUSE THE GRANULARITIES DIFFER (S1c). ``model.fit``
+        # fits every node on one frame, and there is no node subset -- so a
+        # single stacked call necessarily fits the episode-constant proxies
+        # on per-ROW duplicates. Fitting them correctly afterwards is not
+        # enough: the two pull against each other every M-step, the corrected
+        # objective DECREASES, and the fit dies of backtrack exhaustion
+        # (measured: 24 backtracks, 5 iterations, on d100 CartPole s0).
+        # Each channel is therefore fitted once, at its own granularity.
         from nbn.core.network import pack_parents
 
-        for name in self.proxy_names:
-            mech = self.model.mechanisms[name]
-            vals = data.first_rows(data.proxy[name].reshape(-1))  # (E,) — the draw
-            x = vals.repeat(self.u_card).reshape(-1, 1)
-            pa = pack_parents({"U": u_ep}, self.model.dag.parents(name))
-            mech.fit_local(x, pa, weights=w_ep, **fk)
+        def _epochs(rows: int):
+            if budget is None:
+                return None
+            return max(1, round(int(budget) / max(1, math.ceil(rows / bs))))
+
+        def _fit_node(node, frame, x, weights, rows):
+            mech = self.model.mechanisms[node]
+            kw = dict(fit_kwargs)
+            e = _epochs(rows)
+            if e is not None:
+                kw["epochs"] = e  # the step budget is per node, per its rows
+            mech.fit_local(
+                x,
+                pack_parents(frame, self.model.dag.parents(node)),
+                weights=weights,
+                **kw,
+            )
+            # Public re-registration: bumps the model's factor-cache version,
+            # which ``model.fit`` would have done. Without it a cached
+            # inference factor (query_batch's path) could survive a refit.
+            self.model.set_mechanism(node, mech)
+
+        n_rows = stacked_rows(stacked)
+        for node in self.model.dag.topological_order():
+            if node in self.proxy_names:
+                continue  # episode-constant: fitted below, once per episode
+            _fit_node(node, stacked, stacked[node], w, n_rows)
+
+        # Episode-constant channels: ONE row per episode, the responsibility
+        # as its weight. Fitting p(Z|U) on T duplicates is the same
+        # pseudo-replication as scoring it T times, and it length-weights an
+        # episode-constant quantity (S1b) -- episode length is an outcome
+        # correlated with U through the policy, so E_w[Z|U] != E[Z|U].
+        if self.proxy_names:
+            n_ep = int(data.blocks()[0].numel())
+            dev = data.state.device
+            u_ep = torch.cat(
+                [
+                    torch.full((n_ep,), k, dtype=torch.long, device=dev)
+                    for k in range(self.u_card)
+                ]
+            )
+            w_ep = torch.cat([resp[:, k] for k in range(self.u_card)])
+            ep_frame = {"U": u_ep}
+            for name in self.proxy_names:
+                vals = data.first_rows(data.proxy[name].reshape(-1))  # the draw
+                x = vals.repeat(self.u_card).reshape(-1, 1)
+                _fit_node(name, ep_frame, x, w_ep, int(u_ep.numel()))
+        # Prior from the EPISODE responsibilities, never the row ones.
+        return resp.mean(dim=0)
 
     # -------------------------------------------------------------------- EM --
     def _snapshot(self) -> dict:
