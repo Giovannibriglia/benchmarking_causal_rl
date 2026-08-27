@@ -961,6 +961,41 @@ carries gradients. The autograd leak at the threshold check landed
 separately (`f880840`). The V4 bounds block re-runs in full after the fix;
 the interval block is untouched and stands.
 
+##### The bounds block RE-RUN (2026-08-27, post 141ee6f/ef238a5/c7420db)
+
+All 12 rows re-ran with the fixed functional, replicate pinning and the
+stratified criterion (`results/v4/report.json`, bounds rows replaced; the
+pre-fix record is in git history at `2f5411d`). Three findings:
+
+1. **The walk mechanics are fixed.** Every row moves; multi-start spreads
+   are third-decimal (healthy variation, no fallback signatures); widths
+   0.05–0.17.
+2. **D-E: 6/6 walk rows cover truth**, Acrobot included. But the measured
+   relation to Balke–Pearl INVERTS the D8 expectation ("the I-blind LR
+   region is validly wider than BP"): the walk is much NARROWER (CartPole:
+   walk 0.08–0.14 vs BP 0.78–0.84). Two readings, both live: the
+   latent-class model's parametric assumptions (finite-K + mechanism
+   classes) are far stronger than BP's nonparametric ones, so its
+   confidence region is legitimately tight — and the walk is an inner
+   approximation whose width is BUDGET-LIMITED (finding 3), so part of the
+   narrowness is truncation. **The instrument-value gap is therefore NOT
+   yet a clean measurement anywhere**: it needs a walk run to plateau, and
+   it remains CartPole-only (BP invalid on 3-action Acrobot).
+3. **D-B-prime: 0/6 cover — and a 600-step probe attributes it to the STEP
+   BUDGET, not the region.** The designated exploration gate fired
+   genuinely this time: the min-walk on CartPole s0 descends 0.760 → 0.574
+   over 600 steps and is still descending where production's 150 steps
+   stopped at 0.67. So the under-coverage is inner-approximation
+   truncation. The disclosed inner-approximation semantics ("every bound is
+   achieved by some compatible model") remain TRUE — the bounds are valid
+   inner bounds — but as a COVERAGE gate the walk needs either a much
+   larger budget or a plateau-based stop (a relative-improvement criterion,
+   reported not thresholded, to stay inside A2). That is the open optimiser
+   decision; note D-B′ is also the drift arm, so once the budget question
+   is settled, any residual gap between the converged region and truth
+   reads as the episode-static model's bias under within-episode drift —
+   worth keeping separable.
+
 #### The s1 pattern — diagnosed: a CHECK artifact of reward-type resolution (S10)
 
 All seven high-failure rows (>20% replicate failures) are dataset-seed s1,

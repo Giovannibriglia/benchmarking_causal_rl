@@ -104,22 +104,28 @@ def main() -> int:
                 f"cf. the A2 two-action special case)  {walk}"
             )
     print(
-        "  instrument-value gap: CARTPOLE-ONLY (see docstring); on CartPole the\n"
-        "  walk rows are width-0 optimiser artifacts, so the gap is NOT\n"
-        "  computable from this run anywhere -- it awaits the walk fix."
+        "  instrument-value gap: CARTPOLE-ONLY (see docstring), and NOT YET a\n"
+        "  clean measurement: the walk is an inner approximation whose width\n"
+        "  is BUDGET-LIMITED (a 600-step probe on d_b_prime CartPole s0 was\n"
+        "  still descending, 0.760 -> 0.574, where production's 150 steps\n"
+        "  reached 0.67), so walk-vs-BP currently measures the optimiser\n"
+        "  budget as much as the model. A converged walk must precede the gap."
     )
 
     # ---- walk exploration gate --------------------------------------------
     degen = [r for r in bd if abs(r["walk_hi"] - r["walk_lo"]) < 1e-9]
+    print(f"\nWALK (bounds cells): {len(degen)}/{len(bd)} rows width-0")
+    for cell in ("d_e", "d_b_prime"):
+        rows_c = [r for r in bd if r["cell"] == cell]
+        cov = sum(1 for r in rows_c if r["walk_covered"])
+        print(f"  {cell:<10} walk coverage {cov}/{len(rows_c)}")
     print(
-        f"\nWALK (bounds cells): {len(degen)}/{len(bd)} rows width-0 with "
-        f"identical endpoints across starts"
-    )
-    print(
-        "  VERDICT: bounds FAIL on the optimiser, not on the bounds -- the\n"
-        "  interval result stands independently (the separable reading the\n"
-        "  pre-registration set up). Root cause diagnosed: see\n"
-        "  results/v4/walk_diagnosis.json and the handoff."
+        "  POST-FIX READING (2026-08-27, after 141ee6f/ef238a5/c7420db): the\n"
+        "  walk MOVES on every row with healthy multi-start spread and\n"
+        "  LR(theta-hat)=0 by construction. D-B-prime's under-coverage is\n"
+        "  INNER-APPROXIMATION TRUNCATION -- the step budget, not the region:\n"
+        "  the 600-step probe above still descends toward truth. The step\n"
+        "  budget (or a plateau-based stop) is the open optimiser decision."
     )
 
     # ---- the safeguards that fired ----------------------------------------
