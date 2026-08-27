@@ -428,9 +428,19 @@ def lr_region_bounds(
             # feasibility restoration: constraint-ascent until inside (capped)
             for _ in range(20):
                 ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
-                if float(2.0 * (ll_hat - ll)) <= c:
+                # ``.detach()`` before the float read, and free the per-row
+                # graph explicitly on BOTH exits: converting a live graph
+                # tensor warns, and on the break path it kept the whole
+                # full-dataset graph alive into the next step's forward --
+                # two resident graphs is what OOM'd the V4 run mid-flight
+                # (results/v4/driver.log). ``flat_grad`` frees the graph's
+                # buffers via backward; the ``del`` releases the break path
+                # and drops the reference promptly on the ascent path too.
+                if float(2.0 * (ll_hat - ll.detach())) <= c:
+                    del ll
                     break
                 g_l = flat_grad(ll)
+                del ll
                 with torch.no_grad():
                     n2 = torch.sqrt(dot(g_l, g_l)).clamp_min(1e-12)
                     for q, b_ in zip(params, g_l):
