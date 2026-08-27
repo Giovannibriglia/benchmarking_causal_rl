@@ -1205,14 +1205,25 @@ class LatentClassEstimator:
         max_iter: int = 30,
         tol: float = 1e-4,
         init: str = "proxy",
-        # 6, raised from 3 by the 2026-08-21 binding audit: at depth 3 a
-        # production-config CartPole fit exhausted MID-ASCENT on a step-size
-        # cliff (best rejected step worsened the objective by 3.3e-2 while
-        # accepted improvements were still 0.3-4%), and the deeper search
-        # recovered ~98 further nats before reaching a genuine fixed point.
-        # Depth 6 spans a 64x lr range; measured never-binding at the
-        # production configuration once the fixed-point grant below landed.
-        max_backtracks: int = 6,
+        # 10, raised from 6 on 2026-08-27 by the same rule that raised it from
+        # 3 in the 2026-08-21 binding audit: a depth measured NEVER-BINDING is
+        # a safety limit; a depth that BINDS is a knob, and S10 says such a
+        # condition EXPIRES when the estimator's semantics change. The S1c fix
+        # changed them -- removing the T-fold proxy term changes the
+        # objective's curvature -- and depth 6 then bound on d100 Acrobot s1
+        # (T = 500): exhausted at iteration 9, ``finished=False``, which is an
+        # L4 ABSTENTION condition, while the fit was monotone and recovering
+        # 1.0000. Measured, not argued (``tools/probe_backtrack_depth_s1c.py``,
+        # ``results/s1c_backtrack_depth.json``): depth 10 finishes and recovers
+        # 243,761 further nats (ll -1,556,324 -> -1,312,563); depth 14 is
+        # IDENTICAL to 10, so 10 is itself non-binding rather than merely
+        # deeper. Control, which is the half that makes it a measurement: the
+        # already-converging CartPole s0 fit is bit-identical at 6/10/14
+        # (ll -42654.398, n_iter 22), so a deeper budget cannot perturb a fit
+        # that already converges. ``backtrack_exhausted`` still reports if it
+        # binds again -- that is the flag working, not a reason to raise again
+        # without measuring.
+        max_backtracks: int = 10,
         temperature: float | None = None,
         n_anneal: int | None = None,
         deterministic: bool = True,
