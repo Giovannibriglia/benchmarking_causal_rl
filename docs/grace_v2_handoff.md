@@ -986,8 +986,21 @@ replicate resampling):
   episode-stratified rather than first-half-in-data-order. Until re-run,
   quote the budget with this note attached.
 * The remaining ~39 background failures (1–4 per row, s0/s2 included) are
-  NOT this path (R stays categorical there); attribution by channel:
-  `tools/attribute_replicate_failures.py` → `results/v4/replicate_attribution.json`.
+  NOT this path — attributed by exact replicate refit
+  (`tools/attribute_replicate_failures.py` →
+  `results/v4/replicate_attribution.json`, counts reproduce the recorded
+  4/19 and 3/19): **a PROXY MDN (V, W or Z — one channel at a time) on the
+  scale floor, R categorical throughout.** Mechanism: proxies are
+  episode-constant, so every episode contributes T identical copies of one
+  value and a resample-duplicated episode contributes 2T; a mixture
+  component can buy likelihood by spiking onto such a point mass. The
+  propensity scales with episode LENGTH, which unifies the s1 pattern:
+  both failure modes are episode-length-driven, which is why s1 — the
+  long-episode seed in both environments — is elevated everywhere. The
+  detector excluding these replicates is correct behaviour (their
+  likelihood is floor-measuring); the quotable decomposition of the 10.1%
+  budget is ~30 support-growth mis-resolutions (Acrobot s1) + ~39 proxy
+  point-mass collapses (background, length-elevated).
 
 #### Q2-A step 1 — transition model VALIDATED, with a split verdict (2026-08-27)
 

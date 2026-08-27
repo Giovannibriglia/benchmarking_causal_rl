@@ -1,0 +1,334 @@
+[
+ {
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "replicates": [
+   {
+    "rep_seed": 1,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 2,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 3,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 4,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (V: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "V": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": true
+   },
+   {
+    "rep_seed": 5,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (W: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "W": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": true
+   },
+   {
+    "rep_seed": 6,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 7,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 8,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 9,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 10,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 11,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 12,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 13,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (V: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "V": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 14,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 15,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 16,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (W: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "W": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 17,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 18,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 19,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   }
+  ]
+ },
+ {
+  "cell": "d100",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "replicates": [
+   {
+    "rep_seed": 1,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (W: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "W": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": true
+   },
+   {
+    "rep_seed": 2,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 3,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 4,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 5,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 6,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (Z: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "Z": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 7,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 8,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 9,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 10,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 11,
+    "resolved_R": "categorical[2]",
+    "dirty": "degenerate mechanism (V: 1.00 on the scale floor)",
+    "degenerate_channels": {
+     "V": 1.0
+    },
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 12,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 13,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 14,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 15,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 16,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 17,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 18,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   },
+   {
+    "rep_seed": 19,
+    "resolved_R": "categorical[2]",
+    "dirty": "",
+    "degenerate_channels": {},
+    "finished": true,
+    "backtrack_exhausted": false
+   }
+  ]
+ }
+]
