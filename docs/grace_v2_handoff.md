@@ -20,6 +20,7 @@ these, not rediscover them.**
 | **A2** | **No calibration constants.** No `k`, no `noise_ref`, no tuned tolerance, no discretisation in the estimator. | v1 died of them. Where a threshold seems needed, build a null from the data instead (see S1). |
 | **S1** | **Nulls at EPISODE granularity**, never transition. | `U`, the proxies and the instrument are all episode-constant, so effective *n* is the episode count. Step-level resampling shatters the blocks and gives a null far too tight. Five instances: C1's splitter, L5's bootstrap, the k-rank permutation, and two preflight checks. |
 | **S1b** | **RULE (operational, deliberately broad): match the statistic's unit of observation to the unit at which the tested quantity varies.** A quantity constant within an episode (`U`, `Z`, `W`, `I`) enters statistics as **one row per episode**; a per-step companion is reduced to an episode statistic (the **mean**, never the sum — a sum is proportional to length by construction). Quantities that genuinely vary within an episode stay at transition level, with the null still clustered by episode. | **In RL, episode length is an OUTCOME.** Pooling an episode-constant quantity at transition level weights each episode by its own length. **MECHANISM (see below) — the rule is broader than the mechanism, on purpose.** Measured: `corr(I,U)` = **−0.590** at transition level against **−0.034** at episode level, on an instrument drawn from its own Bernoulli that never reads `U`. The permutation null does not rescue it — permuting whole episodes destroys the length-weighting in the null while the observed statistic keeps it, so it surfaces as a huge z rather than as noise. |
+| **S1c** | **A quantity that is constant within an episode enters the likelihood — and every statistic — ONCE PER EPISODE, never once per row.** | Per-row entry silently multiplies its weight by the episode length, and episode length is an OUTCOME. Four instances in four modules, one of them documented as a trap and recurring anyway: (1) the length-weighted exogeneity statistic (S1b); (2) L4's walk constraint carrying `T·log p_U(k)` per episode (the V4 bounds failure); (3) the per-row-prior trap `_episode_log_liks`'s own docstring warned about; (4) **the proxies, measured 2026-08-27**: episode-constant Z/W/V enter the likelihood per row, weighting each proxy channel by exactly T (d100 CartPole s0: between-class gaps 78–90 nats as coded vs ~5 counted once — the *dominant* channels, vs A 0.78 / R 39.7). Belongs in the paper's methods discussion, not only here. |
 | **S2** | Test the **conditional** claim, never its marginal shadow. | Marginals are nonzero *by design*: proxy⟂A reads +0.50 marginally vs +0.003 given `U`; proxy⟂S reads 0.226 marginally because `U→A→S`. And conditioning on *more* can be wrong — `A` is a **collider** on `I→A←U`, so conditioning on it alone opens `I→U→R`. |
 | **S3** | A statistic must be compared against **a null that describes the statistic actually computed**. | A *maximum* over 8 tests judged by a per-test 3-SD cutoff runs ~8× the intended false-alarm rate — it fired on provably covariate-free proxies. Build the null of the max. Likewise a *binning failure* (Acrobot's reward is −1 almost everywhere) is not an uninformative view. |
 | **S4** | Validate the **generator against ground truth**, and the estimator against the generator. Never mutually. | If each validated the other, a shared misconception passes in silence. Preflight reads logged `U` and declared parameters only — never L5, never the estimator. |
@@ -939,20 +940,26 @@ exactly: recomputing with the e_step-mirroring functional gives
 **LR(θ̂) = 0.0 to the bit** (per-row U sums −42,340/−30,763 per class are the
 injected tilt; the S marginal adds −36.7).
 
-Two consequences beyond the 8 frozen rows. (1) **The 4 rows that "moved" are
-also invalid**: d_b_prime CartPole s0 has LR(θ̂) = 2,498 ≈ 3c — small enough
-for restoration to bridge in two steps, so the walk ran, but inside an
-offset region. The frozen/moved split is just the mismatch's magnitude
-(rows × prior skew) against c, which is also why the frozen rows are the
-LARGE-c rows — the inversion that flagged this. (2) The exactness test's RF
-parametrisation moving is consistent: what differs on production is the
-per-row U tilt's size, not the walk. **Fix not yet applied** — the fix is to
-make the walk's functional mirror `e_step` exactly (A, R, proxies per row;
-prior once per episode; S excluded as on the reference side), a separate
-reviewed change together with the autograd-leak fix at the threshold check
-(l4.py:431 converts a `requires_grad` tensor with graphs held across the
-restoration loop; the V4 run OOM'd once mid-run on exactly this —
-`results/v4/driver.log`).
+Two consequences beyond the 8 frozen rows. (1) **All twelve bounds rows are
+invalid, ruled 2026-08-27**: d_b_prime CartPole s0 has LR(θ̂) = 2,498 ≈ 3c —
+small enough for restoration to bridge in two steps, so the walk ran, but
+inside an offset region. The frozen/moved split is just the mismatch's
+magnitude (rows × prior skew) against c, which is also why the frozen rows
+are the LARGE-c rows — the inversion that flagged this. (2) The exactness
+test's RF parametrisation moving is consistent: what differs on production
+is the per-row U tilt's size, not the walk.
+
+**FIXED by deduplication, ruled and landed 2026-08-27 (`141ee6f`).** Not by
+re-synchronising the two implementations — two implementations of one
+functional that must agree by discipline is what produced the bug, and
+re-synchronising re-arms it. `_episode_log_liks` is now **the one
+construction site** (gains `model=`/`differentiable=` for L4's clone walk);
+the L4 wrapper delegates, so agreement is structural. The invariant
+`LR(θ̂) == 0` is pinned by `test_lr_at_theta_hat_is_zero` — the one-line
+test that would have caught this — which also asserts the constraint still
+carries gradients. The autograd leak at the threshold check landed
+separately (`f880840`). The V4 bounds block re-runs in full after the fix;
+the interval block is untouched and stands.
 
 #### The s1 pattern — diagnosed: a CHECK artifact of reward-type resolution (S10)
 
@@ -981,10 +988,15 @@ replicate resampling):
   mechanism class than the observed fit (a symmetry-rule violation induced
   by re-resolving per replicate).
 * Consequence for the verdict: the 10.1% failure budget is **part artifact**.
-  The fix direction (a decision, not applied): pin the observed fit's
-  resolved mechanism class for its replicates, and/or make the half-sample
-  episode-stratified rather than first-half-in-data-order. Until re-run,
-  quote the budget with this note attached.
+  **Both fixes ruled and landed 2026-08-27, as separate commits**: replicate
+  pinning (`ef238a5` — the symmetry rule applied to the model CLASS: the
+  observed fit's resolved mechanism travels to its replicates via
+  `pin_reward_resolution`, wired into both L4 statistic closures) and
+  episode-stratified half-sampling (`c7420db` — the old half was the first
+  n//2 rows IN DATA ORDER, a fragility of the observed fit too; Acrobot s1
+  resolved correctly only by luck of where its one terminating episode sat).
+  Pinning fixes the symmetry violation; stratifying fixes the criterion.
+  Until the affected blocks re-run, quote the budget with this note.
 * The remaining ~39 background failures (1–4 per row, s0/s2 included) are
   NOT this path — attributed by exact replicate refit
   (`tools/attribute_replicate_failures.py` →
@@ -1001,6 +1013,39 @@ replicate resampling):
   likelihood is floor-measuring); the quotable decomposition of the 10.1%
   budget is ~30 support-growth mis-resolutions (Acrobot s1) + ~39 proxy
   point-mass collapses (background, length-elevated).
+
+#### ⚠ THE PROXIES ENTER THE LIKELIHOOD PER ROW — confirmed 2026-08-27, the S1c fourth instance
+
+Checked before any fix was applied, on Giovanni's direction, because it
+outranks the fixes: under the true generative model an episode's likelihood
+carries `p(Z|U) p(W|U) p(V|U)` **once**; as coded, `_episode_log_liks` sums
+the proxy channels per row, so each proxy channel is weighted by the episode
+length. Verified structurally (proxies are transition-aligned in
+`EpisodeData`, within-episode variance ~1e-10 — exactly episode-constant)
+and quantitatively on fitted d100 CartPole s0: per-episode between-class
+gaps **Z 90.5 / W 86.4 / V 78.5 nats as coded** against **~5 nats counted
+once** — per-row/once ratio median 15.0 vs median episode length (mean T
+16.6). **The proxies are the dominant likelihood channels by an artifact of
+weighting** (A contributes 0.78, R 39.7). The M-step has the same shape: the
+proxy MDN is fitted on T duplicates per episode (2T when a resample
+duplicates an episode), which is the point-mass-collapse mechanism above.
+
+Honest scope of what it explains: the saturation link is **partial** — on
+this short-T dataset removing the over-weight does NOT de-saturate (R's
+39-nat gap saturates alone; saturation is over-determined at short T); at
+T = 500 the proxy term is ~2,500 nats as coded vs ~5 once, so long-T
+behaviour is where the amplification lives. And it means every
+latent-recovery number was produced under a misspecified likelihood — not
+necessarily wrong (over-weighting an informative channel can still recover
+the latent, and recovery held 0.98–1.0), but **known before anything is
+re-run**. Changing the weighting is an estimator-semantics decision
+(S10: every downstream condition re-examines; it touches D-D's
+decorative-proxies result, the proxy warm start, and both calibration
+layers) — **not yet ruled**. The refactor that closed the walk bug carries
+the current semantics unchanged, with the misspecification recorded in
+`_episode_log_liks`'s docstring. Bounds cells are untouched by it (their
+fits declare no proxies), so the V4 bounds re-run does not wait on the
+ruling.
 
 #### Q2-A step 1 — transition model VALIDATED, with a split verdict (2026-08-27)
 
