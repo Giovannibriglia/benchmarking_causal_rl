@@ -148,14 +148,31 @@ def main() -> int:
             "mechanisms": {},
         }
 
-        for name in ("linear_gaussian", "mdn"):
+        for name in ("linear_gaussian", "mdn", "mdn1"):
             torch.manual_seed(SPLIT_SEED)
             t_fit = time.time()
             if name == "linear_gaussian":
                 mech = LinearGaussianMechanism()
                 mech.fit_local(SN_tr, pa_tr)
             else:
-                mech = MDNMechanism(num_components=3, hidden=(64, 64))
+                # ``mdn1`` -- ONE component: the missing middle for
+                # deterministic dynamics. LG is linear (hence Acrobot's
+                # 0.2-0.4 one-step error); a 3-component mixture is MORE than
+                # deterministic dynamics need (hence the mixture pathology and
+                # the fitted-iteration divergence on Acrobot s2). A single
+                # component is a flexible neural mean with a learned scale and
+                # nothing to destabilise.
+                #
+                # THE FLOOR-PINNING CAVEAT DOES NOT APPLY HERE, deliberately:
+                # the transition mechanism is NOT likelihood-bearing --
+                # ``_episode_log_liks`` scores A, R and the proxies, never S --
+                # so if the scale collapses onto ``min_scale`` on deterministic
+                # dynamics that is the CORRECT answer, and the near-
+                # deterministic sampling it produces is exactly what the q2
+                # backups want. Do not "fix" it.
+                mech = MDNMechanism(
+                    num_components=1 if name == "mdn1" else 3, hidden=(64, 64)
+                )
                 steps_per_epoch = max(1, int(np.ceil(S_tr.shape[0] / BATCH)))
                 epochs = max(1, round(MDN_STEP_BUDGET / steps_per_epoch))
                 mech.fit_local(
@@ -176,7 +193,7 @@ def main() -> int:
                 per_dim = torch.sqrt((err**2).mean(dim=0))
                 logp = mech.log_prob(SN_te, pa_te)
                 # ---- scale-floor degeneracy (the discrete-R lesson) --------
-                if name == "mdn":
+                if name.startswith("mdn"):
                     _, _, scale = mech._params_from_parents(pa_te, (pa_te.shape[0],))
                 else:
                     scale = mech._scale().reshape(1, -1)
