@@ -310,7 +310,9 @@ def lr_region_bounds(
     alpha: float = 0.1,
     b: int = 39,
     fit_seed: int = 0,
-    steps: int = 300,
+    steps: int = 300,  # SAFETY LIMIT, not a target: the walk stops on the
+    # plateau test below. If it binds, the row is BUDGET-TRUNCATED and says so.
+    plateau_window: int = 50,  # measurement interval for the plateau test
     opt_lr: float = 1e-3,
     n_starts: int = 4,
     penalty: float = 100.0,  # retained in the signature; the projected walk
@@ -388,7 +390,22 @@ def lr_region_bounds(
     # surface: the target gradient is projected onto the constraint's tangent
     # space, feasibility is restored by constraint-ascent steps when the walk
     # drifts, and only feasible iterates update the bound.
-    def extremum(sign: float, perturb: float = 0.0) -> float:
+    # ---- the walk's STOP, derived from the bound's own Monte-Carlo error ----
+    # A fixed step count is a constant, and a relative-improvement threshold is
+    # a constant wearing a different hat; neither survives A2. The bound
+    # already carries a Monte-Carlo error, because ``c(alpha)`` is a QUANTILE
+    # of B replicates: ``mc_error`` is its resampling standard error, in LR
+    # units. Converting it into TARGET units is free, because the walk records
+    # every feasible iterate -- the bound under a threshold ``c'`` is just the
+    # best target among iterates that satisfy it. So the tolerance is the
+    # spread of the bound over the threshold's own MC interval. Below that,
+    # further movement is unmeasurable: it is smaller than the noise in the
+    # region the bound is taken over.
+    se_c = null.mc_error(1 - alpha)
+    if not np.isfinite(se_c):
+        se_c = 0.0
+
+    def extremum(sign: float, perturb: float = 0.0):
         model_c = copy.deepcopy(estimator.model)
         for p_ in model_c.parameters():
             p_.requires_grad_(True)
@@ -411,7 +428,23 @@ def lr_region_bounds(
             return sum((x * y).sum() for x, y in zip(a, b))
 
         best = None
-        for _ in range(steps):
+        seen: list[tuple[float, float]] = []  # (LR, target) of feasible iterates
+        stopped_by = "budget"
+
+        def bound_at(c_limit: float):
+            """The bound this walk would report at threshold ``c_limit``."""
+            vals = [t for lr, t in seen if lr <= c_limit]
+            return (max(vals) if sign > 0 else min(vals)) if vals else None
+
+        def mc_tolerance():
+            """The bound's own MC spread, in TARGET units (0 if unresolved)."""
+            hi_b, lo_b = bound_at(c + se_c), bound_at(max(c - se_c, 0.0))
+            if hi_b is None or lo_b is None:
+                return 0.0
+            return abs(hi_b - lo_b)
+
+        window_start_best = None
+        for step in range(steps):
             prior = torch.softmax(prior_logits, dim=0)
             tgt = target_of_model(model_c, prior)
             ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
@@ -451,15 +484,29 @@ def lr_region_bounds(
                 ll_v = _observed_ll_differentiable(
                     model_c, prior_logits, estimator, data
                 )
-                if float(2.0 * (ll_hat - ll_v)) <= c:  # FEASIBLE iterate only
+                lr_v = float(2.0 * (ll_hat - ll_v))
+                if lr_v <= c:  # FEASIBLE iterate only
+                    seen.append((lr_v, tgt_v))
                     if best is None or sign * tgt_v > sign * best:
                         best = tgt_v
+            # PLATEAU TEST, once per window: has the bound improved by more
+            # than its own MC error? The window is a measurement interval, not
+            # a tolerance -- the quantity compared against is derived.
+            if (step + 1) % plateau_window == 0:
+                if window_start_best is not None and best is not None:
+                    gained = sign * (best - window_start_best)
+                    tol = mc_tolerance()
+                    if tol > 0.0 and gained < tol:
+                        stopped_by = "plateau"
+                        break
+                window_start_best = best
         if best is None:
             # never feasible -- fall back to theta_hat's own target (always
             # feasible: LR(theta_hat) = 0)
             with torch.no_grad():
                 best = float(target_of_model(estimator.model, fit.prior))
-        return best
+            stopped_by = "never-feasible"
+        return best, stopped_by
 
     # MULTI-START (ruled 2026-08-24): reduces under-exploration risk on a
     # region with no convexity guarantee; the per-start spread is reported --
@@ -467,16 +514,25 @@ def lr_region_bounds(
     # practice, which is worth knowing. Start k perturbs the clone's
     # parameters deterministically by seed before the walk.
     def extremum_multi(sign: float):
-        vals = [extremum(sign)]
+        out = [extremum(sign)]
         for k in range(1, n_starts):
             torch.manual_seed(fit_seed * 1000 + k)  # perturbation stream
-            vals.append(extremum(sign, perturb=0.01 * k))
-        return vals
+            out.append(extremum(sign, perturb=0.01 * k))
+        return [v for v, _ in out], [why for _, why in out]
 
-    his = extremum_multi(+1.0)
-    los = extremum_multi(-1.0)
+    his, why_hi = extremum_multi(+1.0)
+    los, why_lo = extremum_multi(-1.0)
     hi = max(his)
     lo = min(los)
+    # A budget that never binds is a safety limit; a budget that BINDS is a
+    # knob and must be disclosed (the binding audit's own rule). A walk that
+    # ran out of steps is still a valid INNER bound -- every reported value is
+    # achieved by some compatible model -- but it is not a converged one, so
+    # it carries a sub-condition and is never mistaken for one.
+    truncated = [w for w in (why_hi + why_lo) if w == "budget"]
+    label = fit.estimate(torch.tensor(0.0)).label()
+    if truncated:
+        label = f"{label} BUDGET-TRUNCATED({len(truncated)}/{len(why_hi + why_lo)})"
     return L4Result(
         kind="bounds",
         inner_approximation=True,
@@ -485,9 +541,14 @@ def lr_region_bounds(
         alpha=alpha,
         b=b,
         failure_rate=null.failure_rate,
-        label=fit.estimate(torch.tensor(0.0)).label(),
+        label=label,
         meta={
             "c_alpha": c,
+            "c_alpha_mc_error": se_c,
+            "walk_termination": {"hi": why_hi, "lo": why_lo},
+            "budget_truncated": bool(truncated),
+            "max_steps": steps,
+            "plateau_window": plateau_window,
             "start_spread": {
                 "lo": [round(v, 4) for v in sorted(los)],
                 "hi": [round(v, 4) for v in sorted(his)],

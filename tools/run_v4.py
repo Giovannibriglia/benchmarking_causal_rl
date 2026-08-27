@@ -241,7 +241,13 @@ def main() -> int:
                 alpha=ALPHA,
                 b=B,
                 fit_seed=FIT_SEED,
-                steps=150,
+                # ``steps`` is now a SAFETY LIMIT: the walk stops when its
+                # per-window gain falls below the bound's own Monte-Carlo
+                # error (derived from c(alpha)'s B replicates), and reports
+                # which of the two ended it. Generous, because the 600-step
+                # probe on d_b_prime CartPole s0 was still descending
+                # (0.760 -> 0.574) where the old fixed 150 stopped at 0.67.
+                steps=4000,
                 opt_lr=1e-3,
                 n_starts=3,
             )
@@ -253,6 +259,8 @@ def main() -> int:
                     "walk_covered": (res.kind == "bounds")
                     and (res.lo - 1e-9 <= 0.5 <= res.hi + 1e-9),
                     "inner_approximation": res.inner_approximation,
+                    "budget_truncated": res.meta.get("budget_truncated"),
+                    "walk_label": res.label,
                     "reason": res.reason,
                     "meta": {
                         k: v
