@@ -58,7 +58,15 @@ N_EVAL = 50  # anchor rollouts; deterministic policy+env => RTG is exact V^pi
 MAX_STEPS = 500
 BUFFER_CAP = 20_000  # backup buffer: dataset states, subsampled
 M_SAMPLES = 8  # transition draws per backup row
-K_ITERS = 60  # fitted-iteration sweeps (final sup-change REPORTED, not gated)
+# Fitted-VI sweeps. Each sweep extends the effective backup horizon by ~one
+# step, so K must exceed the discount horizon: at gamma = 0.99, K = 500 puts
+# the truncation tail at gamma^K ~ 0.7% of V. Measured first at K = 60 (2.7s
+# of VI): CartPole s1 (RTG ~ 57) came back biased -13.3 -- HORIZON
+# TRUNCATION, sup-change still 1.14 -- which is the measured reason for this
+# value. The cost answer that licenses it: 0.02 s/sweep, so K = 500 is ~10s.
+K_ITERS = 500
+SWEEP_CHUNK = 4096  # rows per interventional_sweep call; one 20k-row call
+# OOM'd on Acrobot (query_batch expands rows x particles in one shot)
 V_EPOCHS = 3  # regression passes per sweep
 BATCH = 4096
 FK = dict(max_iter=30, m_step_budget=400, batch_size=4096)
@@ -188,11 +196,20 @@ def main() -> int:
         )
         S_buf = t_(state[idx])
         a_buf = pi(S_buf)
-        r_hat = est.interventional_sweep(S_buf, a_buf.tolist(), fit).value.reshape(-1)
-        # query_batch runs under inference mode; its tensors raise if saved for
-        # backward. The regression target must leave that lineage.
+        # Chunked: query_batch expands rows x particles, and the full 20k
+        # buffer in one call OOM'd on Acrobot. query_batch also runs under
+        # inference mode; its tensors raise if saved for backward, so the
+        # regression target leaves that lineage via numpy.
+        parts = []
+        for j in range(0, S_buf.shape[0], SWEEP_CHUNK):
+            v = est.interventional_sweep(
+                S_buf[j : j + SWEEP_CHUNK],
+                a_buf[j : j + SWEEP_CHUNK].tolist(),
+                fit,
+            ).value.reshape(-1)
+            parts.append(v.detach().cpu().numpy())
         r_hat = torch.as_tensor(
-            r_hat.detach().cpu().numpy(), dtype=torch.float32, device=device
+            np.concatenate(parts), dtype=torch.float32, device=device
         )
 
         # ---- transition mechanisms (fit on the full dataset) ----------------
