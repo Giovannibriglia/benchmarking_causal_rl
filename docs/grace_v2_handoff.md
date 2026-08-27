@@ -885,6 +885,138 @@ values, L4 bounds — is provisional**. `Estimate.label()` carries
 one thing worse than measuring late. The productive work meanwhile is the V-D
 design document, which needs no optimiser.
 
+### V4 — THE L4 GATE: verdict accepted (2026-08-27)
+
+Run complete (48 rows, `results/v4/report.json`); verdict assembled by
+`tools/v4_verdict.py` (read-only render — run it for the tables).
+
+**Intervals PASS.** Coverage 32/36 = 88.9% against nominal 90%; all four
+misses are hair's-breadth (outside by 0.0001–0.0059) and at the
+strong-identification end; the weak end (d ≤ 0.25) is 18/18. Collapse behaves
+as designed. **d025's widths are 0.05–0.16, recorded as MEASURED** — the
+pre-registration wrote "~0", and small is a measurement where silence is not.
+
+**Bounds FAIL on the optimiser, not on the bounds** — 8/12 walk rows return
+width 0 with all three starts on an identical endpoint. The separable reading
+the pre-registration set up: an optimiser finding, with the interval result
+standing independently. Two safeguards earned their place: **multi-start**,
+mandated as insurance, became the *detector* (three starts on one endpoint is
+unambiguous), and **D-B-prime's coverage row** was designated the empirical
+exploration test and fired. Neither failure would have been visible without
+them.
+
+**The Balke–Pearl anchor is CARTPOLE-ONLY, now measured** (flagged as a
+possibility at D8, confirmed here): the anchor filters to in-pair actions
+{0, 1}, and on 3-action Acrobot BP misses truth on two seeds. D-E's Acrobot
+rows have no valid closed-form reference and the instrument-value gap cannot
+be computed there. Same family as the A2 gate's two-action special case
+(Cluster A above); on CartPole the gap awaits the walk fix.
+
+#### The walk diagnosis (2026-08-27) — the constraint measures the wrong functional
+
+`tools/diagnose_l4_walk.py` on one frozen row (d_e CartPole s0) and one
+moving row (d_b_prime CartPole s0); log at `results/v4/walk_diagnosis.log`,
+data `results/v4/walk_diagnosis.json`. The four prescribed checks all come
+back CLEAN — starts distinct (param distances 0.29/0.59), target gradient
+non-zero (|g_t| ≈ 1.06), the feasibility gate rejecting *correctly*, one
+tangent step moving LR by only ~0.15 — because the defect is upstream of all
+four:
+
+> **`_observed_ll_differentiable` and `fit.final_ll` compute DIFFERENT
+> functionals.** `final_ll` mirrors `e_step`: per-row log-liks of the
+> channels (A, R, proxies) summed per episode, prior added ONCE per episode.
+> The walk's functional calls full `model.log_prob`, which also includes the
+> S marginal AND `U`'s mechanism log-prob **per row** — each class column
+> gets `T·log p_U(k)` per episode instead of `log p_U(k)` once. That is the
+> documented "classic bug that makes the posterior scale with episode
+> length" (`_episode_log_liks` docstring), sitting in the L4 walk.
+
+Measured on the frozen row: `LR(θ̂) = 70,686` against `c = 821` — the walk
+starts 86× outside its own region at the UNPERTURBED θ̂ clone, 150 steps of
+restoration cannot close it, no iterate is ever feasible, and the fallback
+returns θ̂'s target for every start: width 0, identical endpoints. Verified
+exactly: recomputing with the e_step-mirroring functional gives
+**LR(θ̂) = 0.0 to the bit** (per-row U sums −42,340/−30,763 per class are the
+injected tilt; the S marginal adds −36.7).
+
+Two consequences beyond the 8 frozen rows. (1) **The 4 rows that "moved" are
+also invalid**: d_b_prime CartPole s0 has LR(θ̂) = 2,498 ≈ 3c — small enough
+for restoration to bridge in two steps, so the walk ran, but inside an
+offset region. The frozen/moved split is just the mismatch's magnitude
+(rows × prior skew) against c, which is also why the frozen rows are the
+LARGE-c rows — the inversion that flagged this. (2) The exactness test's RF
+parametrisation moving is consistent: what differs on production is the
+per-row U tilt's size, not the walk. **Fix not yet applied** — the fix is to
+make the walk's functional mirror `e_step` exactly (A, R, proxies per row;
+prior once per episode; S excluded as on the reference side), a separate
+reviewed change together with the autograd-leak fix at the threshold check
+(l4.py:431 converts a `requires_grad` tensor with graphs held across the
+restoration loop; the V4 run OOM'd once mid-run on exactly this —
+`results/v4/driver.log`).
+
+#### The s1 pattern — diagnosed: a CHECK artifact of reward-type resolution (S10)
+
+All seven high-failure rows (>20% replicate failures) are dataset-seed s1,
+both environments, every failure `degenerate_mechanism`. Diagnosed at the
+data level, no fits needed (`results/v4/report.json` diagnostics + exact
+replicate resampling):
+
+* **s1 is the long-episode seed**: Acrobot s1 has **exactly 1 episode in
+  3000 that terminates** (all others truncate at T=500; CartPole s1 means
+  131/86 steps vs 15–46 on s0/s2). The terminal step's reward creates a
+  ONE-EPISODE rare level (`0.0`, or gate+terminal `4.0/10.0/20.0`).
+* On an episode resample that draws the rare-level episode but lands it
+  only in the second half of the data order, `_resolve_reward_type`'s
+  half-vs-full support-growth criterion **mis-resolves R as continuous →
+  MDN-R on two-atom data → scale floor → `degenerate_mechanism` → failed
+  replicate.** Reproducing the exact resamples (seeds `fit_seed+1+i`)
+  predicts the recorded failure counts on every Acrobot s1 row: 6/6, 6/7,
+  6/6, 6/6, 6/8.
+* This is an **S10 instance recorded in advance by its own docstring**:
+  "errs toward CONTINUOUS … merely restores the previous behaviour" was
+  written when MDN-R *was* the previous behaviour; discrete-R then made
+  MDN-R a flagged failure, and the harmless error direction became a
+  20–40% replicate-failure budget. The failed replicates are not broken
+  fits of the estimand — they are replicates fitted with a DIFFERENT
+  mechanism class than the observed fit (a symmetry-rule violation induced
+  by re-resolving per replicate).
+* Consequence for the verdict: the 10.1% failure budget is **part artifact**.
+  The fix direction (a decision, not applied): pin the observed fit's
+  resolved mechanism class for its replicates, and/or make the half-sample
+  episode-stratified rather than first-half-in-data-order. Until re-run,
+  quote the budget with this note attached.
+* The remaining ~39 background failures (1–4 per row, s0/s2 included) are
+  NOT this path (R stays categorical there); attribution by channel:
+  `tools/attribute_replicate_failures.py` → `results/v4/replicate_attribution.json`.
+
+#### Q2-A step 1 — transition model VALIDATED, with a split verdict (2026-08-27)
+
+`tools/validate_transition_model.py` → `results/q2a_transition/report.json`.
+Held-out (episode-split) one-step and open-loop multi-step error along
+logged action sequences (the logged trajectory IS ground truth —
+deterministic dynamics), both candidate mechanisms, per catalogue fact 3 the
+parents are (S, A). Note the d-sweep shares trajectories across d, so the
+distinct data distributions are d_a_null + one per (env, seed).
+
+* **CartPole: LinearGaussian is essentially exact** — one-step 0.0008–0.0014
+  normalised RMSE, open-loop error ≤ 0.05 at horizon 50. MDN is 30–100×
+  worse one-step (0.03–0.13). LG's residual scale sits on the `min_scale`
+  floor on 3 of 4 dims (predicted: deterministic dynamics, the discrete-R
+  property) — fine for sampling/backups, but its log-densities are
+  ceiling-pinned and must not become likelihood-bearing without the same
+  treatment R got.
+* **Acrobot: the verdict flips** — LG one-step 0.20–0.41 (genuinely
+  nonlinear dynamics), MDN 0.08–0.32. But MDN's open-loop rollouts DIVERGE
+  catastrophically on s1 (normalised error 242–489 from horizon 10) while
+  LG stays 0.4–1.2 to horizon 499.
+* **For q2's fitted iteration the load-bearing metric is ONE-STEP accuracy**
+  (backups sample s′ at logged states; the model is never rolled far), so:
+  LG on CartPole is unambiguous; on Acrobot neither mechanism is clean and
+  the choice (or a better mechanism) is a design decision the d_a_null
+  machinery check should inform. Long-horizon mean-rollouts leave the data
+  support and explode for BOTH mechanisms on CartPole s1 (h=200: ~4,500) —
+  expected extrapolation, recorded so nobody reads it as a fit defect.
+
 ### Open threads
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.

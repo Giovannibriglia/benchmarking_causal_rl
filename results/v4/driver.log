@@ -1,0 +1,155 @@
+  d_a_null  CartPole-v1  s0 interval [-0.0000, +0.0000] width=0.0000 alpha=0.1 B=19 fail=0% procedural_share=272% [R=dirac[1] sep/step=0.0 covered=True
+  d_a_null  CartPole-v1  s1 interval [-0.0000, +0.0000] width=0.0000 alpha=0.1 B=19 fail=0% procedural_share=93% [R=dirac[1] sep/step=0.00 covered=True
+  d_a_null  CartPole-v1  s2 interval [-0.0000, +0.0000] width=0.0000 alpha=0.1 B=19 fail=0% procedural_share=284% [R=dirac[1] sep/step=0.0 covered=True
+  d_a_null  Acrobot-v1   s0 interval [-0.0001, +0.0000] width=0.0001 alpha=0.1 B=19 fail=0% procedural_share=4% [R=categorical[2] sep/step covered=True
+  d_a_null  Acrobot-v1   s1 interval [-0.0000, +0.0000] width=0.0000 alpha=0.1 B=19 fail=32% procedural_share=0% [R=categorical[2] sep/ste covered=True
+  d_a_null  Acrobot-v1   s2 interval [+0.0001, +0.0012] width=0.0011 alpha=0.1 B=19 fail=0% procedural_share=45% [R=categorical[2] sep/ste covered=False
+  d100      CartPole-v1  s0 interval [+0.4845, +0.5088] width=0.0243 alpha=0.1 B=19 fail=5% procedural_share=0% [R=categorical[2] sep/step covered=True
+  d100      CartPole-v1  s1 interval [+0.4708, +0.4976] width=0.0268 alpha=0.1 B=19 fail=5% procedural_share=7% [R=categorical[2] sep/step covered=False
+  d100      CartPole-v1  s2 interval [+0.4829, +0.5113] width=0.0284 alpha=0.1 B=19 fail=16% procedural_share=2% [R=categorical[2] sep/ste covered=True
+  d100      Acrobot-v1   s0 interval [+0.5059, +0.5279] width=0.0220 alpha=0.1 B=19 fail=5% procedural_share=3% [R=categorical[3] sep/step covered=False
+  d100      Acrobot-v1   s1 interval [+0.4900, +0.5118] width=0.0217 alpha=0.1 B=19 fail=16% procedural_share=0% [R=categorical[2] sep/ste covered=True
+  d100      Acrobot-v1   s2 interval [+0.4827, +0.5102] width=0.0275 alpha=0.1 B=19 fail=0% procedural_share=0% [R=categorical[3] sep/step covered=True
+  d050      CartPole-v1  s0 interval [+0.9794, +1.0197] width=0.0403 alpha=0.1 B=19 fail=5% procedural_share=29% [R=categorical[2] sep/ste covered=True
+  d050      CartPole-v1  s1 interval [+0.9628, +0.9985] width=0.0357 alpha=0.1 B=19 fail=11% procedural_share=89% [R=categorical[2] sep/st covered=False
+  d050      CartPole-v1  s2 interval [+0.9858, +1.0244] width=0.0386 alpha=0.1 B=19 fail=0% procedural_share=15% [R=categorical[2] sep/ste covered=True
+  d050      Acrobot-v1   s0 interval [+0.9646, +1.0467] width=0.0821 alpha=0.1 B=19 fail=5% procedural_share=45% [R=categorical[4] sep/ste covered=True
+  d050      Acrobot-v1   s1 interval [+0.9875, +1.0099] width=0.0224 alpha=0.1 B=19 fail=37% procedural_share=13% [R=categorical[3] sep/st covered=True
+  d050      Acrobot-v1   s2 interval [+0.9752, +1.0340] width=0.0588 alpha=0.1 B=19 fail=0% procedural_share=30% [R=categorical[4] sep/ste covered=True
+  d025      CartPole-v1  s0 interval [+1.9385, +2.0784] width=0.1399 alpha=0.1 B=19 fail=11% procedural_share=10% [R=categorical[2] sep/st covered=True
+  d025      CartPole-v1  s1 interval [+1.9486, +2.0146] width=0.0660 alpha=0.1 B=19 fail=16% procedural_share=79% [R=categorical[2] sep/st covered=True
+  d025      CartPole-v1  s2 interval [+1.9835, +2.0454] width=0.0619 alpha=0.1 B=19 fail=0% procedural_share=40% [R=categorical[2] sep/ste covered=True
+  d025      Acrobot-v1   s0 interval [+1.9439, +2.0770] width=0.1331 alpha=0.1 B=19 fail=0% procedural_share=1% [R=categorical[4] sep/step covered=True
+  d025      Acrobot-v1   s1 interval [+1.9826, +2.0363] width=0.0537 alpha=0.1 B=19 fail=32% procedural_share=20% [R=categorical[3] sep/st covered=True
+  d025      Acrobot-v1   s2 interval [+1.9279, +2.0917] width=0.1639 alpha=0.1 B=19 fail=11% procedural_share=21% [R=categorical[4] sep/st covered=True
+  d010      CartPole-v1  s0 interval [+4.9016, +5.1592] width=0.2576 alpha=0.1 B=19 fail=11% procedural_share=129% [R=categorical[2] sep/s covered=True
+  d010      CartPole-v1  s1 interval [+4.9236, +5.0051] width=0.0815 alpha=0.1 B=19 fail=21% procedural_share=153% [R=categorical[2] sep/s covered=True
+  d010      CartPole-v1  s2 interval [+4.9638, +5.1166] width=0.1528 alpha=0.1 B=19 fail=0% procedural_share=14% [R=categorical[2] sep/ste covered=True
+  d010      Acrobot-v1   s0 interval [+4.8033, +5.2087] width=0.4054 alpha=0.1 B=19 fail=0% procedural_share=10% [R=categorical[4] sep/ste covered=True
+  d010      Acrobot-v1   s1 interval [+4.9382, +5.0564] width=0.1182 alpha=0.1 B=19 fail=32% procedural_share=113% [R=categorical[3] sep/s covered=True
+  d010      Acrobot-v1   s2 interval [+4.8753, +5.1033] width=0.2280 alpha=0.1 B=19 fail=16% procedural_share=209% [R=categorical[4] sep/s covered=True
+  d005      CartPole-v1  s0 interval [+9.7252, +10.3251] width=0.5999 alpha=0.1 B=19 fail=5% procedural_share=10% [R=categorical[2] sep/st covered=True
+  d005      CartPole-v1  s1 interval [+9.8717, +10.0666] width=0.1949 alpha=0.1 B=19 fail=21% procedural_share=90% [R=categorical[2] sep/s covered=True
+  d005      CartPole-v1  s2 interval [+9.8867, +10.1223] width=0.2356 alpha=0.1 B=19 fail=0% procedural_share=101% [R=categorical[2] sep/s covered=True
+  d005      Acrobot-v1   s0 interval [+9.5451, +10.4075] width=0.8625 alpha=0.1 B=19 fail=0% procedural_share=24% [R=categorical[4] sep/st covered=True
+  d005      Acrobot-v1   s1 interval [+9.8625, +10.0789] width=0.2164 alpha=0.1 B=19 fail=42% procedural_share=282% [R=categorical[3] sep/ covered=True
+  d005      Acrobot-v1   s2 interval [+9.7752, +10.0790] width=0.3038 alpha=0.1 B=19 fail=11% procedural_share=86% [R=categorical[4] sep/s covered=True
+  resuming: 36 rows already done
+/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py:431: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:836.)
+  if float(2.0 * (ll_hat - ll)) <= c:
+  d_e       CartPole-v1  s0 BP=[-0.000,+0.784] walk=bounds INNER-APPROX [+0.5053, +0.5053] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+  d_e       CartPole-v1  s1 BP=[-0.141,+0.658] walk=bounds INNER-APPROX [+0.4951, +0.4951] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+  d_e       CartPole-v1  s2 BP=[-0.149,+0.695] walk=bounds INNER-APPROX [+0.5077, +0.5077] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+  d_e       Acrobot-v1   s0 BP=[-0.231,+0.458] walk=bounds INNER-APPROX [+0.5083, +0.5083] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+Traceback (most recent call last):
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/tools/run_v4.py", line 281, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/tools/run_v4.py", line 228, in main
+    res = lr_region_bounds(
+        estimator=est,
+    ...<16 lines>...
+        n_starts=3,
+    )
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 466, in lr_region_bounds
+    his = extremum_multi(+1.0)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 460, in extremum_multi
+    vals = [extremum(sign)]
+            ~~~~~~~~^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 417, in extremum
+    ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 294, in _observed_ll_differentiable
+    rows = model.log_prob(est._frame(data, u_k))  # [N], differentiable
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/core/network.py", line 402, in log_prob
+    lp = self.mechanisms[node].log_prob(data_dev[node], pa_tensor)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/mechanisms/parametric/neural_categorical.py", line 343, in log_prob
+    logits = self._logits_from_parents(flat.float()).reshape(b, s, -1)
+             ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/mechanisms/parametric/neural_categorical.py", line 252, in _logits_from_parents
+    return self.net(inp)
+           ~~~~~~~~^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/activation.py", line 143, in forward
+    return F.relu(input, inplace=self.inplace)
+           ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/functional.py", line 1721, in relu
+    result = torch.relu(input)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 368.00 MiB. GPU 0 has a total capacity of 7.62 GiB of which 347.50 MiB is free. Including non-PyTorch memory, this process has 7.26 GiB memory in use. Of the allocated memory 6.75 GiB is allocated by PyTorch, and 300.91 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+.venv/bin/python failed with exit status 1.
+  resuming: 40 rows already done
+/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py:431: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:836.)
+  if float(2.0 * (ll_hat - ll)) <= c:
+  d_e       Acrobot-v1   s1 BP=[-0.060,+0.644] walk=bounds INNER-APPROX [+0.3631, +0.6554] width=0.2923 alpha=0.1 B=19 fail=0% [R=ca
+  d_e       Acrobot-v1   s2 BP=[-0.323,+0.374] walk=bounds INNER-APPROX [+0.4975, +0.4975] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+  d_b_prime CartPole-v1  s0 walk=bounds INNER-APPROX [+0.4208, +0.9186] width=0.4978 alpha=0.1 B=19 fail=0% [R=ca
+  d_b_prime CartPole-v1  s1 walk=bounds INNER-APPROX [+0.6882, +0.6882] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+  d_b_prime CartPole-v1  s2 walk=bounds INNER-APPROX [+0.4991, +0.7533] width=0.2542 alpha=0.1 B=19 fail=0% [R=ca
+  d_b_prime Acrobot-v1   s0 walk=bounds INNER-APPROX [+0.7966, +0.7966] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+Traceback (most recent call last):
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/tools/run_v4.py", line 281, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/tools/run_v4.py", line 228, in main
+    res = lr_region_bounds(
+        estimator=est,
+    ...<16 lines>...
+        n_starts=3,
+    )
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 466, in lr_region_bounds
+    his = extremum_multi(+1.0)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 460, in extremum_multi
+    vals = [extremum(sign)]
+            ~~~~~~~~^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 417, in extremum
+    ll = _observed_ll_differentiable(model_c, prior_logits, estimator, data)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py", line 294, in _observed_ll_differentiable
+    rows = model.log_prob(est._frame(data, u_k))  # [N], differentiable
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/core/network.py", line 402, in log_prob
+    lp = self.mechanisms[node].log_prob(data_dev[node], pa_tensor)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/mechanisms/parametric/neural_categorical.py", line 343, in log_prob
+    logits = self._logits_from_parents(flat.float()).reshape(b, s, -1)
+             ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/nbn/mechanisms/parametric/neural_categorical.py", line 252, in _logits_from_parents
+    return self.net(inp)
+           ~~~~~~~~^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/container.py", line 253, in forward
+    input = module(input)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/modules/activation.py", line 143, in forward
+    return F.relu(input, inplace=self.inplace)
+           ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/.venv/lib/python3.13/site-packages/torch/nn/functional.py", line 1721, in relu
+    result = torch.relu(input)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 368.00 MiB. GPU 0 has a total capacity of 7.62 GiB of which 307.50 MiB is free. Including non-PyTorch memory, this process has 7.29 GiB memory in use. Of the allocated memory 6.75 GiB is allocated by PyTorch, and 339.46 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+.venv/bin/python failed with exit status 1.
+[babysitter] launch 1, rows=46, 2026-08-26T02:44:07+02:00
+  resuming: 46 rows already done
+/home/giovanni-briglia/PycharmProjects/bcrl-grace-v2/src/rl/offline/grace/l4.py:431: UserWarning: Converting a tensor with requires_grad=True to a scalar may lead to unexpected behavior.
+Consider using tensor.detach() first. (Triggered internally at /pytorch/torch/csrc/autograd/generated/python_variable_methods.cpp:836.)
+  if float(2.0 * (ll_hat - ll)) <= c:
+  d_b_prime Acrobot-v1   s1 walk=bounds INNER-APPROX [+0.4889, +0.7985] width=0.3096 alpha=0.1 B=19 fail=0% [R=ca
+  d_b_prime Acrobot-v1   s2 walk=bounds INNER-APPROX [+0.7628, +0.7628] width=0.0000 alpha=0.1 B=19 fail=0% [R=ca
+V4 RUN COMPLETE
+[babysitter] done, 2026-08-26T04:42:28+02:00
