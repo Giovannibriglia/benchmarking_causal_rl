@@ -631,44 +631,42 @@ def test_replicate_pinning_prevents_mechanism_class_flip():
 def test_reward_resolution_half_is_stratified_by_episode_not_row_order():
     """The half-sample keys on episode membership, not data order.
 
-    Pre-fix, the half was the FIRST n//2 rows, so a two-valued reward whose
-    second level sat only in the LAST episode always read "support grows" and
-    resolved continuous -- deterministically wrong on finite support. Post-fix
-    the half is a fixed-seed random half of episodes: a rare level in an
-    IN-HALF episode resolves categorical no matter where that episode sits in
-    data order. (A rare level in an out-of-half episode still resolves
-    continuous -- the criterion's inherent coin-flip, erring in the documented
-    direction -- which is what replicate PINNING neutralises where it
-    matters.)
+    The half used to be the FIRST n//2 ROWS, so a two-valued reward whose
+    second level sat only in a late episode read "support grows" and resolved
+    continuous -- deterministically wrong on finite support, and dependent on
+    nothing but data order. The halves are now a fixed-seed EPISODE split, so
+    reordering the episodes cannot change the verdict.
+
+    (Which half a rare level lands in no longer matters either -- the
+    criterion takes the max over both complementary halves. That property is
+    asserted for every placement in
+    ``test_a_level_carried_by_one_episode_still_resolves_discrete``; here the
+    claim under test is order-independence.)
     """
     g = torch.Generator().manual_seed(0)
     n_ep, T = 20, 6
     ep = torch.arange(n_ep).repeat_interleave(T)
 
-    # which episodes the fixed-seed split puts in the half, per the criterion
-    perm = torch.randperm(n_ep, generator=torch.Generator().manual_seed(0))
-    in_half = int(perm[0])
-
-    def resolve(rare_ep):
+    def resolve(rare_ep, reverse=False):
         reward = torch.ones(n_ep * T)
         reward[rare_ep * T] = 2.0
+        state = torch.randn(n_ep * T, 2, generator=g)
+        action = (torch.rand(n_ep * T, generator=g) < 0.5).long()
+        ids = ep
+        if reverse:  # same episodes, opposite order on the wire
+            idx = torch.arange(n_ep * T).flip(0)
+            reward, state, action, ids = reward[idx], state[idx], action[idx], ep[idx]
         est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
         est._resolve_reward_type(
-            EpisodeData(
-                state=torch.randn(n_ep * T, 2, generator=g),
-                action=(torch.rand(n_ep * T, generator=g) < 0.5).long(),
-                reward=reward,
-                episode_ids=ep,
-            )
+            EpisodeData(state=state, action=action, reward=reward, episode_ids=ids)
         )
         return est.resolved_reward_mechanism
 
-    # rare level in an in-half episode -> categorical, wherever it sits in
-    # data order (the last episode included, which the old row-half ALWAYS
-    # misread whenever it was not literally in the first half of rows)
-    assert resolve(in_half) == "categorical[2]"
-    out_half = int(perm[-1])
-    assert resolve(out_half) == "mdn"  # the documented conservative direction
+    # the LAST episode is the case the old row-half always misread
+    assert resolve(n_ep - 1) == "categorical[2]"
+    # and the verdict does not depend on the order the rows arrive in
+    assert resolve(n_ep - 1, reverse=True) == resolve(n_ep - 1)
+    assert resolve(0, reverse=True) == resolve(0)
 
 
 def test_episode_constant_channels_enter_once_per_episode():
@@ -734,3 +732,41 @@ def test_a_within_episode_varying_proxy_is_refused():
         raise AssertionError("a within-episode-varying proxy must be refused")
     except ValueError as e:
         assert "WITHIN an episode" in str(e)
+
+
+def test_a_level_carried_by_one_episode_still_resolves_discrete():
+    """The measured regression the two-half rule fixes.
+
+    A reward level present in exactly ONE episode is invisible to a single
+    half-sample whenever that episode falls outside it -- support then looks
+    like it grows and R resolves to MDN on finite-support data, the
+    mis-specification discrete-R exists to prevent (measured on d_d_sweep_d010
+    Acrobot s1: recovery 0.5275 at chance under MDN against 0.9825 with
+    categorical[3]). Taking the max over both complementary halves cannot miss
+    it, whichever half the episode lands in -- so this asserts the property
+    for EVERY placement, not one lucky one.
+    """
+    g = torch.Generator().manual_seed(0)
+    n_ep, T = 20, 6
+    ep = torch.arange(n_ep).repeat_interleave(T)
+    kw = dict(
+        state=torch.randn(n_ep * T, 2, generator=g),
+        action=(torch.rand(n_ep * T, generator=g) < 0.5).long(),
+        episode_ids=ep,
+    )
+    for rare_ep in range(n_ep):  # every placement, not a lucky one
+        reward = torch.ones(n_ep * T)
+        reward[rare_ep * T] = 2.0
+        est = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+        est._resolve_reward_type(EpisodeData(reward=reward, **kw))
+        assert est.resolved_reward_mechanism == "categorical[2]", (
+            rare_ep,
+            est.resolved_reward_mechanism,
+        )
+
+    # ...and genuinely continuous reward must still resolve to MDN, or the
+    # rule has simply been made to always say "discrete".
+    cont = 1.0 + torch.randn(n_ep * T, generator=g)
+    est2 = LatentClassEstimator(state_dim=2, n_actions=2, seed=0)
+    est2._resolve_reward_type(EpisodeData(reward=cont, **kw))
+    assert est2.resolved_reward_mechanism == "mdn", est2.resolved_reward_mechanism

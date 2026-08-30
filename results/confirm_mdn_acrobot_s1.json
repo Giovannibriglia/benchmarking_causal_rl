@@ -1,0 +1,18 @@
+[
+ {
+  "forced_categorical": false,
+  "resolved_R": "mdn",
+  "recovery": 0.5275,
+  "final_ll": 967423.8,
+  "degenerate": true,
+  "seconds": 3355.1
+ },
+ {
+  "forced_categorical": true,
+  "resolved_R": "categorical[3]",
+  "recovery": 0.9825,
+  "final_ll": -223605.8,
+  "degenerate": false,
+  "seconds": 603.5
+ }
+]

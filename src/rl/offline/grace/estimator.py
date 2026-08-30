@@ -653,19 +653,42 @@ class LatentClassEstimator:
         # Acrobot-s1 datasets resolved correctly by luck of where their single
         # terminating episode sat. A fixed-seed random half of EPISODES
         # removes the order dependence and makes the criterion mean what it
-        # claims ("support is stable across an episode split"). The residual
-        # coin-flip on a level carried by exactly one episode is inherent to
-        # any half-based criterion and errs toward continuous, the documented
-        # direction. The seed is an RNG stream choice, not a tuned constant
-        # (A2-compatible), fixed so resolution is a deterministic function of
-        # the data.
+        # claims ("support is stable across an episode split"). The seed is an
+        # RNG stream choice, not a tuned constant (A2-compatible), fixed so
+        # resolution is a deterministic function of the data.
+        #
+        # ⚠ BOTH HALVES, and the reason is a MEASURED failure of the one-half
+        # version (2026-08-30). A single half misses a level carried by ONE
+        # episode whenever that episode falls outside it -- support then looks
+        # like it "grows" and R resolves to MDN on finite-support data, which
+        # is the mis-specification discrete-R exists to prevent. Measured on
+        # d_d_sweep_d010 Acrobot s1 (rare level in 1 episode of 3000): the
+        # one-half rule resolved MDN -> degenerate_mechanism, recovery 0.5275
+        # at CHANCE, ll +967,424 (scale-floor inflated, so best-LL selection
+        # PREFERS it) and 5.5x slower; categorical[3] on the same row recovers
+        # 0.9825 with ll -223,606. The first version of this comment claimed
+        # the miss "errs toward continuous, the documented direction" -- that
+        # justification is FALSIFIED: erring continuous was conservative only
+        # before discrete-R became load-bearing, and is now the catastrophic
+        # direction (S10 -- the claim expired when the semantics changed).
+        #
+        # Taking the MAXIMUM over the two COMPLEMENTARY halves is exact for
+        # both cases and adds no constant: a finite-support variable has every
+        # level in at least one half whenever each level appears at least
+        # once (the half containing it reads ``full``), while a continuous
+        # variable's distinct count is ~n/2 in either half and cannot reach
+        # ``full``. So a rare level can no longer be missed by the luck of the
+        # split, in either direction.
         uniq_eps = torch.unique(data.episode_ids)
         perm = torch.randperm(
             int(uniq_eps.numel()), generator=torch.Generator().manual_seed(0)
         ).to(uniq_eps.device)
-        half_eps = uniq_eps[perm[: max(int(uniq_eps.numel()) // 2, 1)]]
-        mask = torch.isin(data.episode_ids, half_eps)
-        half = int(torch.unique(r[mask]).numel())
+        cut = max(int(uniq_eps.numel()) // 2, 1)
+        in_a = torch.isin(data.episode_ids, uniq_eps[perm[:cut]])
+        half = max(
+            int(torch.unique(r[in_a]).numel()),
+            int(torch.unique(r[~in_a]).numel()),
+        )
         levels = torch.unique(r)
         full = int(levels.numel())
         if full == 1:
