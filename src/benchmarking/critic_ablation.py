@@ -337,6 +337,7 @@ def _build_strategy_critic(
     device: torch.device,
     encoder: str = "mlp",
     gamma: float = 1.0,
+    grace_options: dict | None = None,
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
     (no estimator reimplementation). ``builder`` selects the identification arm
@@ -491,6 +492,33 @@ def _build_strategy_critic(
             "iql": build_sensitivity_iql,
         }[suffix]
         return fn(gamma_sensitivity=gamma, **kwargs)
+    if builder == "grace":
+        # BASE-PARITY, like the observational floor and sensitivity: the base
+        # algo's own builder, wrapped only on the SERVING surface. Training is
+        # the floor's; the L4 fit lands at the set_sequence_buffer handoff and
+        # the head then serves the pessimistic end (or abstains, labelled).
+        if recurrent:
+            raise ValueError(
+                "grace has no recurrent arm: the v2 estimator is episode-static "
+                "(the latent is drawn once per episode), so a recurrent encoder "
+                "would imply a per-step latent the declared diagram does not have"
+            )
+        from src.rl.offline.grace.serving import (
+            build_grace_cql,
+            build_grace_dqn,
+            build_grace_iql,
+        )
+
+        fn = {
+            "dqn": build_grace_dqn,
+            "cql": build_grace_cql,
+            "iql": build_grace_iql,
+        }.get(suffix)
+        if fn is None:
+            raise ValueError(
+                f"grace has no arm for base algo '{suffix}' (dqn/cql/iql only)"
+            )
+        return fn(grace_options=dict(grace_options or {}), **kwargs)
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 
@@ -522,6 +550,7 @@ class StrategyCritic:
         action_dim: int,
         device: torch.device,
         encoder: str = "mlp",
+        grace_options: dict | None = None,
     ) -> None:
         self.name = name
         self.spec = spec
@@ -538,6 +567,10 @@ class StrategyCritic:
             device,
             encoder,
             self.gamma,
+            # Method options: the run's ``grace:`` block merged UNDER this
+            # critic's own spec.grace, so a spec pins what it declares and the
+            # run may only fill what the spec leaves open.
+            grace_options={**dict(grace_options or {}), **dict(spec.grace or ())},
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
@@ -594,6 +627,10 @@ class CriticAblationManager:
         # or lstm/gru/rnn (Cell-8 recurrent row). Derived by the runner from the
         # base algo's critic_network so the base and the triad share one encoder.
         self.encoder = str(encoder or "mlp")
+        # GRACE method options from the run config; merged UNDER each critic's
+        # own spec.grace in StrategyCritic. Empty for every non-grace run, so
+        # the frozen critics are untouched.
+        self.grace = dict(getattr(config, "grace", None) or {})
         selected_critics = (
             [str(name) for name in config.critics]
             if config.critics
@@ -634,6 +671,7 @@ class CriticAblationManager:
                     action_dim,
                     device,
                     self.encoder,
+                    grace_options=self.grace,
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")
