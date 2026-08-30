@@ -1,0 +1,5 @@
+  d010 CartPole-v1 s1 without depth=6   recovery(best-LL)=0.6825 mean=0.6808 backtracks=[8, 0, 1] (365s)
+  d010 CartPole-v1 s1 without depth=10  recovery(best-LL)=0.6825 mean=0.6808 backtracks=[8, 0, 1] (345s)
+  d005 CartPole-v1 s1 without depth=6   recovery(best-LL)=0.5525 mean=0.6642 backtracks=[19, 3, 3] (436s)
+  d005 CartPole-v1 s1 without depth=10  recovery(best-LL)=0.5525 mean=0.6642 backtracks=[19, 3, 3] (434s)
+DEPTH-VS-RECOVERY PROBE COMPLETE

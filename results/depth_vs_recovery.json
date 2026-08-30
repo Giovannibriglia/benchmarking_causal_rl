@@ -1,0 +1,158 @@
+[
+ {
+  "cell": "d010",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "arm": "without",
+  "max_backtracks": 6,
+  "recovery_best_ll": 0.6825,
+  "recovery_mean": 0.6808,
+  "per_seed": [
+   {
+    "fit_seed": 0,
+    "recovery": 0.6125,
+    "final_ll": -38707.11,
+    "n_iter": 19,
+    "backtracks": 8,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 1,
+    "recovery": 0.7475,
+    "final_ll": -38701.16,
+    "n_iter": 19,
+    "backtracks": 0,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 2,
+    "recovery": 0.6825,
+    "final_ll": -38667.89,
+    "n_iter": 19,
+    "backtracks": 1,
+    "converged": false,
+    "exhausted": false
+   }
+  ],
+  "seconds": 364.6
+ },
+ {
+  "cell": "d010",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "arm": "without",
+  "max_backtracks": 10,
+  "recovery_best_ll": 0.6825,
+  "recovery_mean": 0.6808,
+  "per_seed": [
+   {
+    "fit_seed": 0,
+    "recovery": 0.6125,
+    "final_ll": -38707.11,
+    "n_iter": 19,
+    "backtracks": 8,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 1,
+    "recovery": 0.7475,
+    "final_ll": -38701.16,
+    "n_iter": 19,
+    "backtracks": 0,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 2,
+    "recovery": 0.6825,
+    "final_ll": -38667.89,
+    "n_iter": 19,
+    "backtracks": 1,
+    "converged": false,
+    "exhausted": false
+   }
+  ],
+  "seconds": 345.1
+ },
+ {
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "arm": "without",
+  "max_backtracks": 6,
+  "recovery_best_ll": 0.5525,
+  "recovery_mean": 0.6642,
+  "per_seed": [
+   {
+    "fit_seed": 0,
+    "recovery": 0.6975,
+    "final_ll": -38907.38,
+    "n_iter": 19,
+    "backtracks": 19,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 1,
+    "recovery": 0.7425,
+    "final_ll": -38780.27,
+    "n_iter": 19,
+    "backtracks": 3,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 2,
+    "recovery": 0.5525,
+    "final_ll": -38741.27,
+    "n_iter": 19,
+    "backtracks": 3,
+    "converged": false,
+    "exhausted": false
+   }
+  ],
+  "seconds": 435.7
+ },
+ {
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "arm": "without",
+  "max_backtracks": 10,
+  "recovery_best_ll": 0.5525,
+  "recovery_mean": 0.6642,
+  "per_seed": [
+   {
+    "fit_seed": 0,
+    "recovery": 0.6975,
+    "final_ll": -38907.38,
+    "n_iter": 19,
+    "backtracks": 19,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 1,
+    "recovery": 0.7425,
+    "final_ll": -38780.27,
+    "n_iter": 19,
+    "backtracks": 3,
+    "converged": false,
+    "exhausted": false
+   },
+   {
+    "fit_seed": 2,
+    "recovery": 0.5525,
+    "final_ll": -38741.27,
+    "n_iter": 19,
+    "backtracks": 3,
+    "converged": false,
+    "exhausted": false
+   }
+  ],
+  "seconds": 433.9
+ }
+]
