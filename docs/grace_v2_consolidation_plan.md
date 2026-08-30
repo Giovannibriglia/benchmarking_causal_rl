@@ -257,22 +257,65 @@ All twelve datasets exist and are certified in `~/.minari-grace-v2`.
   materially biased and the action a policy should prefer differs from the one
   the observational critic scores highest.
 
-**Registered prediction P-E1: return-level gains are LARGEST at the
-asymmetric point.** Symmetric gates make the marginal nearly
-latent-independent; recovery-level gaps (which the sweep measures) do not
-translate into return-level gaps unless the *marginal* is biased. This is the
-prediction that makes the experiment falsifiable — a null result at
-`d010_asym` would say the recovery-level story does not reach deployment,
-which is the most important thing we could learn.
+### ⚠ THE FIRST REGISTRATION WAS WITHDRAWN BEFORE ANY RUN (2026-08-30)
 
-**Registered prediction P-E2: variant ≈ base at `d = 1.0` and on `d_a_null`.**
-On the null arm this is a no-harm requirement, not a hope: the variants must
-match the base algorithms **within seed noise**. A variant that "wins" on
-`d_a_null` is a bug, because there is no latent to exploit.
+The original P-E1/P-E2/P-E3 predicted gains **largest at the asymmetric
+point** and parity at `d = 1.0`. **Withdrawn by the author as wrong, and the
+reason is recorded because it is instructive**: it conflated two different
+contrasts.
 
-**Registered prediction P-E3: variant ≥ base at `d = 0.25`**, but by less than
-at the asymmetric point — the transition is located there for *recovery*,
-while return-level gain needs marginal bias.
+* **with-vs-without proxies** (what the ABLATION measures) — governed by the
+  symmetric marginal's near-latent-independence, so the proxy differential is
+  small at symmetric points. True, measured, and *irrelevant to this
+  experiment*.
+* **GRACE-vs-base** (what the EXPERIMENT measures) — governed by the naive
+  bias and GRACE's correction of it. The naive bias is `M · tilt`, flat in `d`
+  and independent of gate symmetry (the tilt enters through `P(U|a_bad)`;
+  symmetry only moves `q̄`).
+
+The two predict **opposite orderings**. The replacement below follows the
+value-level measurements instead. This is the second prediction in the project
+corrected by its own prior measurements before a run — the discipline of
+writing predictions down first is load-bearing in both directions, and that is
+why the withdrawn version stays on the page rather than being deleted.
+
+### The amended registration
+
+* **P1 — no harm.** Parity with base within seed noise on `d_a_null`. A
+  variant that "wins" there is a BUG: there is no latent to exploit.
+* **P2 — safety.** Grace variants never worse than base beyond seed noise on
+  any enabled cell.
+* **P3 — ordering.** Where return gaps appear, they order by the measured
+  value-correction share: **`d = 1.0` ≥ `d = 0.25` ≥ `d010asym`.**
+* **P4 — no silent abstention.** `GRACE-ABSTAINED` never fires on an enabled
+  cell (the entry ticket is what makes a cell enabled).
+* **P5 — the null outcome is a result.** The bias may not cross any decision
+  boundary on CartPole, giving parity everywhere while the CRITICS differ.
+  Informative, not a failure — provided the experiment can see it, which is
+  what the secondary endpoint below exists for.
+
+**What P3 actually rests on, stated so it is not over-read.** Correction share
+`1 − err_grace/err_naive_tr` from V-C1 (CartPole, pre-fix run, 3 seeds/cell):
+
+| cell | d100 | d050 | d025 | d010 | d005 |
+|---|---|---|---|---|---|
+| share | 91.6% | 92.1% | 91.1% | 68.1% | 19.6% |
+
+Two caveats travel with P3: (a) the top three are a **tie within noise**
+(91–92%), so `d = 1.0 ≥ d = 0.25` is a prediction of *ordering under a
+near-tie*, not of a visible gap; (b) **`d010_asym` has never been measured in
+V-C1** — its expected ~68% is inferred from the symmetric `d010`, whose gate
+strength is the closest analogue. These shares are **pre-fix**; they are
+re-quoted from the corrected-likelihood V-C1 run before launch.
+
+### Secondary endpoint (required by P5): critic Q-accuracy
+
+Return parity and "GRACE corrected nothing" produce the **same headline
+number and opposite conclusions**, so returns alone are unreadable. For both
+variants and bases, log **Q-error against the analytic q1 truth** (and MC
+return-to-go where sequential), recorded during and after training. Then every
+outcome yields a claim: return gains where decision boundaries are crossed,
+Q-level gains where they are not.
 
 ### Evaluation
 
