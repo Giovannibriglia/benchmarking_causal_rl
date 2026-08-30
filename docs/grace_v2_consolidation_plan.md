@@ -299,14 +299,20 @@ why the withdrawn version stays on the page rather than being deleted.
 
 | cell | d100 | d050 | d025 | d010 | d005 |
 |---|---|---|---|---|---|
-| share | 91.6% | 92.1% | 91.1% | 68.1% | 19.6% |
+| pre-fix | 91.6% | 92.1% | 91.1% | 68.1% | 19.6% |
+| **post-fix (final)** | **93.3%** | **88.7%** | **86.0%** | **72.8%** | **48.0%** |
 
-Two caveats travel with P3: (a) the top three are a **tie within noise**
-(91–92%), so `d = 1.0 ≥ d = 0.25` is a prediction of *ordering under a
-near-tie*, not of a visible gap; (b) **`d010_asym` has never been measured in
-V-C1** — its expected ~68% is inferred from the symmetric `d010`, whose gate
-strength is the closest analogue. These shares are **pre-fix**; they are
-re-quoted from the corrected-likelihood V-C1 run before launch.
+**RE-QUOTED from the corrected-likelihood run (2026-08-30), and it improves
+P3's standing.** The near-tie at the top resolved into a monotone ordering —
+93.3 > 88.7 > 86.0 > 72.8 > 48.0 — so `d = 1.0 ≥ d = 0.25` is now a visible
+gap (7.3 points) rather than a coin-flip, and the weak end is corrected far
+better than the pre-fix numbers suggested (d005 19.6% → 48.0%). P3's
+predicted ordering is exactly the measured one.
+
+One caveat still travels: **`d010_asym` has never been measured in V-C1**.
+Its expected value is inferred from the symmetric `d010` (72.8%), whose gate
+strength is the closest analogue — so P3's third term is a prediction proper,
+not a restatement of a measurement.
 
 ### Secondary endpoint (required by P5): critic Q-accuracy
 
