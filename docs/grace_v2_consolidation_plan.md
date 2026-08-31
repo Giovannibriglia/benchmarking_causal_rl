@@ -314,6 +314,27 @@ Its expected value is inferred from the symmetric `d010` (72.8%), whose gate
 strength is the closest analogue — so P3's third term is a prediction proper,
 not a restatement of a measurement.
 
+### The d005 Acrobot s1 row — ATTRIBUTED, and it is not a defect (2026-08-31)
+
+The without-arm moved 0.980 → 0.805 between depth 6 and depth 10. Attributed
+by LIKELIHOOD rather than by suspicion, which is the only way to tell a
+regression from the estimator working:
+
+| | recovery | final_ll | end state |
+|---|---|---|---|
+| depth 6 | 0.980 | −226,829 | converged |
+| depth 10 | **0.805** | **−223,644** | budget-bound, still ascending |
+
+The deeper search reaches a likelihood **3,184 nats higher** while recovering
+worse, and it is systematic — every one of the five depth-10 seed likelihoods
+(−223.6k…−224.1k) beats every depth-6 one (−226.8k…−227.6k). **EM maximises
+likelihood, not latent recovery**: the depth-6 fit stopped early at a point
+that happened to recover well; the depth-10 fit is converging toward a
+higher-likelihood optimum that recovers worse. The MLE is not the
+recovery-maximiser, which is exactly why recovery is a DIAGNOSTIC here and
+never the objective. The row is quotable with this note; the depth stays a
+safety limit rather than a knob.
+
 ### Secondary endpoint (required by P5): critic Q-accuracy
 
 Return parity and "GRACE corrected nothing" produce the **same headline
