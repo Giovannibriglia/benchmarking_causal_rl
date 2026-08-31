@@ -344,6 +344,26 @@ return-to-go where sequential), recorded during and after training. Then every
 outcome yields a claim: return gains where decision boundaries are crossed,
 Q-level gains where they are not.
 
+### ENTRY TICKET — all three experiment cells ENABLED (2026-08-31)
+
+Q2-A step 3 was run **per cell**, because passing on `d100` enables `d100` and
+nothing else: `d025` and `d010_asym` differ in exactly the dimension fitted
+iteration depends on (how informative R is), so one cell's result cannot be
+read onto three. Exact analytic anchor throughout, LinearGaussian transitions,
+CartPole:
+
+| cell | s0 | s1 | s2 | verdict |
+|---|---|---|---|---|
+| `d_a_null` (reference) | 5.5% | 5.1% | 5.6% | — |
+| `d_d_sweep_d100` | 6.3% | 8.4% | 5.2% | **enabled** |
+| `d_d_sweep_d025` | 8.8% | 6.7% | 5.7% | **enabled** |
+| `d_d_sweep_d010_asym` | 7.7% | **12.1%** | 6.2% | **enabled** |
+
+All nine rows land in 5.2–12.1% against the null cell's ~5%, so the fitted
+iteration degrades only mildly once a latent is present. **`d010_asym` also
+gains its FIRST Q2-level measurement here** — P3's third term previously had
+none, and was inferred from the symmetric `d010` analogue.
+
 ### ⚠ LOOK HERE FIRST IF s1 UNDERPERFORMS (recorded in advance, 2026-08-31)
 
 Q2-A step 3 passed on `d100` at 6.3 / 8.4 / 5.2% relative error, but **s1
@@ -356,6 +376,14 @@ The experiment reports **per seed**, so if the variant underperforms on s1
 specifically, this is the first place to look — and the connection is recorded
 now rather than discovered afterwards, so a post-hoc explanation cannot be
 mistaken for a prediction.
+
+**Strengthened by the two later tickets, which were run after this note was
+written.** s1 is the worst seed on `d010_asym` too (12.1% against 7.7/6.2,
+bias −8.85) and carries the largest bias on `d025` (−6.77). Three cells, same
+seed, same direction — so this is a property of the long-episode seed rather
+than of any cell, and the compounding explanation is the one that survives.
+Note the *relative* error on `d025` s1 is unremarkable (6.7%) because its RTG
+is large (110); the BIAS is what tracks across cells.
 
 ### Evaluation
 
