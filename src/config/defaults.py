@@ -52,6 +52,12 @@ class EnvConfig:
     # "analytic" (default when confounded eval is on) computes E_U[return] in
     # closed form on a CLEAN env; "sampled" draws U and is the sanity row.
     eval_confounded_mode: str = "analytic"
+    # THE DATASET STORE, DECLARED. It was reachable only through the
+    # MINARI_DATASETS_PATH environment variable, so every launch depended on
+    # shell state -- exactly the kind of undeclared channel A1 forbids. The
+    # env var still wins when set, so nothing that works today breaks; this
+    # gives a config a way to say it.
+    minari_datasets_path: str | None = None
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

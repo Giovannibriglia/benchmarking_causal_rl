@@ -1,0 +1,66 @@
+# E1 — the first GRACE deployment experiment (danull), 2026-08-31
+#
+# Generated from d_a_null.yaml: the cell's DECLARED ARMS are kept verbatim (copying the
+# gate by hand would be a second construction site); only envs, the critic axis,
+# the algo list and the deployment evaluation are changed.
+#
+# Pre-registration P1-P5 + rationale: docs/grace_v2_consolidation_plan.md
+# Entry ticket (Q2-A step 3, run PER CELL, exact analytic anchor): PASSED.
+#
+# THE CRITIC AXIS, not new algorithm names: one shared run per (point, env,
+# algo, seed) explodes into per-critic leaves, so variant and base get identical
+# data, seeds and budgets BY CONSTRUCTION rather than by convention.
+# D-A-null — the REFERENCE NULL arm. No latent at all.
+#
+# Collected through the same action-dependent policy as every other arm, but at
+# sigma = 0 AND c_r = 0: U is drawn and logged, and touches neither the action
+# nor the reward. So the diagram is genuinely D-A-null, not "D-B with the dial
+# at zero", and any refutation L5 issues here is a false alarm by construction.
+# That is what makes the false-positive rate readable without a threshold.
+#
+# The gate knows: with c_r = 0 the generator declares expect_gated_reward=False,
+# so A4 is SKIPPED rather than tested against noise (it would pass or fail on a
+# coin flip). The metadata records that it was skipped, so a later reader can
+# tell "not applicable" from "passed".
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-A-null
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 0.0        # NO U->R edge: this is the whole point of the arm
+
+# One point. The L's severity axes do not apply: there is nothing to make severe.
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: false
+
+# CartPole only: the Acrobot transition mechanism is unproven, so Acrobot q2 is
+# not ready and the first experiment is not coupled to it.
+envs: [CartPole-v1]
+max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
+
+# Deployment evaluation: U -> R intact, U -> A severed (the learned policy
+# acts). ANALYTIC takes E_U[return] in closed form on a clean env, removing
+# U-draw variance that would otherwise sit inside the seed-noise band.
+eval_confounded_reward: true
+eval_confounded_mode: analytic
+
+# Baselines are cql and iql UNMODIFIED; offline_dqn is in the source cells but
+# is not part of this experiment's contrast.
+algos:
+  - cql
+  - iql
+
+# Three DATASET seeds, matched across cells so per-seed reporting pairs
+# (d_a_null declares five; the extra two would have no counterpart).
+seeds: [0, 1, 2]
+
+# observational = the BASE arm (unmodified base critic); grace = the variant.
+critics:
+  basic:      [observational, grace]
+  confounded: [observational, grace]

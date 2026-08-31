@@ -1245,6 +1245,7 @@ back biased −13.3 on RTG ≈ 57 and the bias vanished at K = 500).
 ### Gotchas that cost real time
 
 * **pre-commit reformats and aborts the commit.** Always `git log` after committing; re-`git add -A` and re-commit.
+* **BEFORE LAUNCHING ANY GPU JOB, check free memory against the job's known peak, and default to SERIALISING ad-hoc GPU work unless the footprints are measured.** Both GPU failures this session had one shape: a second job launched onto a card whose occupant's footprint was unknown. (a) Parallel sweep tags launched while the serial driver was still looping its own list — two processes wrote the same output file for 8 hours. (b) Two Q2-A entry tickets launched together; the first took 6.89 of 7.62 GiB and the second died of CUDA OOM inside `query_batch`, producing NO report — which would have read as "the cell fails its entry ticket" had the log not been checked. The runner already serialises within a sweep; this rule is for the AD-HOC launches, which is where both errors happened. Same species as the `pgrep` self-match below: a check that was available and not run.
 * **One agent per worktree.** Kill by **PID**, never a bare pattern (`pkill -f regime_sweep` matches `test_regime_sweep.py`). Note also that `pgrep -f <own pattern>` **matches its own shell**, so "still running" can be entirely self-reference — check `ps -eo args | grep -v grep` before concluding a job survived a kill.
   **It bit anyway, twice in one day (2026-08-22):** a watcher shell watching
   `pgrep -f generate_diagram_arms` matched ITSELF and reported a dead

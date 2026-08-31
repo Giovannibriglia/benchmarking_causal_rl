@@ -145,6 +145,10 @@ def fit_from_buffer(
     alpha: float = 0.1,
     b: int = 19,
     fit_seed: int = 0,
+    # (1, 2) not (1, 2, 3, 4): the init-perturbation arm is DIAGNOSTIC (it
+    # gives the procedural share), so two perturbations buy the diagnostic at
+    # half the fits. Matches V4's production setting.
+    init_seeds: tuple = (1, 2),
     fit_kwargs: Optional[dict] = None,
     device=None,
 ) -> GraceServing:
@@ -181,37 +185,45 @@ def fit_from_buffer(
     # differentiable API is the right one.
     ev = data.state
 
-    def target_for(action: int):
-        def target(est, fit):
-            sweep = est.interventional_sweep(ev, [action] * ev.shape[0], fit)
-            return float(sweep.value.mean())
+    # ONE interval, on the CONTRAST -- not one per action. Two reasons, and
+    # the second is the load-bearing one:
+    #   * cost: a per-action loop pays the whole bootstrap twice (2 x (1
+    #     observed + inits + B replicates)) for a quantity that is a difference;
+    #   * COHERENCE: per-action intervals come from DIFFERENT bootstrap draws,
+    #     so their difference is not the difference's interval. Only the
+    #     contrast can move an argmax (the offsets are centred below), so the
+    #     contrast is the estimand whose uncertainty the serving rule needs.
+    a_bad = min(1, n_actions - 1)
+    others = [j for j in range(n_actions) if j != a_bad]
 
-        return target
+    def contrast_target(est, fit):
+        bad = est.interventional_sweep(ev, [a_bad] * ev.shape[0], fit).value.mean()
+        oth = sum(
+            est.interventional_sweep(ev, [j] * ev.shape[0], fit).value.mean()
+            for j in others
+        ) / max(len(others), 1)
+        return float(bad - oth)
 
-    offsets, los, his, kinds = [], [], [], []
-    label = ""
-    for a in range(n_actions):
-        res = point_id_interval(
-            make_estimator=make_estimator,
-            data=data,
-            target=target_for(a),
-            fit_kwargs=dict(fk, init="proxy" if proxy_names else "random"),
-            alpha=alpha,
-            b=b,
-            fit_seed=fit_seed,
-        )
-        label = res.label or label
-        if res.kind == "abstain":
-            return GraceServing(reason=res.reason, fit_label=res.label)
-        # THE SERVING RULE: the pessimistic end, for both `interval` and
-        # `bounds`. Pessimism is over the identified set, so the served value
-        # is one no compatible model contradicts.
-        offsets.append(res.lo)
-        los.append(res.lo)
-        his.append(res.hi)
-        kinds.append(res.kind)
-
-    off = torch.tensor(offsets, dtype=torch.float32, device=data.state.device)
+    res = point_id_interval(
+        make_estimator=make_estimator,
+        data=data,
+        target=contrast_target,
+        fit_kwargs=dict(fk, init="proxy" if proxy_names else "random"),
+        alpha=alpha,
+        b=b,
+        fit_seed=fit_seed,
+        init_seeds=init_seeds,
+    )
+    label = res.label
+    if res.kind == "abstain":
+        return GraceServing(reason=res.reason, fit_label=res.label)
+    # THE SERVING RULE: the pessimistic end, for both `interval` and `bounds`.
+    # For a CONTRAST, pessimism is its LOW end -- confounding inflates a_bad's
+    # apparent value, so the conservative statement is the smallest advantage
+    # the identified set allows it. No compatible model contradicts it.
+    los, his, kinds = [res.lo], [res.hi], [res.kind]
+    off = torch.zeros(n_actions, dtype=torch.float32, device=data.state.device)
+    off[a_bad] = float(res.lo)
     # Only the CONTRAST between actions can matter to a policy, so centre the
     # offset: a constant shift on every action changes no argmax and would
     # otherwise leak the reward scale into the base critic's magnitudes.
@@ -303,7 +315,15 @@ def _wrap(agent, net, **fit_options):
 def _grace_options(kwargs) -> dict:
     """Method options only — never an environment id (the A1/binding rule)."""
     opts = dict(kwargs.pop("grace_options", None) or {})
-    allowed = {"proxy_names", "alpha", "b", "fit_seed", "fit_kwargs", "device"}
+    allowed = {
+        "proxy_names",
+        "alpha",
+        "b",
+        "fit_seed",
+        "init_seeds",
+        "fit_kwargs",
+        "device",
+    }
     unknown = set(opts) - allowed - {"router", "interval", "deploy"}
     if unknown:
         raise ValueError(f"unknown grace option(s): {sorted(unknown)}")
