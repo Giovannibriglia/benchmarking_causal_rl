@@ -898,3 +898,21 @@ Points 3 and 4 together are, in my view, the catalogue's main contribution to th
 \* conditional on the four stated conditions and on review accepting the lagged-proxy derivation; **recommended to ship gated off by default**. Q2 additionally requires finite-`|U|` latent-class identifiability — a strictly stronger assumption than Q1's, and L2 must surface the two verdicts with their two assumption sets rather than collapsing them.
 
 **Design consequence for L2:** every entry carries **two verdicts** (Q1, Q2) and, per verdict, the assumption set it rests on. A single-verdict L2 would silently license a sequential point estimate from a per-step argument — exactly the error D-F and D-B Step 2 expose.
+
+## Where a causal critic needs more than a reward correction (2026-08-31)
+
+Fact 3 (`U` never enters the dynamics) has a consequence for the CRITIC, not
+just for identification: with confounding confined to the reward channel,
+`Q_do` is exactly what a base offline algorithm computes when trained on
+interventional rewards. So on every currently wired cell the GRACE variant is
+the base algorithm with its reward column substituted — no transition model.
+
+The model-based alternative was built and measured, and it DIVERGED (V 1.11 ->
+251 over 60 sweeps on `d_a_null`, truth ~9; +3603% and +37504% overestimates
+of realised deployment return): the fitted transition model samples states off
+the data manifold, the critic extrapolates there, and `max` compounds it. The
+full-machinery path is therefore deferred to the confounded-dynamics family
+(`U -> S_next`: D-F / D-G), where a reward correction is genuinely
+insufficient — and on those cells this model-exploitation problem has to be
+solved before anything can be served. Detail and measurements:
+`docs/grace_v2_consolidation_plan.md`.

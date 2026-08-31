@@ -58,6 +58,13 @@ class EnvConfig:
     # env var still wins when set, so nothing that works today breaks; this
     # gives a config a way to say it.
     minari_datasets_path: str | None = None
+    # GRACE arm: substitute interventional rewards into the offline buffer
+    # before training. The variant is the base algorithm with one column
+    # replaced, so this is an ARM flag rather than a critic name.
+    grace_reward_transform: bool = False
+    # The cell's DECLARED proxy channels (D-D: Z, W, V). Empty for cells that
+    # declare none -- the diagram decides, never the config's convenience.
+    grace_proxy_names: tuple = ()
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

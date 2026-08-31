@@ -506,33 +506,11 @@ def _build_strategy_critic(
             "iql": build_sensitivity_iql,
         }[suffix]
         return fn(gamma_sensitivity=gamma, **kwargs)
-    if builder == "grace":
-        # BASE-PARITY, like the observational floor and sensitivity: the base
-        # algo's own builder, wrapped only on the SERVING surface. Training is
-        # the floor's; the L4 fit lands at the set_sequence_buffer handoff and
-        # the head then serves the pessimistic end (or abstains, labelled).
-        if recurrent:
-            raise ValueError(
-                "grace has no recurrent arm: the v2 estimator is episode-static "
-                "(the latent is drawn once per episode), so a recurrent encoder "
-                "would imply a per-step latent the declared diagram does not have"
-            )
-        from src.rl.offline.grace.serving import (
-            build_grace_cql,
-            build_grace_dqn,
-            build_grace_iql,
-        )
-
-        fn = {
-            "dqn": build_grace_dqn,
-            "cql": build_grace_cql,
-            "iql": build_grace_iql,
-        }.get(suffix)
-        if fn is None:
-            raise ValueError(
-                f"grace has no arm for base algo '{suffix}' (dqn/cql/iql only)"
-            )
-        return fn(grace_options=dict(grace_options or {}), **kwargs)
+    # NB: there is no "grace" strategy critic. GRACE is a REWARD TRANSFORM on
+    # the arm (ruled 2026-08-31): on cells where confounding is confined to the
+    # reward channel, Q_do is what the base algorithm computes when trained on
+    # interventional rewards, so the variant is the base algorithm with one
+    # column substituted -- not a different critic. See runner._apply_grace.
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 

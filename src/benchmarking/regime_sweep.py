@@ -56,14 +56,10 @@ KNOWN_STRATEGIES: Tuple[str, ...] = (
     "proximal",
     "oracle_u",
     "sensitivity",
-    # GRACE v2 (2026-08-30): base-parity serving critics. Launchable per cell
-    # exactly like the others -- the critic AXIS rather than a new algorithm
-    # name, deliberately: the ablation builds ONE shared run per (point, env,
-    # algo, seed) and explodes it into per-critic leaves, so a variant and its
-    # base get identical data, seeds and budgets BY CONSTRUCTION rather than
-    # by convention.
-    "grace",
-    "grace_no_router",
+    # GRACE is NOT a critic strategy (ruled 2026-08-31): it is a reward
+    # transform applied to the arm's own training data, because on these cells
+    # Q_do IS the base algorithm's value on interventional rewards. See
+    # EnvConfig.grace_reward_transform.
 )
 ONLINE_STRATEGIES: Tuple[str, ...] = ("observational", "proximal")
 

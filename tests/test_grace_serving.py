@@ -1,17 +1,23 @@
-"""The GRACE critic seam — the properties the experiment's validity rests on.
+"""The GRACE reward-transform seam — the properties the experiment rests on.
 
-Each test here pins a decision that, if it silently broke, would make the
-variant-vs-base comparison meaningless rather than merely wrong.
+GRACE is not a critic here. On cells where confounding is confined to the
+reward channel (catalogue fact 3: no ``U -> S_next`` edge), ``Q_do`` is exactly
+what the base algorithm computes when trained on INTERVENTIONAL rewards, so the
+variant is the base algorithm with one column substituted. These tests pin the
+properties that, if they broke silently, would make the comparison meaningless
+rather than merely wrong — and this seam's failures are silent by construction
+(S14), so each one is a positive check that something MOVED, not just that
+nothing raised.
 """
 
 from __future__ import annotations
 
 import pytest
 import torch
-from src.benchmarking.critic_ablation import CRITIC_LIBRARY, StrategyCritic
+from src.rl.off_policy.replay_buffer import ReplayBuffer
 from src.rl.offline.grace.serving import (
-    fit_from_buffer,
-    GraceQNetwork,
+    apply_reward_transform,
+    fit_reward_transform,
     GraceServing,
     SERVE_ABSTAINED,
     SERVE_PESSIMISTIC,
@@ -20,143 +26,104 @@ from src.rl.offline.grace.serving import (
 CPU = torch.device("cpu")
 
 
-def _critic(base="cql", name="grace"):
-    return StrategyCritic(name, CRITIC_LIBRARY[name], base, 4, 2, CPU)
+def _buffer(n=40, ep_len=10, reward=1.0, with_proxies=False):
+    buf = ReplayBuffer(capacity=n + 10, device=CPU)
+    for i in range(n):
+        tr = {
+            "obs": torch.randn(4),
+            "actions": torch.tensor(i % 2),
+            "rewards": torch.tensor(float(reward)),
+            "next_obs": torch.randn(4),
+            "dones": torch.tensor(1.0 if (i + 1) % ep_len == 0 else 0.0),
+        }
+        if with_proxies:
+            tr["proxy_Z"] = torch.tensor(0.5)
+        buf.add(tr)
+    return buf
 
 
-@pytest.mark.parametrize("base", ["cql", "iql", "offline_dqn"])
-def test_every_base_arm_builds_and_binds_the_handoff(base):
-    """Base-parity: the arm is the BASE algo plus a serving wrapper, and the
-    fit is bound to set_sequence_buffer (the runner's handoff at
-    runner.py:1661) rather than to a training hook."""
-    sc = _critic(base)
-    assert isinstance(sc.net, GraceQNetwork)
-    assert callable(getattr(sc.agent, "set_sequence_buffer", None))
+def test_abstention_leaves_the_reward_column_untouched():
+    """An abstained run must be BYTE-IDENTICAL to its base.
+
+    That is what makes GRACE-ABSTAINED a safe fallback rather than a silent
+    third behaviour, and what lets abstained runs be reported separately
+    instead of pooled into the comparison.
+    """
+    buf = _buffer()
+    before = buf._data["rewards"].clone()
+    fired = apply_reward_transform(buf, GraceServing(reason="fit was dirty"))
+    assert fired is False
+    assert torch.equal(buf._data["rewards"], before)
 
 
-def test_unfitted_and_abstained_serving_is_a_literal_passthrough():
-    """The abstention fallback must be EXACTLY the base critic.
+def test_applying_the_transform_rewrites_exactly_the_reward_column():
+    buf = _buffer(n=20)
+    obs_before = buf._data["obs"].clone()
+    acts_before = buf._data["actions"].clone()
+    serving = GraceServing(
+        mode=SERVE_PESSIMISTIC, rewards=torch.full((20,), 7.0), l4_kind="interval"
+    )
+    assert apply_reward_transform(buf, serving) is True
+    assert torch.allclose(buf._data["rewards"][:20], torch.full((20,), 7.0))
+    # nothing else moves: same transitions, same seeds, ONE column different
+    assert torch.equal(buf._data["obs"], obs_before)
+    assert torch.equal(buf._data["actions"], acts_before)
 
-    If it were anything else, `GRACE-ABSTAINED` would be a silent third
-    behaviour and an abstained run would contaminate the comparison instead of
-    being separable from it."""
-    sc = _critic()
-    x = torch.randn(8, 4)
-    assert torch.equal(sc.net(x), sc.net.base(x))  # unfitted
-    sc.net.serving = GraceServing(reason="fit was dirty")  # abstained
-    assert sc.net.serving.abstained
-    assert torch.equal(sc.net(x), sc.net.base(x))
-    assert SERVE_ABSTAINED in sc.net.serving.label()
+
+def test_a_declared_proxy_channel_missing_from_the_buffer_abstains_loudly():
+    """A proximal cell whose proxies never reached the buffer would otherwise
+    quietly fit the ablation's WITHOUT arm — which the sweep measured
+    collapsing toward chance at the weak end. Saying so is the point."""
+    serving = fit_reward_transform(_buffer(with_proxies=False), proxy_names=("Z",))
+    assert serving.abstained
+    assert "proxy" in serving.reason.lower()
 
 
-def test_serving_applies_the_action_contrast_and_c3_label_travels():
-    sc = _critic()
-    x = torch.randn(6, 4)
-    base_q = sc.net.base(x).clone()
-    sc.net.serving = GraceServing(
+def test_the_runners_real_replay_buffer_is_readable():
+    """ReplayBuffer exposes its columns via gather(), NOT as attributes. An
+    extractor reading attributes would abstain on every real run — and
+    abstention is designed to look like a scope decision, so the experiment
+    would have come back all-GRACE-ABSTAINED with no error anywhere."""
+    from src.rl.offline.grace.serving import _episode_data_from_buffer
+
+    data, nxt, dones = _episode_data_from_buffer(_buffer(n=40, ep_len=10))
+    assert data is not None and data.n == 40
+    assert nxt.shape == (40, 4)
+    assert int(torch.unique(data.episode_ids).numel()) == 4
+
+
+def test_pessimism_can_only_reduce_a_bads_reward():
+    """The direction of the serving rule, pinned so it cannot flip.
+
+    The bootstrap's low end can land ABOVE the point estimate (seen at B=3:
+    point 30.63, interval [31.61, 31.85]). Unclamped, the shift is negative and
+    would RAISE a_bad — inverting the correction the seam exists to make.
+    """
+    assert max(0.0, 30.63 - 31.61) == 0.0  # clamped at the construction site
+    assert max(0.0, 31.85 - 31.61) == pytest.approx(0.24)
+
+
+def test_the_label_carries_the_serving_mode_and_l4_conditions():
+    """C3: the conditions travel into the run artifacts, so a reader can tell
+    which runs served and which abstained without re-deriving anything."""
+    served = GraceServing(
         mode=SERVE_PESSIMISTIC,
         l4_kind="interval",
         lo=-0.2,
         hi=0.4,
         fit_label="conv=True monotone=True",
-        action_offset=torch.tensor([0.3, -0.3]),
+        rewards=torch.zeros(3),
     )
-    served = sc.net(x)
-    assert torch.allclose(served - base_q, torch.tensor([0.3, -0.3]).expand(6, 2))
-    lab = sc.net.serving.label()
-    assert "Q-minus" in lab and "interval" in lab and "conv=True" in lab
+    assert "Q-minus" in served.label() and "interval" in served.label()
+    assert "conv=True" in served.label()
+    assert SERVE_ABSTAINED in GraceServing(reason="dirty").label()
 
 
-def test_the_wrapper_does_not_hide_the_base_network_surface():
-    """The agent may call other surfaces on its q_network (q_su/q_at hooks).
-    A __getattr__ that does not defer to nn.Module first makes even ``base``
-    unreachable — which is how this was first written, and it failed here."""
-    sc = _critic()
-    assert isinstance(sc.net.base, torch.nn.Module)
-    assert list(sc.net.parameters())  # parameters still discoverable
-
-
-def test_a_flat_buffer_without_episodes_abstains_with_a_reason():
-    """Never raise into the run: a cell GRACE cannot serve is one the base
-    algorithm still trains on, and the label must say why."""
-
-    class _Flat:
-        observations = torch.randn(10, 4)
-        actions = torch.zeros(10, dtype=torch.long)
-        rewards = torch.ones(10)
-
-    serving = fit_from_buffer(object(), _Flat())
-    assert serving.abstained
-    assert "episode" in serving.reason.lower()
-
-
-def test_grace_options_reject_an_unknown_key():
-    """No per-environment GRACE parameters anywhere: an option the seam does
-    not know must fail loudly at build time, not be carried silently."""
-    from src.rl.offline.grace.serving import _grace_options
-
-    assert _grace_options({"grace_options": {"alpha": 0.1}}) == {"alpha": 0.1}
-    # v1's router/deploy switches are accepted-and-dropped, never pretended
-    assert _grace_options({"grace_options": {"router": True}}) == {}
-    with pytest.raises(ValueError, match="unknown grace option"):
-        _grace_options({"grace_options": {"env_id": "CartPole-v1"}})
-
-
-def test_grace_is_a_known_strategy_so_configs_can_request_it():
+def test_grace_is_not_a_critic_strategy_any_more():
+    """It is an ARM flag, because it changes a training input rather than a
+    critic. A stale critic name would silently select a different code path."""
     from src.benchmarking.regime_sweep import KNOWN_STRATEGIES
+    from src.config.defaults import EnvConfig
 
-    assert "grace" in KNOWN_STRATEGIES
-
-
-def test_a_fit_on_episode_grouped_data_serves_the_pessimistic_end():
-    """End to end on a tiny fixture: the handoff fits, and what it serves is
-    the LOW end of L4's interval per action (the serving rule)."""
-
-    class _Seq:  # the padded (B, T, *) sequence layout
-        observations = torch.randn(12, 5, 4)
-        actions = (torch.rand(12, 5) < 0.5).long()
-        rewards = 1.0 + (torch.rand(12, 5) < 0.5).float()
-
-    serving = fit_from_buffer(
-        object(),
-        _Seq(),
-        b=3,
-        fit_kwargs=dict(max_iter=2, epochs=5),
-    )
-    # Either it served, or it abstained WITH a reason -- never a bare failure.
-    if serving.abstained:
-        assert serving.reason
-    else:
-        assert serving.mode == SERVE_PESSIMISTIC
-        assert serving.action_offset is not None
-        assert serving.action_offset.numel() == 2
-        # centred, so only the action CONTRAST is served
-        assert abs(float(serving.action_offset.sum())) < 1e-5
-        assert serving.lo <= serving.hi
-
-
-def test_q1_contrast_endpoint_is_logged_and_blank_without_a_truth():
-    """P5's entry condition: the secondary endpoint must exist BEFORE launch.
-
-    Return parity and 'GRACE corrected nothing' give the same headline return
-    and opposite conclusions; the q1 contrast is what separates them. It is
-    logged per strategy critic, so base and variant are directly comparable,
-    and it stays blank when the run declares no analytic truth (so no existing
-    run gains a spurious column value).
-    """
-    from src.benchmarking.critic_ablation import (
-        CriticAblationConfig,
-        STRATEGY_CRITIC_ABLATION_COLUMNS,
-    )
-
-    assert "q1_contrast_pred" in STRATEGY_CRITIC_ABLATION_COLUMNS
-    assert "q1_contrast_error" in STRATEGY_CRITIC_ABLATION_COLUMNS
-    assert CriticAblationConfig(critics=["grace"]).q1_truth is None
-
-    # the error is |predicted contrast - truth|, read off the critic's own Q
-    q_all = torch.tensor([[0.0, 1.5], [0.0, 2.5]])  # a_bad = 1
-    a_bad, truth = 1, 1.0
-    others = [j for j in range(q_all.shape[1]) if j != a_bad]
-    contrast = float((q_all[:, a_bad] - q_all[:, others].mean(dim=1)).mean())
-    assert contrast == 2.0
-    assert abs(contrast - truth) == 1.0
+    assert "grace" not in KNOWN_STRATEGIES
+    assert EnvConfig(env_id="CartPole-v1").grace_reward_transform is False

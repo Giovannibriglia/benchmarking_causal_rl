@@ -344,6 +344,54 @@ return-to-go where sequential), recorded during and after training. Then every
 outcome yields a claim: return gains where decision boundaries are crossed,
 Q-level gains where they are not.
 
+### ⚠ WHERE THE CAUSAL CRITIC'S EXTRA MACHINERY EARNS ITS COST (ruled + measured 2026-08-31)
+
+**On cells where confounding is confined to the reward channel, the
+interventional critic REDUCES to the base critic on interventional rewards.**
+Catalogue fact 3 says no wired cell has a `U -> S_next` edge, so the dynamics
+are unconfounded and the recorded transitions are already valid do-channel
+samples. The transition model was the only thing distinguishing a "causal
+critic" from a "reward-corrected base", and on these cells the diagram says it
+contributes nothing.
+
+This was Giovanni's set-aside "Option 1", judged the weaker version. **That
+judgement was wrong in a specific way**: it assumed the causal critic had more
+content than the reward correction. On these cells it does not — and the model
+that would have carried the extra content diverged when measured.
+
+**The measurements, all on CartPole:**
+
+| what | result |
+|---|---|
+| model-based `Q*_do` (LG transition + learned terminal head) | **DIVERGES**: V 1.11 -> 251 over 60 sweeps on `d_a_null` where truth is ~9; V*(s0) 330 vs realised 8.9 (+3603%), and 5032 vs 13.4 (+37504%) on d100 |
+| cause | model exploitation: LG samples `s'` off the manifold, the Q-net extrapolates, `max` selects the extrapolation, it compounds. Q2-A never saw it because its PUBLISHED terminal predicate clipped those states dead; the learned head introduced in that build caps at p=0.20 and can never zero a state |
+| unregularised fitted-Q on LOGGED tuples with r_hat (exact dynamics, exact dones) | **53.3** on `d_a_null` (truth ~9), 85.0 on d100 — a ~6x overestimate |
+| reward substitution (SERVED) | `d100` contrast interval **[0.4841, 0.5041]** against truth **0.5**; `d_a_null` interval **[0, 0]**, substituted-minus-logged **-1.2e-7** (a no-op to float precision) |
+| positive control (d100) | substituted - logged on `a_bad` = **-0.1127** against the independently measured naive bias `M*tilt` = **0.1004** — right direction, right magnitude; non-`a_bad` untouched to exactly 0.0 |
+
+**The 6x overestimate of the unregularised backup is a finding that SUPPORTS
+the ruling, not a blocker.** It demonstrates by measurement that the base
+algorithm's own conservatism is load-bearing — which is exactly why
+substituting the reward and leaving the learner untouched is the right
+formulation. Serving a plain fitted-Q to CQL would have bypassed the
+regulariser CQL exists for and turned the comparison into "regularised vs
+unregularised" wearing a causal label.
+
+**The statement for the write-up:**
+
+> On cells where confounding is confined to the reward channel, the
+> interventional critic reduces to the base critic on interventional rewards.
+> The additional machinery of a full causal critic — a learned transition model
+> under `do` — becomes necessary only when the dynamics are themselves
+> confounded (`U -> S_next`, the D-F / D-G family), and on those cells the
+> model-exploitation problem measured here must be solved before it can be
+> served.
+
+That is a result, not a retreat: it LOCATES where the extra machinery earns
+its cost, and it is measured rather than asserted. **The transition-model path
+is therefore DEFERRED to the confounded-dynamics cells**, with the divergence
+above as the recorded reason.
+
 ### ENTRY TICKET — all three experiment cells ENABLED (2026-08-31)
 
 Q2-A step 3 was run **per cell**, because passing on `d100` enables `d100` and

@@ -64,6 +64,7 @@ def fill_replay_buffer_from_minari(
     device: torch.device,
     mask_indices: tuple[int, ...] | None = None,
     load_u: bool = False,
+    load_proxies: bool = False,
 ) -> int:
     """Load a Minari dataset and fill ``buffer`` with its transitions.
 
@@ -111,6 +112,29 @@ def fill_replay_buffer_from_minari(
         truncations = torch.as_tensor(episode.truncations, dtype=torch.bool)
         dones = (terminations | truncations).float()
         steps = rewards.shape[0]
+        # PROXIES: the DECLARED observables of a proximal diagram (D-D's Z, W,
+        # V). A critic that ignores channels the diagram declares is not
+        # implementing that diagram (A1) -- and GRACE's estimator needs them:
+        # without proxies it IS the ablation's "without" arm, which the sweep
+        # measured collapsing toward chance at the weak end. Same shape as
+        # load_u, off by default, so every existing transition path stays
+        # byte-identical. (The SEQUENCE loader below is the deliberate
+        # duplicate; it needs the same only if a recurrent GRACE arm is ever
+        # built, and that is refused today.)
+        proxy_vals = {}
+        if load_proxies:
+            infos = getattr(episode, "infos", None) or {}
+            for name, key in (("Z", "proxy_z"), ("W", "proxy_w"), ("V", "proxy_v")):
+                if key in infos:
+                    proxy_vals[name] = torch.as_tensor(
+                        infos[key], dtype=torch.float32
+                    ).reshape(-1)
+            if not proxy_vals:
+                raise ValueError(
+                    f"load_proxies=True but Minari dataset '{dataset_id}' has no "
+                    "infos['proxy_z'/'proxy_w'/'proxy_v']; a proximal cell's "
+                    "declared proxy channels are required by the GRACE critic."
+                )
         u_vals = None
         if load_u:
             infos = getattr(episode, "infos", None) or {}
@@ -132,6 +156,8 @@ def fill_replay_buffer_from_minari(
             }
             if u_vals is not None:
                 transition["confounder_u"] = u_vals[t]
+            for _pn, _pv in proxy_vals.items():
+                transition[f"proxy_{_pn}"] = _pv[t]
             buffer.add(transition)
             n_added += 1
     return n_added

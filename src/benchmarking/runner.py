@@ -1525,9 +1525,32 @@ class BenchmarkRunner:
                 # Oracle-U ceiling: load the per-transition latent U so the
                 # U-conditioned critic can read batch["confounder_u"].
                 load_u=self._requires_confounder_u,
+                # A proximal cell's DECLARED proxy channels, needed by the
+                # GRACE reward transform. Off unless this arm asks for it, so
+                # every other transition path stays byte-identical.
+                load_proxies=bool(
+                    getattr(self.env_cfg, "grace_reward_transform", False)
+                ),
             )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
+
+        # GRACE: substitute INTERVENTIONAL rewards, once, before any gradient
+        # step. On these cells the dynamics are unconfounded (catalogue fact 3:
+        # no U -> S_next), so Q_do is exactly what the base algorithm computes
+        # on interventional rewards -- the variant is this algorithm with one
+        # column replaced, not a different critic. Abstention leaves the column
+        # untouched, so an abstained run is byte-identical to its base and says
+        # so in the label.
+        self.grace_serving = None
+        if getattr(self.env_cfg, "grace_reward_transform", False):
+            from src.rl.offline.grace.serving import transform_offline_rewards
+
+            pn = tuple(getattr(self.env_cfg, "grace_proxy_names", ()) or ())
+            self.grace_serving = transform_offline_rewards(
+                self.replay_buffer, proxy_names=pn, device=self.device
+            )
+            print(f"[grace] {self.grace_serving.label()}", file=sys.stderr)
 
         # Apparent-value trace queryability (Cells 7-8): warn once at run start
         # if the critic can't be queried at (s, a) so the curve is skipped rather

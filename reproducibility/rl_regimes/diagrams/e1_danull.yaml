@@ -61,6 +61,8 @@ algos:
 seeds: [0, 1, 2]
 
 # observational = the BASE arm (unmodified base critic); grace = the variant.
+
+# The BASELINE arm: the base algorithm's own critic, unmodified.
 critics:
-  basic:      [observational, grace]
-  confounded: [observational, grace]
+  basic:      [observational]
+  confounded: [observational]

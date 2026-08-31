@@ -46,8 +46,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
 import torch
-import torch.nn as nn
 
 from .estimator import EpisodeData, LatentClassEstimator
 from .l4 import point_id_interval
@@ -73,8 +73,10 @@ class GraceServing:
     l4_kind: str = ""
     lo: float = float("nan")
     hi: float = float("nan")
-    # per-action offsets applied to the base critic's Q, shape (A,)
-    action_offset: Optional[torch.Tensor] = None
+    # THE SERVED OBJECT: interventional rewards, one per buffer transition,
+    # with the pessimistic contrast already applied on a_bad. None when the
+    # fit abstained, and the buffer is then left untouched.
+    rewards: Optional[torch.Tensor] = None
     meta: dict = field(default_factory=dict)
 
     @property
@@ -93,115 +95,90 @@ class GraceServing:
         return " ".join(bits)
 
 
-class GraceQNetwork(nn.Module):
-    """The serving head: the base critic, plus GRACE's per-action correction.
-
-    Before a fit lands (and whenever the fit abstains) this is a LITERAL
-    pass-through, so a GRACE run that never fits is byte-identical to its base
-    — which is what makes ``GRACE-ABSTAINED`` a safe fallback rather than a
-    silent third behaviour.
-
-    The correction is an additive per-action offset rather than a wholesale Q
-    replacement, deliberately: the base learner's Q carries the sequential
-    value the fitted iteration would otherwise have to reproduce, while the
-    offset carries the identified do-effect the base learner cannot see. A
-    wholesale replacement would discard the learner and make the comparison a
-    comparison of two different algorithms.
-    """
-
-    def __init__(self, base: nn.Module) -> None:
-        super().__init__()
-        self.base = base
-        self.serving: GraceServing = GraceServing()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        q = self.base(x)
-        off = self.serving.action_offset
-        if off is None:  # not fitted, or abstained -> pass through
-            return q
-        return q + off.to(q.device, q.dtype).reshape(1, -1)
-
-    # The base critic's other surfaces must keep working: an agent may call
-    # ``q_su``/``q_at`` on its network (the OracleU/Proximal hooks). Delegate
-    # rather than reimplement, so a missing attribute fails loudly upstream.
-    def __getattr__(self, name):
-        # nn.Module owns parameter/buffer/submodule lookup (``base`` included);
-        # only genuinely-missing names delegate onward. Overriding this without
-        # deferring to super() first makes ``self.base`` itself unreachable.
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            base = self._modules.get("base")
-            if base is None:
-                raise
-            return getattr(base, name)
-
-
-def fit_from_buffer(
-    agent,
+def fit_reward_transform(
     buffer,
     *,
     proxy_names: tuple = (),
     alpha: float = 0.1,
     b: int = 19,
     fit_seed: int = 0,
-    # (1, 2) not (1, 2, 3, 4): the init-perturbation arm is DIAGNOSTIC (it
-    # gives the procedural share), so two perturbations buy the diagnostic at
-    # half the fits. Matches V4's production setting.
     init_seeds: tuple = (1, 2),
     fit_kwargs: Optional[dict] = None,
     device=None,
 ) -> GraceServing:
-    """THE handoff: fit L3 once on the episode-grouped buffer, serve thereafter.
+    """THE handoff: fit L3 + L4 once, then hand back the INTERVENTIONAL rewards.
 
-    Returns the ``GraceServing`` that the head will use. Every failure path
-    returns an ABSTENTION carrying its reason — never a silent fallback, and
-    never an exception that would take the run down: a cell GRACE cannot serve
-    is a cell the base algorithm still trains on, and the label says so.
+    **Why a reward transform and not a served Q** (ruled 2026-08-31). Catalogue
+    fact 3: no wired cell has a ``U -> S_next`` edge, so on these cells the
+    dynamics are UNCONFOUNDED and the confounding enters through the reward
+    channel alone. Then ``Q_do`` is exactly the value the base algorithm
+    computes when trained on interventional rewards -- the transition model was
+    the only thing distinguishing "causal critic" from "reward-corrected base",
+    and the diagram says it contributes nothing here. The model-based path was
+    also measured DIVERGING (V 1.11 -> 251 over 60 sweeps on d_a_null, where
+    truth is ~9: LinearGaussian samples s' off the manifold, the Q-net
+    extrapolates, the max selects the extrapolation, and it compounds).
+
+    So the served object is built ONLY from components that have been measured:
+    ``r_hat`` via ``interventional_sweep`` (V-C1: 80-97% of the correctable
+    bias removed), L4's interval (V4: coverage measured), and the recorded
+    transitions and dones (exact by construction). Nothing new is served.
+
+    It also leaves the base algorithm's own conservatism intact: handing a
+    plain fitted-Q to CQL would bypass the very regulariser CQL exists for and
+    turn the comparison into "regularised vs unregularised". Substituting one
+    column does not.
     """
     fk = dict(fit_kwargs or dict(max_iter=30, m_step_budget=400, batch_size=4096))
     try:
-        data = _episode_data_from_buffer(buffer, proxy_names=proxy_names, device=device)
-    except Exception as exc:  # buffer shape the seam does not understand
+        data, _nxt, _dn = _episode_data_from_buffer(
+            buffer, proxy_names=proxy_names, device=device
+        )
+    except Exception as exc:
         return GraceServing(reason=f"buffer not episode-grouped: {exc}")
     if data is None:
         return GraceServing(reason="buffer carried no usable episodes")
-
-    n_actions = int(data.action.max().item()) + 1
-    state_dim = int(data.state.shape[1])
-
-    def make_estimator(seed: int) -> LatentClassEstimator:
-        return LatentClassEstimator(
-            state_dim=state_dim,
-            n_actions=n_actions,
-            proxy_names=tuple(proxy_names),
-            device=data.state.device,
-            seed=int(seed),
+    missing = [p_ for p_ in proxy_names if p_ not in data.proxy]
+    if missing:
+        return GraceServing(
+            reason=(
+                f"declared proxy channels {missing} absent from the buffer -- "
+                "the loader needs load_proxies=True for a proximal cell"
+            )
         )
 
-    # The estimand served per action: E[R | do(a), s] averaged over the
-    # buffer's own states. ``interventional_sweep`` is the READ-ONLY path
-    # (query_batch, N1a) -- nothing here feeds a loss, so the non-
-    # differentiable API is the right one.
-    ev = data.state
-
-    # ONE interval, on the CONTRAST -- not one per action. Two reasons, and
-    # the second is the load-bearing one:
-    #   * cost: a per-action loop pays the whole bootstrap twice (2 x (1
-    #     observed + inits + B replicates)) for a quantity that is a difference;
-    #   * COHERENCE: per-action intervals come from DIFFERENT bootstrap draws,
-    #     so their difference is not the difference's interval. Only the
-    #     contrast can move an argmax (the offsets are centred below), so the
-    #     contrast is the estimand whose uncertainty the serving rule needs.
+    dev = data.state.device
+    n_actions = int(data.action.max().item()) + 1
     a_bad = min(1, n_actions - 1)
     others = [j for j in range(n_actions) if j != a_bad]
 
-    def contrast_target(est, fit):
-        bad = est.interventional_sweep(ev, [a_bad] * ev.shape[0], fit).value.mean()
-        oth = sum(
-            est.interventional_sweep(ev, [j] * ev.shape[0], fit).value.mean()
-            for j in others
-        ) / max(len(others), 1)
+    def make_estimator(seed: int) -> LatentClassEstimator:
+        return LatentClassEstimator(
+            state_dim=int(data.state.shape[1]),
+            n_actions=n_actions,
+            proxy_names=tuple(proxy_names),
+            device=dev,
+            seed=int(seed),
+        )
+
+    def _sweep(est, fit, action, states):
+        parts = []
+        for k in range(0, states.shape[0], 4096):
+            chunk = states[k : k + 4096]
+            v = est.interventional_sweep(
+                chunk, [action] * chunk.shape[0], fit
+            ).value.reshape(-1)
+            parts.append(v.detach().cpu().numpy())  # query_batch: inference mode
+        return np.concatenate(parts)
+
+    # ONE interval, on the CONTRAST. Per-action intervals come from different
+    # bootstrap draws, so their difference is not the difference's interval --
+    # and the contrast is what the pessimism rule acts on.
+    def contrast_target(est_r, fit_r):
+        bad = _sweep(est_r, fit_r, a_bad, data.state).mean()
+        oth = float(
+            np.mean([_sweep(est_r, fit_r, j, data.state).mean() for j in others])
+        )
         return float(bad - oth)
 
     res = point_id_interval(
@@ -214,37 +191,62 @@ def fit_from_buffer(
         fit_seed=fit_seed,
         init_seeds=init_seeds,
     )
-    label = res.label
     if res.kind == "abstain":
         return GraceServing(reason=res.reason, fit_label=res.label)
-    # THE SERVING RULE: the pessimistic end, for both `interval` and `bounds`.
-    # For a CONTRAST, pessimism is its LOW end -- confounding inflates a_bad's
-    # apparent value, so the conservative statement is the smallest advantage
-    # the identified set allows it. No compatible model contradicts it.
-    los, his, kinds = [res.lo], [res.hi], [res.kind]
-    off = torch.zeros(n_actions, dtype=torch.float32, device=data.state.device)
-    off[a_bad] = float(res.lo)
-    # Only the CONTRAST between actions can matter to a policy, so centre the
-    # offset: a constant shift on every action changes no argmax and would
-    # otherwise leak the reward scale into the base critic's magnitudes.
-    off = off - off.mean()
+
+    # r_hat per transition, from the observed fit (deterministic, so this is
+    # the same fit the interval was built around).
+    est0 = make_estimator(fit_seed)
+    fit0 = est0.fit(data, **dict(fk, init="proxy" if proxy_names else "random"))
+    r_hat = np.stack([_sweep(est0, fit0, a, data.state) for a in range(n_actions)], 1)
+    contrast_hat = float((r_hat[:, a_bad] - r_hat[:, others].mean(axis=1)).mean())
+    # PESSIMISM, clamped: it may only ever REDUCE a_bad's advantage. The
+    # bootstrap's low end can sit above the point estimate, and applying that
+    # unclamped would raise a_bad -- inverting the correction.
+    pess = max(0.0, contrast_hat - float(res.lo))
+    acts = data.action.reshape(-1).detach().cpu().numpy()
+    new_r = r_hat[np.arange(acts.size), acts].astype(np.float32)
+    new_r[acts == a_bad] -= pess
     return GraceServing(
         mode=SERVE_PESSIMISTIC,
-        fit_label=label,
-        l4_kind=kinds[0] if kinds else "",
-        lo=min(los) if los else float("nan"),
-        hi=max(his) if his else float("nan"),
-        action_offset=off,
+        fit_label=res.label,
+        l4_kind=res.kind,
+        lo=res.lo,
+        hi=res.hi,
+        rewards=torch.as_tensor(new_r, device=dev),
         meta={
-            "per_action_lo": los,
-            "per_action_hi": his,
-            "n_episodes": int(torch.unique(data.episode_ids).numel()),
+            "contrast_point": contrast_hat,
+            "contrast_observed_l4": res.observed,
+            "pessimism_applied": pess,
             "n_transitions": int(data.n),
+            "n_a_bad": int((acts == a_bad).sum()),
+            "procedural_share": res.procedural_share,
+            "failure_rate": res.failure_rate,
         },
     )
 
 
+def apply_reward_transform(buffer, serving: GraceServing) -> bool:
+    """Overwrite the buffer's reward column in place. Returns whether it fired.
+
+    On abstention the rewards are left UNTOUCHED, so an abstained run is
+    byte-identical to its base -- which is what makes ``GRACE-ABSTAINED`` a
+    safe fallback rather than a silent third behaviour.
+    """
+    if serving.abstained or serving.rewards is None:
+        return False
+    col = getattr(buffer, "_data", {}).get("rewards")
+    if col is None:
+        raise TypeError(f"{type(buffer).__name__} exposes no reward column to rewrite")
+    n = serving.rewards.shape[0]
+    col[:n] = serving.rewards.reshape(col[:n].shape).to(col.dtype).to(col.device)
+    return True
+
+
 def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
+    """Returns ``(EpisodeData, next_obs, dones)`` -- the fitted iteration needs
+    the transition targets and the termination labels, not just the episode
+    blocks."""
     """Rebuild ``EpisodeData`` from whatever the runner handed over.
 
     Accepts the sequence buffer's padded ``(B, T, ...)`` layout and the flat
@@ -252,108 +254,85 @@ def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
     nothing to fit rather than raising, so the caller can abstain with a
     reason.
     """
-    get = getattr(buffer, "as_episode_arrays", None)
-    if callable(get):  # explicit seam if a buffer offers one
-        obs, act, rew, ep = get()
+    # ``ReplayBuffer`` (the runner's offline path) exposes its columns only
+    # through ``gather``/``_data``, never as attributes -- reading attributes
+    # alone would make GRACE abstain on EVERY real run while looking like a
+    # scope decision. Take the dict form first, then fall back to attributes
+    # (the sequence buffer and the test fixtures).
+    cols = None
+    if hasattr(buffer, "gather") and len(buffer) > 0:
+        cols = buffer.gather(range(len(buffer)))
+    elif isinstance(buffer, dict):
+        cols = buffer
+    if cols is not None:
+        obs, act = cols.get("obs"), cols.get("actions")
+        rew, nxt = cols.get("rewards"), cols.get("next_obs")
+        dn, ep = cols.get("dones"), cols.get("episode_ids")
+        # The DECLARED proxy channels, if the loader was asked for them
+        # (load_proxies). Their absence is not an error here -- a cell may
+        # declare none -- but a cell that DOES declare them and does not carry
+        # them would silently fit the "without" arm, so the caller checks.
+        found = {
+            k[len("proxy_") :]: v for k, v in cols.items() if k.startswith("proxy_")
+        }
     else:
-        obs = getattr(buffer, "observations", None)
+        found = {}
+        obs = getattr(buffer, "obs", None)
+        if obs is None:
+            obs = getattr(buffer, "observations", None)
         act = getattr(buffer, "actions", None)
         rew = getattr(buffer, "rewards", None)
+        nxt = getattr(buffer, "next_obs", None)
+        dn = getattr(buffer, "dones", None)
         ep = getattr(buffer, "episode_ids", None)
-        if obs is None or act is None or rew is None:
-            raise TypeError(
-                f"{type(buffer).__name__} exposes neither as_episode_arrays() nor "
-                "observations/actions/rewards"
-            )
-        if ep is None:  # padded (B, T, *) sequence layout
-            if getattr(obs, "ndim", 0) != 3:
-                raise TypeError(
-                    "flat buffer without episode ids: GRACE needs episode blocks"
-                )
-            bsz, t = obs.shape[0], obs.shape[1]
-            ep = (
-                torch.arange(bsz, device=obs.device).reshape(-1, 1).expand(bsz, t)
-            ).reshape(-1)
-            obs = obs.reshape(bsz * t, -1)
-            act = act.reshape(-1)
-            rew = rew.reshape(-1)
+    if obs is None or act is None or rew is None:
+        raise TypeError(
+            f"{type(buffer).__name__} exposes no obs/actions/rewards to fit on"
+        )
+    if ep is None and getattr(obs, "ndim", 0) == 3:  # padded (B, T, *) layout
+        bsz, t = obs.shape[0], obs.shape[1]
+        ep = (
+            torch.arange(bsz, device=obs.device).reshape(-1, 1).expand(bsz, t)
+        ).reshape(-1)
+        obs = obs.reshape(bsz * t, -1)
+        act = act.reshape(-1)
+        rew = rew.reshape(-1)
+        nxt = nxt.reshape(bsz * t, -1) if nxt is not None else None
+        dn = dn.reshape(-1) if dn is not None else None
+    if ep is None and dn is not None:
+        # Flat layout WITH done flags: episode ids are the running count of
+        # completed episodes, which is what makes the blocks recoverable.
+        d = torch.as_tensor(dn).reshape(-1)
+        ep = torch.cat([torch.zeros(1, device=d.device), d[:-1].cumsum(0)]).long()
+    if ep is None:
+        raise TypeError("flat buffer without episode ids or dones: GRACE needs blocks")
     dev = device or getattr(obs, "device", "cpu")
     t_ = lambda x, dt=torch.float32: torch.as_tensor(x, dtype=dt, device=dev)
     obs, act, rew, ep = t_(obs), t_(act, torch.long), t_(rew), t_(ep, torch.long)
     if obs.ndim == 1:
         obs = obs.reshape(-1, 1)
+    nxt = t_(nxt) if nxt is not None else obs.roll(-1, dims=0)
+    if nxt.ndim == 1:
+        nxt = nxt.reshape(-1, 1)
+    dn = t_(dn) if dn is not None else torch.zeros(obs.shape[0], device=dev)
     if int(torch.unique(ep).numel()) < 2:
-        return None
-    return EpisodeData(state=obs, action=act, reward=rew, episode_ids=ep)
+        return None, None, None
+    proxy = {k: t_(v).reshape(-1) for k, v in (found or {}).items() if k in proxy_names}
+    return (
+        EpisodeData(state=obs, action=act, reward=rew, episode_ids=ep, proxy=proxy),
+        nxt,
+        dn.reshape(-1).float(),
+    )
 
 
-def install_grace(agent, net: GraceQNetwork, **fit_options) -> None:
-    """Bind the fit to the buffer handoff. Idempotent per agent."""
+def transform_offline_rewards(buffer, **options) -> GraceServing:
+    """The runner's entry point: fit, then substitute, then report.
 
-    def _set_sequence_buffer(buffer):
-        serving = fit_from_buffer(agent, buffer, **fit_options)
-        net.serving = serving
-        tgt = getattr(agent, "target_network", None)
-        if isinstance(tgt, GraceQNetwork):
-            tgt.serving = serving
-        agent.grace_serving = serving  # so the runner can record the label
-        return serving
-
-    agent.set_sequence_buffer = _set_sequence_buffer
-
-
-def _wrap(agent, net, **fit_options):
-    wrapped = GraceQNetwork(net)
-    agent.q_network = wrapped
-    tgt = getattr(agent, "target_network", None)
-    if tgt is not None:
-        agent.target_network = GraceQNetwork(tgt)
-    install_grace(agent, wrapped, **fit_options)
-    return wrapped, agent
-
-
-def _grace_options(kwargs) -> dict:
-    """Method options only — never an environment id (the A1/binding rule)."""
-    opts = dict(kwargs.pop("grace_options", None) or {})
-    allowed = {
-        "proxy_names",
-        "alpha",
-        "b",
-        "fit_seed",
-        "init_seeds",
-        "fit_kwargs",
-        "device",
-    }
-    unknown = set(opts) - allowed - {"router", "interval", "deploy"}
-    if unknown:
-        raise ValueError(f"unknown grace option(s): {sorted(unknown)}")
-    # v1's router/deploy switches are not part of the v2 serving rule; accept
-    # and ignore them so the frozen CRITIC_LIBRARY specs stay loadable, but do
-    # not silently pretend to honour them.
-    for legacy in ("router", "interval", "deploy"):
-        opts.pop(legacy, None)
-    return opts
-
-
-def build_grace_cql(**kwargs):
-    from src.rl.offline.cql import build_cql
-
-    opts = _grace_options(kwargs)
-    net, agent = build_cql(**kwargs)
-    return _wrap(agent, net, **opts)
-
-
-def build_grace_iql(**kwargs):
-    from src.rl.offline.iql import build_iql
-
-    opts = _grace_options(kwargs)
-    net, agent = build_iql(**kwargs)
-    return _wrap(agent, net, **opts)
-
-
-def build_grace_dqn(**kwargs):
-    from src.rl.offline.dqn import build_offline_dqn
-
-    opts = _grace_options(kwargs)
-    net, agent = build_offline_dqn(**kwargs)
-    return _wrap(agent, net, **opts)
+    Called once after the offline fill and BEFORE any gradient step, so the
+    base algorithm trains on interventional rewards from its first step. The
+    returned ``GraceServing`` carries the C3 label into the run artifacts.
+    """
+    serving = fit_reward_transform(buffer, **options)
+    if not serving.abstained:
+        apply_reward_transform(buffer, serving)
+    return serving

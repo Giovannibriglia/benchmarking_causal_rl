@@ -1,6 +1,6 @@
-# E1 — the first GRACE deployment experiment (d025), 2026-08-31
+# E1 — the first GRACE deployment experiment (danull), 2026-08-31
 #
-# Generated from d_d_sweep_d025.yaml: the cell's DECLARED ARMS are kept verbatim (copying the
+# Generated from d_a_null.yaml: the cell's DECLARED ARMS are kept verbatim (copying the
 # gate by hand would be a second construction site); only envs, the critic axis,
 # the algo list and the deployment evaluation are changed.
 #
@@ -10,38 +10,34 @@
 # THE CRITIC AXIS, not new algorithm names: one shared run per (point, env,
 # algo, seed) explodes into per-critic leaves, so variant and base get identical
 # data, seeds and budgets BY CONSTRUCTION rather than by convention.
-# D-D compensated gate-separation sweep -- point d = 0.25 (q = 0.375, 0.625).
+# D-A-null — the REFERENCE NULL arm. No latent at all.
 #
-# One YAML per sweep point; the grid (approved 2026-08-21): d in
-# {1.00, 0.50, 0.25, 0.10, 0.05} at M = 1.0, sigma = 0.25 uniform. Pairs are
-# SYMMETRIC about 0.5, so the MARGINAL bonus rate on gated steps is constant
-# along the sweep and only the U-separation varies -- one more thing held
-# fixed. d = 1.00 is (0, 1): the deterministic gate exactly, regenerated WITH
-# V under its own -d100 id so the with-arm is uniformly three-proxy; the
-# frozen two-proxy originals remain the historical record and the sigma = 1.0
-# contrast. c_r is DERIVED as M / d in arm_knobs (no confounder_c_r line here
-# BY DESIGN -- declaring both raises).
+# Collected through the same action-dependent policy as every other arm, but at
+# sigma = 0 AND c_r = 0: U is drawn and logged, and touches neither the action
+# nor the reward. So the diagram is genuinely D-A-null, not "D-B with the dial
+# at zero", and any refutation L5 issues here is a false alarm by construction.
+# That is what makes the false-positive rate readable without a threshold.
+#
+# The gate knows: with c_r = 0 the generator declares expect_gated_reward=False,
+# so A4 is SKIPPED rather than tested against noise (it would pass or fail on a
+# coin flip). The metadata records that it was skipped, so a later reader can
+# tell "not applicable" from "passed".
 regime: offline_mdp
 observability: mdp
 data_regime: offline
 discrete_only: true
 simulation: critic_ablation
-diagram: D-D
+diagram: D-A-null
 
 generator_algo: dqn
 pi_basic_epsilon: 0.5
-gate_probs: [0.375, 0.625]
-gate_mean_effect: 1.0
-proxy_strength: 1.5
+confounder_c_r: 0.0        # NO U->R edge: this is the whole point of the arm
+
+# One point. The L's severity axes do not apply: there is nothing to make severe.
 sweep:
-  # basic: false ACKNOWLEDGES the loader's null-anchor warning deliberately:
-  # the sweep's deliverables use NO per-point null calibration (recovery reads
-  # logged U, the do-contrast reads the known M, and the naive-bias null scales
-  # from the FROZEN sigma=0 arms by c_r). Per-point sigma=0 companions would be
-  # redundant generation; the approved grid is sigma = 0.25 only, 30 datasets.
-  basic:      false
+  basic:      { beta: 0.0, sigma: 0.0 }
   biased:     false
-  confounded: { beta: 0.0, sigma: [0.25] }
+  confounded: false
 
 # CartPole only: the Acrobot transition mechanism is unproven, so Acrobot q2 is
 # not ready and the first experiment is not coupled to it.
@@ -66,7 +62,15 @@ seeds: [0, 1, 2]
 
 # observational = the BASE arm (unmodified base critic); grace = the variant.
 
-# The BASELINE arm: the base algorithm's own critic, unmodified.
+# The GRACE arm: the SAME algorithm, the SAME transitions, the SAME seeds --
+# one column different. GRACE is a reward transform rather than a critic
+# because on these cells confounding is confined to the reward channel
+# (catalogue fact 3: no U -> S_next), so Q_do IS the base algorithm's value on
+# interventional rewards. Base-parity is therefore stronger than "same
+# batches": the algorithm is untouched.
+grace_reward_transform: true
+grace_proxy_names: []
+
 critics:
   basic:      [observational]
   confounded: [observational]

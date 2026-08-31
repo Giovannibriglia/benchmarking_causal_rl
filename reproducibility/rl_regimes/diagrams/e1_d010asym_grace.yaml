@@ -71,7 +71,15 @@ seeds: [0, 1, 2]
 
 # observational = the BASE arm (unmodified base critic); grace = the variant.
 
-# The BASELINE arm: the base algorithm's own critic, unmodified.
+# The GRACE arm: the SAME algorithm, the SAME transitions, the SAME seeds --
+# one column different. GRACE is a reward transform rather than a critic
+# because on these cells confounding is confined to the reward channel
+# (catalogue fact 3: no U -> S_next), so Q_do IS the base algorithm's value on
+# interventional rewards. Base-parity is therefore stronger than "same
+# batches": the algorithm is untouched.
+grace_reward_transform: true
+grace_proxy_names: ["Z", "W", "V"]
+
 critics:
   basic:      [observational]
   confounded: [observational]
