@@ -39,6 +39,11 @@ class EnvConfig:
     # 1.0 default. Unused by the additive bias_confounded path (cells 7/8), which
     # stays byte-frozen with c_r = c_a = sigma at its construction sites.
     confounder_c_r: Optional[float] = None
+    # Deployment evaluation: keep U->R at eval while U->A is severed by the
+    # learned policy acting (ruled 2026-08-31). The eval value is then
+    # E_U[R|do(a),s], the causal estimand. Default False keeps every existing
+    # run's eval env byte-identical (clean), so no frozen golden moves.
+    eval_confounded_reward: bool = False
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

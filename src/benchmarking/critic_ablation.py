@@ -85,6 +85,14 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # NOT the target policy — a data-consistent reference, not an
     # interventional oracle). Evaluation-side use of the LOGGED
     # U only; blank when the buffer carries no U.
+    # Q1 CONTRAST vs the ANALYTIC truth -- P5's entry condition. Return parity
+    # and "GRACE corrected nothing" produce the SAME headline return and
+    # OPPOSITE conclusions, so returns alone are unreadable: this is what
+    # separates them. Logged for EVERY strategy critic (so base and variant are
+    # directly comparable) at every eval point during training and at the end.
+    # Blank when the run declares no analytic truth.
+    "q1_contrast_pred",
+    "q1_contrast_error",
     "value_mse_to_mc",
     "value_mse_to_mc_u0",
     "mc_rtg_mean",
@@ -255,6 +263,12 @@ class CriticAblationConfig:
     # Cell-level ``grace:`` options block (feat/grace-critic) — merged OVER
     # the grace CriticSpec defaults for every grace arm; None = defaults.
     grace: dict | None = None
+    # The analytic q1 do-contrast E[R|do(a_bad)] - E[R|do(a_other)] for this
+    # cell, supplied by the driver (which knows c_r and the gate) rather than
+    # re-derived here -- one construction site for the estimand. None leaves
+    # the q1 columns blank.
+    q1_truth: float | None = None
+    a_bad: int = 1
 
     def to_dict(self) -> dict:
         out = {
@@ -631,6 +645,8 @@ class CriticAblationManager:
         # own spec.grace in StrategyCritic. Empty for every non-grace run, so
         # the frozen critics are untouched.
         self.grace = dict(getattr(config, "grace", None) or {})
+        self.q1_truth = getattr(config, "q1_truth", None)
+        self.a_bad = int(getattr(config, "a_bad", 1) or 0)
         selected_critics = (
             [str(name) for name in config.critics]
             if config.critics
@@ -900,6 +916,17 @@ class CriticAblationManager:
                 train_loss=losses.get(name, ""),
                 apparent_q_mean=float(q_c.mean().item()),
             )
+            # Q1 CONTRAST (P5): the critic's own implied do-contrast against the
+            # analytic truth, averaged over the eval states -- the quantity
+            # V-C1 scores at estimator level, now read off the CRITIC the
+            # policy actually acts on.
+            if self.q1_truth is not None and q_all.shape[1] > self.a_bad:
+                others = [j for j in range(q_all.shape[1]) if j != self.a_bad]
+                contrast = float(
+                    (q_all[:, self.a_bad] - q_all[:, others].mean(dim=1)).mean().item()
+                )
+                row["q1_contrast_pred"] = contrast
+                row["q1_contrast_error"] = abs(contrast - float(self.q1_truth))
             # Γ is a sensitivity-only method parameter; blank for the others (they
             # apply no MSM bound). Orthogonal to (β, σ) — logged, never path-encoded.
             if critic.spec.builder == "sensitivity":

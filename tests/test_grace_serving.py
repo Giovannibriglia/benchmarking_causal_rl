@@ -133,3 +133,30 @@ def test_a_fit_on_episode_grouped_data_serves_the_pessimistic_end():
         # centred, so only the action CONTRAST is served
         assert abs(float(serving.action_offset.sum())) < 1e-5
         assert serving.lo <= serving.hi
+
+
+def test_q1_contrast_endpoint_is_logged_and_blank_without_a_truth():
+    """P5's entry condition: the secondary endpoint must exist BEFORE launch.
+
+    Return parity and 'GRACE corrected nothing' give the same headline return
+    and opposite conclusions; the q1 contrast is what separates them. It is
+    logged per strategy critic, so base and variant are directly comparable,
+    and it stays blank when the run declares no analytic truth (so no existing
+    run gains a spurious column value).
+    """
+    from src.benchmarking.critic_ablation import (
+        CriticAblationConfig,
+        STRATEGY_CRITIC_ABLATION_COLUMNS,
+    )
+
+    assert "q1_contrast_pred" in STRATEGY_CRITIC_ABLATION_COLUMNS
+    assert "q1_contrast_error" in STRATEGY_CRITIC_ABLATION_COLUMNS
+    assert CriticAblationConfig(critics=["grace"]).q1_truth is None
+
+    # the error is |predicted contrast - truth|, read off the critic's own Q
+    q_all = torch.tensor([[0.0, 1.5], [0.0, 2.5]])  # a_bad = 1
+    a_bad, truth = 1, 1.0
+    others = [j for j in range(q_all.shape[1]) if j != a_bad]
+    contrast = float((q_all[:, a_bad] - q_all[:, others].mean(dim=1)).mean())
+    assert contrast == 2.0
+    assert abs(contrast - truth) == 1.0

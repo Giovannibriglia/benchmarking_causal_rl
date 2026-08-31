@@ -368,6 +368,37 @@ class BenchmarkRunner:
             env_entry_point=env_cfg.env_entry_point,
             env_kwargs=env_cfg.env_kwargs,
         )
+        # DEPLOYMENT EVALUATION (opt-in, ruled 2026-08-31). ``do(a)`` removes
+        # the incoming edges to A and leaves everything else, so the deployment
+        # environment IS the mutilated graph: the learned policy chooses the
+        # action (so U cannot influence it), while U still exists and still
+        # perturbs the reward. Under that env the deployment value is
+        # E_U[R | do(a), s] -- EXACTLY the causal estimand, for which GRACE is
+        # unbiased and the naive critic is biased by M*tilt. With a clean eval
+        # env the deployment value is the CLEAN reward, which NEITHER critic
+        # targets (both carry the marginal bonus c_r*P(U=1)*1[a_bad]; GRACE
+        # removes only the tilt on top of it), so a clean-eval comparison
+        # measures reward-model misspecification rather than confounding.
+        #
+        # The U->A edge lives in the BEHAVIOUR POLICY, not in this wrapper, and
+        # at evaluation the learned policy acts -- so severing it needs no
+        # code: only the reward path (c_r) is wrapped, and c_a/sigma are
+        # irrelevant here. c_a=0.0 makes that explicit rather than implicit.
+        if getattr(env_cfg, "eval_confounded_reward", False):
+            from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
+
+            _bp_e = getattr(env_cfg, "behavior_policy", "agent")
+            _kind_e = (
+                "action_gated" if _bp_e == "bias_confounded_action" else "additive"
+            )
+            _c_r_e = getattr(env_cfg, "confounder_c_r", None)
+            if _c_r_e is None:
+                _c_r_e = getattr(env_cfg, "behavior_strength", None)
+            _c_r_e = 1.0 if _c_r_e is None else float(_c_r_e)
+            self.eval_env = ConfoundedCollectionWrapper(
+                self.eval_env, c_a=0.0, c_r=_c_r_e, confounder_kind=_kind_e
+            )
+
         # Observation masking (Z-hidden axis): drop the configured indices from
         # the flat obs of BOTH train and eval, so the agent is built for the
         # reduced dim and sees the same masked obs throughout. Applied on the

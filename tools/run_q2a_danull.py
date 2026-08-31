@@ -97,7 +97,7 @@ def main() -> int:
     from tools.recertify_diagram_arms import rebuild_samples
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    out_path = Path("results/q2a_danull/report.json")
+    out_path = Path(os.environ.get("Q2A_OUT", "results/q2a_danull/report.json"))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out: list = []
     if out_path.exists():
@@ -105,13 +105,29 @@ def main() -> int:
         print(f"  resuming: {len(out)} rows already done", flush=True)
     done = {(r["env"], r["seed"]) for r in out}
 
-    recert = json.loads(Path("results/vb_recertification/report.json").read_text())
-    spec = load_sweep_spec(Path("reproducibility/rl_regimes/diagrams/d_a_null.yaml"))
+    # CELL is a parameter (Q2-A step 3 = the same machinery on d_d), so the
+    # step-2 defaults reproduce the committed d_a_null result verbatim.
+    cell = os.environ.get("Q2A_CELL", "d_a_null")
+    envs = tuple(
+        e for e in os.environ.get("Q2A_ENVS", "CartPole-v1,Acrobot-v1").split(",") if e
+    )
+    spec_name = "d_a_null" if cell == "d_a_null" else cell
+    spec = load_sweep_spec(
+        Path(f"reproducibility/rl_regimes/diagrams/{spec_name}.yaml")
+    )
+    if cell == "d_a_null":
+        src = json.loads(Path("results/vb_recertification/report.json").read_text())
+    else:
+        src = json.loads(
+            Path("results/dd_sweep_generation/report.json").read_text()
+        ) + json.loads(Path("results/dd_asym_generation/report.json").read_text())
     jobs = [
         (r["env"], r["seed"], r["dataset_id"])
-        for r in recert
-        if r["cell"] == "d_a_null" and r["seed"] in (0, 1, 2)
+        for r in src
+        if r["cell"] == cell and r["seed"] in (0, 1, 2) and r["env"] in envs
     ]
+    if not jobs:
+        raise SystemExit(f"no datasets for cell {cell!r} in {envs}")
 
     for env_id, sd, did in jobs:
         if (env_id, sd) in done:
@@ -127,7 +143,7 @@ def main() -> int:
             seed=sd,
             train_episodes=spec.budget("n_episodes", 250),
             n_checkpoints=spec.budget("n_checkpoints", 25),
-            run_dir=f"results/q2a_danull/generator/{env_id}_s{sd}",
+            run_dir=f"results/q2a_danull/generator/{env_id}_s{sd}",  # shared, seed-reproducible,
         )
         t_agent = time.time() - t0
 
@@ -179,15 +195,25 @@ def main() -> int:
             reward=t_(s["r"]),
             episode_ids=t_(s["episode"], torch.long),
         )
+        pn = ()
+        if s["z"].size:  # D-D declares covariate-free proxies; D-A-null does not
+            pn = ("Z", "W", "V") if s["v"].size else ("Z", "W")
+            data = EpisodeData(
+                state=data.state,
+                action=data.action,
+                reward=data.reward,
+                episode_ids=data.episode_ids,
+                proxy={k: t_(s[k.lower()]) for k in pn},
+            )
         est = LatentClassEstimator(
             state_dim=state.shape[1],
             n_actions=int(s["a"].max()) + 1,
-            proxy_names=(),
+            proxy_names=pn,
             device=device,
             seed=0,
         )
         t1 = time.time()
-        fit = est.fit(data, init="random", **FK)
+        fit = est.fit(data, init="proxy" if pn else "random", **FK)
         t_fit = time.time() - t1
 
         rng = np.random.default_rng(0)
@@ -219,6 +245,7 @@ def main() -> int:
             "env": env_id,
             "seed": sd,
             "dataset_id": did,
+            "cell": cell,
             "ghash": ghash,
             "target_policy": f"{spec.generator_algo}-medium greedy (deterministic)",
             "gamma": GAMMA,
