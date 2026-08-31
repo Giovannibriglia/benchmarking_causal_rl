@@ -384,7 +384,10 @@ class BenchmarkRunner:
         # at evaluation the learned policy acts -- so severing it needs no
         # code: only the reward path (c_r) is wrapped, and c_a/sigma are
         # irrelevant here. c_a=0.0 makes that explicit rather than implicit.
-        if getattr(env_cfg, "eval_confounded_reward", False):
+        if (
+            getattr(env_cfg, "eval_confounded_reward", False)
+            and str(getattr(env_cfg, "eval_confounded_mode", "analytic")) == "sampled"
+        ):
             from src.envs.wrappers.confounded import ConfoundedCollectionWrapper
 
             _bp_e = getattr(env_cfg, "behavior_policy", "agent")
@@ -708,6 +711,28 @@ class BenchmarkRunner:
             env.start_video(video_path)
         obs, _ = env.reset()
         total_rewards = torch.zeros(env.n_envs, device=self.device)
+        # ANALYTIC DEPLOYMENT RETURN. U perturbs only the REWARD -- never the
+        # dynamics, and the learned policy cannot see it -- so a rollout's
+        # TRAJECTORY is identical under every U draw and only the per-step
+        # reward differs. E_U[G] therefore has a closed form,
+        #     E_U[G] = G_base + c_r * qbar * (number of a_bad steps),
+        # with qbar = E_U[P(gate | U)]. Sampling U instead makes the reported
+        # return a one-draw Monte-Carlo estimate of exactly this quantity,
+        # whose variance lands INSIDE the seed-noise band the experiment's
+        # predictions are judged against -- it could mask a real gap. The
+        # analytic form has none, and it IS the estimand GRACE targets. Same
+        # insight that cut the Q2-A anchor's RMSE 3-5x; here it buys
+        # statistical power for free.
+        _bonus_rate = 0.0
+        if getattr(self.env_cfg, "eval_confounded_reward", False) and (
+            str(getattr(self.env_cfg, "eval_confounded_mode", "analytic")) == "analytic"
+        ):
+            _gp = getattr(self.env_cfg, "gate_probs", None) or (0.0, 0.0)
+            _c_r_ev = getattr(self.env_cfg, "confounder_c_r", None)
+            _c_r_ev = 0.0 if _c_r_ev is None else float(_c_r_ev)
+            _bonus_rate = _c_r_ev * 0.5 * (float(_gp[0]) + float(_gp[1]))
+        _a_bad_ev = int(getattr(self.env_cfg, "a_bad", 1) or 0)
+        bad_steps = torch.zeros(env.n_envs, device=self.device)
         # Recurrent eval state: thread the hidden state across steps and zero it
         # at episode boundaries. Without this every act() call ran the trunk
         # from a zero state — the recurrent policy was evaluated with per-step
@@ -764,8 +789,14 @@ class BenchmarkRunner:
             # it. Hosted sparse-reward cells set eval_count_terminal_reward.
             if getattr(self.train_cfg, "eval_count_terminal_reward", False):
                 total_rewards += reward
+                if _bonus_rate:
+                    bad_steps += (action.reshape(-1) == _a_bad_ev).float()
             else:
                 total_rewards += reward * (~done)
+                if _bonus_rate:
+                    # counted on exactly the steps whose reward is counted, so
+                    # the analytic bonus cannot drift from the base return
+                    bad_steps += (action.reshape(-1) == _a_bad_ev).float() * (~done)
             if gate_open:
                 # env.last_unmasked_obs is the full obs vector (the mask wrapper
                 # exposes it); pick out the hidden components the agent can't see.
@@ -778,6 +809,20 @@ class BenchmarkRunner:
             self._write_eval_per_context(
                 episode, z_sum / max(z_steps, 1), total_rewards
             )
+        if _bonus_rate:
+            # E_U[G] in closed form. The base return and the a_bad count are
+            # reported alongside, so the correction is auditable rather than
+            # baked in: a reader can reconstruct or remove it.
+            base_mean, _ = self._aggregate_returns(total_rewards)
+            total_rewards = total_rewards + _bonus_rate * bad_steps
+            mean, std = self._aggregate_returns(total_rewards)
+            return {
+                "eval_return_mean": mean,
+                "eval_return_std": std,
+                "eval_return_base_mean": base_mean,
+                "eval_bad_action_steps_mean": float(bad_steps.mean().item()),
+                "eval_deployment_mode": "analytic",
+            }
         mean, std = self._aggregate_returns(total_rewards)
         return {"eval_return_mean": mean, "eval_return_std": std}
 

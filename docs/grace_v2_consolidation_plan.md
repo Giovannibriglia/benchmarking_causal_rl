@@ -344,6 +344,19 @@ return-to-go where sequential), recorded during and after training. Then every
 outcome yields a claim: return gains where decision boundaries are crossed,
 Q-level gains where they are not.
 
+### ⚠ LOOK HERE FIRST IF s1 UNDERPERFORMS (recorded in advance, 2026-08-31)
+
+Q2-A step 3 passed on `d100` at 6.3 / 8.4 / 5.2% relative error, but **s1
+carries a −5.34 bias (7.6% of RTG ≈ 70)** where s0 and s2 are at −0.013 and
+−0.273. s1 is the long-episode CartPole seed (mean 196 steps against 12 and
+37), so transition-model error compounds furthest there; `γ^500` puts horizon
+truncation at ~0.7%, which rules that out as the cause.
+
+The experiment reports **per seed**, so if the variant underperforms on s1
+specifically, this is the first place to look — and the connection is recorded
+now rather than discovered afterwards, so a post-hoc explanation cannot be
+mistaken for a prediction.
+
 ### Evaluation
 
 * **Deployment environment**: `U → R` intact, `U → A` **severed**. Deployment

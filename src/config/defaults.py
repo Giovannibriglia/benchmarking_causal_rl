@@ -44,6 +44,14 @@ class EnvConfig:
     # E_U[R|do(a),s], the causal estimand. Default False keeps every existing
     # run's eval env byte-identical (clean), so no frozen golden moves.
     eval_confounded_reward: bool = False
+    # Gate firing probabilities (q0, q1) = P(bonus | U). Needed for the
+    # ANALYTIC deployment return; supplied by the driver from arm_knobs (the
+    # single construction site for the derivation), never re-derived here.
+    gate_probs: tuple | None = None
+    a_bad: int = 1
+    # "analytic" (default when confounded eval is on) computes E_U[return] in
+    # closed form on a CLEAN env; "sampled" draws U and is the sanity row.
+    eval_confounded_mode: str = "analytic"
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

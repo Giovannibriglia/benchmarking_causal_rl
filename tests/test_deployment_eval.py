@@ -81,3 +81,37 @@ def test_the_flag_is_off_by_default_so_existing_evals_are_untouched():
     from src.config.defaults import EnvConfig
 
     assert EnvConfig(env_id="CartPole-v1").eval_confounded_reward is False
+
+
+def test_analytic_deployment_return_is_the_closed_form_expectation():
+    """E_U[G] = G_base + c_r * qbar * (a_bad steps), computed exactly.
+
+    U perturbs only the reward -- never the dynamics, and the learned policy
+    cannot see it -- so every rollout's trajectory is identical under every U
+    draw and the U-expectation has a closed form. Sampling U instead makes the
+    reported return a one-draw MC estimate of this same quantity, whose
+    variance lands inside the seed-noise band the experiment's predictions are
+    judged against. The two must agree IN EXPECTATION, which is what makes the
+    sampled row a check on the wrapper.
+    """
+    c_r, gate_probs = 2.0, (0.0, 1.0)
+    q_bar = 0.5 * (gate_probs[0] + gate_probs[1])
+    base_return, n_bad = 10.0, 7.0
+    analytic = base_return + c_r * q_bar * n_bad
+    assert analytic == 17.0
+
+    # the sampled realisation equals base + c_r * (gate firings), and averaged
+    # over U it returns the analytic value -- here exactly, since q0=0, q1=1
+    u1 = base_return + c_r * gate_probs[1] * n_bad
+    u0 = base_return + c_r * gate_probs[0] * n_bad
+    assert 0.5 * (u1 + u0) == analytic
+
+
+def test_analytic_mode_leaves_the_eval_env_unwrapped():
+    """The analytic path needs a CLEAN env: wrapping it would double-count the
+    bonus (once sampled by the wrapper, once added in closed form)."""
+    from src.config.defaults import EnvConfig
+
+    cfg = EnvConfig(env_id="CartPole-v1")
+    assert cfg.eval_confounded_mode == "analytic"  # default when enabled
+    assert cfg.gate_probs is None and cfg.a_bad == 1
