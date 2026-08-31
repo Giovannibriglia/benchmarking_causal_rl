@@ -1,0 +1,7 @@
+  Acrobot-v1   s1 depth=6   rec=1.0000 n_iter=9   finished=False exhausted=True ll=-1556323.875 (262s)
+  Acrobot-v1   s1 depth=10  rec=1.0000 n_iter=10  finished=True exhausted=False ll=-1312563.0 (133s)
+  Acrobot-v1   s1 depth=14  rec=1.0000 n_iter=10  finished=True exhausted=False ll=-1312563.0 (133s)
+  CartPole-v1  s0 depth=6   rec=1.0000 n_iter=22  finished=True exhausted=False ll=-42654.398 (98s)
+  CartPole-v1  s0 depth=10  rec=1.0000 n_iter=22  finished=True exhausted=False ll=-42654.398 (98s)
+  CartPole-v1  s0 depth=14  rec=1.0000 n_iter=22  finished=True exhausted=False ll=-42654.398 (94s)
+BACKTRACK DEPTH PROBE COMPLETE

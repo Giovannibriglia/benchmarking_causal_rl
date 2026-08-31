@@ -1,0 +1,44 @@
+
+=== d005 CartPole-v1 s1 (grace-v2/d_d_sweep_d005-cartpole/medium-bias_confounded_action-sigma025-seed1-d005-v0) ===
+  rep  1: R=categorical[2]   degen=- dirty=clean
+  rep  2: R=categorical[2]   degen=- dirty=clean
+  rep  3: R=categorical[2]   degen=- dirty=clean
+  rep  4: R=categorical[2]   degen={'V': 1.0} dirty=degenerate mechanism (V: 1.00 on the scale floor)
+  rep  5: R=categorical[2]   degen={'W': 1.0} dirty=degenerate mechanism (W: 1.00 on the scale floor)
+  rep  6: R=categorical[2]   degen=- dirty=clean
+  rep  7: R=categorical[2]   degen=- dirty=clean
+  rep  8: R=categorical[2]   degen=- dirty=clean
+  rep  9: R=categorical[2]   degen=- dirty=clean
+  rep 10: R=categorical[2]   degen=- dirty=clean
+  rep 11: R=categorical[2]   degen=- dirty=clean
+  rep 12: R=categorical[2]   degen=- dirty=clean
+  rep 13: R=categorical[2]   degen={'V': 1.0} dirty=degenerate mechanism (V: 1.00 on the scale floor)
+  rep 14: R=categorical[2]   degen=- dirty=clean
+  rep 15: R=categorical[2]   degen=- dirty=clean
+  rep 16: R=categorical[2]   degen={'W': 1.0} dirty=degenerate mechanism (W: 1.00 on the scale floor)
+  rep 17: R=categorical[2]   degen=- dirty=clean
+  rep 18: R=categorical[2]   degen=- dirty=clean
+  rep 19: R=categorical[2]   degen=- dirty=clean
+
+=== d100 CartPole-v1 s2 (grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma025-seed2-d100-v0) ===
+  rep  1: R=categorical[2]   degen={'W': 1.0} dirty=degenerate mechanism (W: 1.00 on the scale floor)
+  rep  2: R=categorical[2]   degen=- dirty=clean
+  rep  3: R=categorical[2]   degen=- dirty=clean
+  rep  4: R=categorical[2]   degen=- dirty=clean
+  rep  5: R=categorical[2]   degen=- dirty=clean
+  rep  6: R=categorical[2]   degen={'Z': 1.0} dirty=degenerate mechanism (Z: 1.00 on the scale floor)
+  rep  7: R=categorical[2]   degen=- dirty=clean
+  rep  8: R=categorical[2]   degen=- dirty=clean
+  rep  9: R=categorical[2]   degen=- dirty=clean
+  rep 10: R=categorical[2]   degen=- dirty=clean
+  rep 11: R=categorical[2]   degen={'V': 1.0} dirty=degenerate mechanism (V: 1.00 on the scale floor)
+  rep 12: R=categorical[2]   degen=- dirty=clean
+  rep 13: R=categorical[2]   degen=- dirty=clean
+  rep 14: R=categorical[2]   degen=- dirty=clean
+  rep 15: R=categorical[2]   degen=- dirty=clean
+  rep 16: R=categorical[2]   degen=- dirty=clean
+  rep 17: R=categorical[2]   degen=- dirty=clean
+  rep 18: R=categorical[2]   degen=- dirty=clean
+  rep 19: R=categorical[2]   degen=- dirty=clean
+
+ATTRIBUTION COMPLETE -> results/v4/replicate_attribution.json

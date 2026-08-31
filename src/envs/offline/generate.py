@@ -137,13 +137,23 @@ def build_rollout_env(
     strength=None,
     c_r=None,
     a_bad=1,
+    proxy_strength=None,
+    instrument_strength=None,
+    u_drift=0.0,
+    gate_probs=None,
+    n_proxies=2,
 ):
     """Build the rollout env, wrapped in the confounder iff bias_confounded[_action].
 
     ``c_r`` (action-dependent path only) is the FIXED U->R reward-shift magnitude,
     decoupled from ``strength`` (sigma): sigma scales the U->A edge via the behavior
     policy, while c_r on U->R is invariant across the sigma sweep (default 1.0). The
-    additive path ignores c_r and keeps ``c_r = c_a = sigma`` (byte-frozen)."""
+    additive path ignores c_r and keeps ``c_r = c_a = sigma`` (byte-frozen).
+
+    ``proxy_strength`` / ``instrument_strength`` / ``u_drift`` are the GRACE v2
+    diagram-arm channels (D-D / D-E / D-B'). All default off and are drawn from
+    the wrapper's dedicated auxiliary generator, so an arm that leaves them off
+    consumes exactly the RNG it always did."""
     from src.envs.registry import build_env
 
     env = build_env(env_id=env_id, n_envs=n_envs, device=device, seed=seed)
@@ -165,7 +175,17 @@ def build_rollout_env(
             (1.0 if c_r is None else float(c_r)) if kind == "action_gated" else sig
         )
         env = ConfoundedCollectionWrapper(
-            env, c_a=sig, c_r=c_r_val, seed=seed, confounder_kind=kind, a_bad=int(a_bad)
+            env,
+            c_a=sig,
+            c_r=c_r_val,
+            seed=seed,
+            confounder_kind=kind,
+            a_bad=int(a_bad),
+            proxy_strength=proxy_strength,
+            n_proxies=n_proxies,
+            instrument_strength=instrument_strength,
+            u_drift=u_drift,
+            gate_probs=gate_probs,
         )
     return env
 
@@ -202,7 +222,14 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
     from minari.data_collector.episode_buffer import EpisodeBuffer
 
     confounded = hasattr(env, "current_u")
+    # GRACE v2 diagram channels, present only on the arms that enable them.
+    # Read at the SAME point as U (before the step), so a row's (U, Z, W, I) is
+    # the tuple that this transition's action and reward actually shared.
+    _has_proxy = getattr(env, "current_z", None) is not None
+    _has_v = getattr(env, "current_v", None) is not None
+    _has_instr = getattr(env, "current_i", None) is not None
     sig_a, sig_r, sig_u, sig_iv, sig_ps = [], [], [], [], []
+    sig_z, sig_w, sig_v, sig_i, sig_ep = [], [], [], [], []
     # The action-dependent gate needs the per-transition pi_basic(a_bad|s). The
     # marginally-matched policy exposes it via ``_base_action_probs`` (a READ of
     # pi_basic — no behavior change, and DQN's argmax path draws no RNG, so the
@@ -230,6 +257,10 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             []
         )  # per-transition intervened flag (when the policy emits it)
         ep_cmin: list[float] = []  # per-transition min_a p_b(a|s) (arms only)
+        ep_z: list[float] = []  # D-D proxy Z (episode-constant, logged per row)
+        ep_w: list[float] = []  # D-D proxy W
+        ep_v: list[float] = []  # D-D proxy V (third view, 2026-08-21 revision)
+        ep_i: list[float] = []  # D-E instrument I
         done = False
         steps = 0
         while not done and steps < max_steps:
@@ -246,6 +277,13 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
                 if (confounded and _ps_fn is not None)
                 else None
             )
+            if _has_proxy:
+                ep_z.append(float(env.current_z.reshape(-1)[0].item()))
+                ep_w.append(float(env.current_w.reshape(-1)[0].item()))
+                if _has_v:
+                    ep_v.append(float(env.current_v.reshape(-1)[0].item()))
+            if _has_instr:
+                ep_i.append(float(env.current_i.reshape(-1)[0].item()))
             act_out = collection_policy.act(obs)
             action = act_out.action
             # intervened: emitted only by the marginally-matched confounded policy
@@ -266,6 +304,14 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             terms.append(bool(term.reshape(-1)[0].item()))
             truncs.append(bool(trunc.reshape(-1)[0].item()))
             if confounded:
+                sig_ep.append(ep)
+                if _has_proxy:
+                    sig_z.append(ep_z[-1])
+                    sig_w.append(ep_w[-1])
+                    if _has_v:
+                        sig_v.append(ep_v[-1])
+                if _has_instr:
+                    sig_i.append(ep_i[-1])
                 # Scalar action: the index (discrete) or L2 norm (continuous).
                 sig_a.append(
                     float(a[0])
@@ -303,6 +349,15 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
         # / confounded); absent for the clean 'agent' + additive paths (byte-frozen).
         if ep_cmin:
             infos["coverage_min"] = np.asarray(ep_cmin, dtype=np.float32)
+        # D-D / D-E channels. Written only when the arm enables them, so every
+        # pre-existing dataset's infos block is unchanged key-for-key.
+        if ep_z:
+            infos["proxy_z"] = np.asarray(ep_z, dtype=np.float32)
+            infos["proxy_w"] = np.asarray(ep_w, dtype=np.float32)
+            if ep_v:
+                infos["proxy_v"] = np.asarray(ep_v, dtype=np.float32)
+        if ep_i:
+            infos["instrument_i"] = np.asarray(ep_i, dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(
@@ -321,6 +376,16 @@ def _rollout(env, collection_policy, n_episodes, seed, action_type, max_steps=10
             "u": np.asarray(sig_u, dtype=np.float64),
             "intervened": np.asarray(sig_iv, dtype=np.float64),  # empty for additive
             "p_s": np.asarray(sig_ps, dtype=np.float64),  # empty for additive
+            # Diagram-arm channels + the episode index, flat over transitions.
+            # ``episode`` is what makes the preflight's permutation null
+            # EPISODE-level: U and the proxies are episode-constant, so a
+            # step-level shuffle shatters the blocks and the null comes out far
+            # too tight (a zero-signal view was called rank 2).
+            "z": np.asarray(sig_z, dtype=np.float64),
+            "w": np.asarray(sig_w, dtype=np.float64),
+            "v": np.asarray(sig_v, dtype=np.float64),
+            "i": np.asarray(sig_i, dtype=np.float64),
+            "episode": np.asarray(sig_ep, dtype=np.int64),
         }
         if confounded
         else None
@@ -357,6 +422,9 @@ def _rollout_vectorized(
     from minari.data_collector.episode_buffer import EpisodeBuffer
 
     confounded = hasattr(env, "current_u")
+    _has_proxy = getattr(env, "current_z", None) is not None
+    _has_v = getattr(env, "current_v", None) is not None
+    _has_instr = getattr(env, "current_i", None) is not None
     # Same optional per-transition readers as the scalar path (pure reads, no RNG).
     _ps_fn = getattr(collection_policy, "_base_action_probs", None)
     _ps_a_bad = int(getattr(collection_policy, "a_bad", 1))
@@ -375,6 +443,10 @@ def _rollout_vectorized(
             "u": [],
             "iv": [],
             "cmin": [],
+            "z": [],
+            "v": [],
+            "w": [],
+            "i": [],
             "sig_a": [],
             "sig_r": [],
             "sig_u": [],
@@ -421,6 +493,13 @@ def _rollout_vectorized(
             _ps_fn(obs)[:, _ps_a_bad].detach().cpu().numpy()
             if (confounded and _ps_fn is not None)
             else None
+        )
+        # Diagram channels, read at the same point as U (before the step).
+        z_t = env.current_z.reshape(-1).detach().cpu().numpy() if _has_proxy else None
+        w_t = env.current_w.reshape(-1).detach().cpu().numpy() if _has_proxy else None
+        v_t = env.current_v.reshape(-1).detach().cpu().numpy() if _has_v else None
+        i_t_aux = (
+            env.current_i.reshape(-1).detach().cpu().numpy() if _has_instr else None
         )
         act_out = collection_policy.act(obs)
         action = act_out.action
@@ -475,6 +554,13 @@ def _rollout_vectorized(
                 b["iv"].append(bool(iv_t[i]))
             if cmin_t is not None:
                 b["cmin"].append(float(cmin_t[i]))
+            if z_t is not None:
+                b["z"].append(float(z_t[i]))
+                b["w"].append(float(w_t[i]))
+                if v_t is not None:
+                    b["v"].append(float(v_t[i]))
+            if i_t_aux is not None:
+                b["i"].append(float(i_t_aux[i]))
 
             if bool(term_np[i]) or bool(trunc_np[i]):
                 done_eps[slot_ep[i]] = b
@@ -497,6 +583,11 @@ def _rollout_vectorized(
     sig_u: list = []
     sig_iv: list = []
     sig_ps: list = []
+    sig_z: list = []
+    sig_w: list = []
+    sig_v: list = []
+    sig_i: list = []
+    sig_ep: list = []
     for ep_idx in range(n_episodes):
         b = done_eps[ep_idx]
         infos: dict = {}
@@ -506,6 +597,13 @@ def _rollout_vectorized(
             infos["intervened"] = np.asarray(b["iv"], dtype=bool)
         if b["cmin"]:
             infos["coverage_min"] = np.asarray(b["cmin"], dtype=np.float32)
+        if b["z"]:
+            infos["proxy_z"] = np.asarray(b["z"], dtype=np.float32)
+            infos["proxy_w"] = np.asarray(b["w"], dtype=np.float32)
+            if b["v"]:
+                infos["proxy_v"] = np.asarray(b["v"], dtype=np.float32)
+        if b["i"]:
+            infos["instrument_i"] = np.asarray(b["i"], dtype=np.float32)
         ep_kwargs = {"infos": infos} if infos else {}
         buffers.append(
             EpisodeBuffer(
@@ -522,6 +620,14 @@ def _rollout_vectorized(
         sig_u.extend(b["sig_u"])
         sig_iv.extend(b["sig_iv"])
         sig_ps.extend(b["sig_ps"])
+        sig_z.extend(b["z"])
+        sig_w.extend(b["w"])
+        sig_v.extend(b["v"])
+        sig_i.extend(b["i"])
+        # The episode INDEX, not a running counter: the preflight's permutation
+        # null must shuffle whole episodes (U and the proxies are
+        # episode-constant), and it needs these blocks to do it.
+        sig_ep.extend([ep_idx] * len(b["sig_a"]))
 
     samples = (
         {
@@ -530,11 +636,216 @@ def _rollout_vectorized(
             "u": np.asarray(sig_u, dtype=np.float64),
             "intervened": np.asarray(sig_iv, dtype=np.float64),
             "p_s": np.asarray(sig_ps, dtype=np.float64),
+            "z": np.asarray(sig_z, dtype=np.float64),
+            "w": np.asarray(sig_w, dtype=np.float64),
+            "v": np.asarray(sig_v, dtype=np.float64),
+            "i": np.asarray(sig_i, dtype=np.float64),
+            "episode": np.asarray(sig_ep, dtype=np.int64),
         }
         if confounded
         else None
     )
     return buffers, samples
+
+
+def _preflight_certification(
+    samples: dict,
+    buffers,
+    *,
+    proxy_strength,
+    instrument_strength,
+    u_drift,
+    max_episodes: int,
+    null_arm: bool = False,
+    a_bad: int = 1,
+) -> dict:
+    """Run the ground-truth preflight and flatten it into metadata keys.
+
+    Direction, restated because it is the whole point: this validates the
+    GENERATOR against ground truth -- the logged U and the declared parameters.
+    It never consults GRACE's estimator or L5. L5 is validated against the
+    generator afterwards, never the reverse.
+    """
+    from src.envs.offline.arm_preflight import (
+        check_drift,
+        check_instrument,
+        check_null_arm,
+        check_proxies,
+    )
+
+    ep = samples.get("episode")
+    if ep is None or ep.size == 0:
+        return {"preflight_ran": False, "preflight_reason": "no episode index"}
+    keep = ep < int(max_episodes)
+    ep_k = ep[keep]
+    out: dict = {
+        "preflight_ran": True,
+        "preflight_episodes": int(np.unique(ep_k).size),
+        "preflight_transitions": int(keep.sum()),
+    }
+    reasons: list = []
+    passed = True
+
+    if proxy_strength is not None:
+        states = np.concatenate(
+            [b.observations[:-1] for b in buffers[: int(max_episodes)]], axis=0
+        )
+        _v = samples.get("v")
+        rep = check_proxies(
+            z=samples["z"][keep],
+            w=samples["w"][keep],
+            v=None if _v is None or _v.size == 0 else _v[keep],
+            u=samples["u"][keep],
+            state=states[: int(keep.sum())],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+        )
+        ok = rep.covariate_free and rep.exclusions_hold and rep.kruskal_ok
+        passed &= ok
+        reasons += list(rep.reasons)
+        # Realised R-informativeness: episode-mean R AUC against logged U --
+        # binning-free, and the quantity the compensated gate sweep dials.
+        # Stamped per dataset so the decorative->load-bearing transition is
+        # LOCATED from certification stamps, never re-derived from memory.
+        _ep = samples["episode"][keep]
+        _r = samples["r"][keep]
+        _u = samples["u"][keep]
+        _eps = np.unique(_ep)
+        _rm = np.array([_r[_ep == e].mean() for e in _eps])
+        _um = np.array([_u[_ep == e][0] for e in _eps])
+        _pos, _neg = _rm[_um == 1], _rm[_um == 0]
+        if _pos.size and _neg.size:
+            _gt = (_pos[:, None] > _neg[None, :]).mean()
+            _eq = (_pos[:, None] == _neg[None, :]).mean()
+            out["preflight_r_auc_episode"] = float(_gt + 0.5 * _eq)
+        out.update(
+            {
+                "preflight_proxy_corr_z_u": rep.corr_z_u,
+                "preflight_proxy_corr_v_u": rep.corr_v_u,
+                "preflight_proxy_k_ranks": dict(rep.k_ranks),
+                # The MARGIN, not just the verdict: Kruskal is exactly tight at
+                # |U| = 2, so an arm near the boundary is fragile to sample size
+                # and that has to be visible without rerunning anything (R5).
+                "preflight_proxy_margins": {
+                    k: float(v) for k, v in rep.condition_numbers.items()
+                },
+                # The permutation p-values are what the VERDICTS read; the
+                # z-scores are kept only as a human-readable effect size, since
+                # a max-over-a-family null is right-skewed and a 3-sd rule on it
+                # is not the level it appears to be.
+                "preflight_proxy_null_p": {k: float(v) for k, v in rep.null_p.items()},
+                "preflight_proxy_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_proxy_episodes": int(rep.n_episodes),
+                # A collapsed quantile grid is a FAILED MEASUREMENT, not an
+                # uninformative view (S3/S8), so it travels separately from the
+                # k-rank verdict it would otherwise be mistaken for.
+                "preflight_proxy_binning_degenerate": {
+                    k: bool(v) for k, v in rep.binning_degenerate.items()
+                },
+                "preflight_proxy_covariate_free": bool(rep.covariate_free),
+                "preflight_proxy_kruskal_ok": bool(rep.kruskal_ok),
+            }
+        )
+
+    if instrument_strength is not None:
+        rep = check_instrument(
+            i=samples["i"][keep],
+            u=samples["u"][keep],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+        )
+        # Untestable is credited but RECORDED AS SUCH, never conflated with
+        # verified (R2/R4).
+        ok = (
+            rep.independent_of_u
+            and rep.relevant
+            and (rep.exclusion_holds or not rep.exclusion_testable)
+        )
+        passed &= ok
+        reasons += list(rep.reasons)
+        out.update(
+            {
+                "preflight_instrument_null_p": {
+                    k: float(v) for k, v in rep.null_p.items()
+                },
+                "preflight_instrument_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_instrument_episodes": int(rep.n_episodes),
+                "preflight_instrument_exogenous": bool(rep.independent_of_u),
+                "preflight_instrument_relevant": bool(rep.relevant),
+                "preflight_instrument_excluded": bool(rep.exclusion_holds),
+                "preflight_instrument_exclusion_testable": bool(rep.exclusion_testable),
+            }
+        )
+
+    if u_drift:
+        by_ep = [samples["u"][keep][ep_k == e] for e in np.unique(ep_k)]
+        rep = check_drift(u_by_episode=by_ep, rho=float(u_drift))
+        passed &= rep.matches
+        if not rep.matches:
+            reasons.append(
+                f"realised autocorr {rep.realised_autocorr:+.3f} != predicted "
+                f"{rep.predicted_autocorr:+.3f} for rho={u_drift}"
+            )
+        out.update(
+            {
+                "preflight_drift_rho": float(u_drift),
+                "preflight_drift_realised_autocorr": float(rep.realised_autocorr),
+                "preflight_drift_predicted_autocorr": float(rep.predicted_autocorr),
+                # D-B' is the ONE statistic left at transition level. Its S1b
+                # exemption rests on rho being homogeneous across episodes, so
+                # the exemption is measured (short- vs long-episode halves)
+                # rather than asserted -- a gap here means a future
+                # state-dependent drift variant has voided it.
+                "preflight_drift_autocorr_short_episodes": float(
+                    rep.autocorr_short_episodes
+                ),
+                "preflight_drift_autocorr_long_episodes": float(
+                    rep.autocorr_long_episodes
+                ),
+                "preflight_drift_length_weighting_gap": float(rep.length_weighting_gap),
+                "preflight_drift_length_weighting_inert": bool(
+                    rep.length_weighting_inert
+                ),
+            }
+        )
+
+    if null_arm:
+        rep = check_null_arm(
+            u=samples["u"][keep],
+            action=samples["a"][keep],
+            reward=samples["r"][keep],
+            episode_ids=ep_k,
+            a_bad=float(a_bad),
+        )
+        passed &= rep.u_inert
+        reasons += list(rep.reasons)
+        out.update(
+            {
+                "preflight_null_arm_u_inert": bool(rep.u_inert),
+                "preflight_null_arm_null_p": {
+                    k: float(v) for k, v in rep.null_p.items()
+                },
+                "preflight_null_arm_null_sds": {
+                    k: float(v) for k, v in rep.null_sds.items()
+                },
+                "preflight_null_arm_gated_episodes": int(rep.gated_episodes),
+                # S8: an untestable channel is credited but never reported as a
+                # verified pass -- this is the arm L5's false-positive rate is
+                # read from, so the distinction is the whole point.
+                "preflight_null_arm_reward_testable": bool(rep.reward_testable),
+                "preflight_null_arm_gated_testable": bool(rep.gated_testable),
+            }
+        )
+
+    out["preflight_passed"] = bool(passed)
+    out["preflight_reasons"] = list(reasons)
+    return out
 
 
 def _pearson(x: np.ndarray, y: np.ndarray) -> float:
@@ -553,6 +864,10 @@ ACTION_DEPENDENT_GATE: dict = {
     "ungated_reward_corr_max": 0.05,
     "intervened_tolerance": 0.02,
     "entropy_min": 0.05,  # min mean(p_s(1-p_s)): the confounder is inert below this
+    # Whether the dataset is DECLARED to carry a U->R edge at all. A null arm
+    # (c_r = 0) has none, so A4 has nothing to detect and must be SKIPPED
+    # rather than expected to pass on noise (see _action_dependent_signature).
+    "expect_gated_reward": True,
 }
 
 
@@ -596,9 +911,64 @@ def compute_confounding_signature(
             "gate_test_passed": gate_passed,
             "behavior_strength_sigma": float(sigma) if sigma is not None else None,
         }
+    if gate.get("type") == "instrument":
+        return _instrument_signature(samples, float(sigma or 0.0), gate, int(a_bad))
     return _action_dependent_signature(
         samples, float(sigma or 0.0), gate, int(a_bad), bool(is_online)
     )
+
+
+def _instrument_signature(samples: dict, sigma: float, gate: dict, a_bad: int) -> dict:
+    """Gate for the D-E arm: certify the IV CONDITIONS, not the U->A point check.
+
+    The action-gated gate's A2 identity
+    ``mean((1[a=a_bad] - p_s)(2U-1)) == sigma * mean(p_s(1-p_s))`` was derived for
+    the un-instrumented swap policy. An exogenous action override breaks it in
+    two ways at once: it removes the U-conditional draw on a lambda fraction of
+    in-pair steps, AND it changes which states get visited, which the derivation
+    holds fixed. A tempting (1 - lambda) correction does NOT rescue it -- measured
+    against it, the realised dilution was 0.951 / 0.827 / 0.233 at
+    lambda = 0.1 / 0.3 / 0.6 versus the predicted 0.9 / 0.7 / 0.4, missing by 1.0,
+    2.4 and 2.6 standard errors and erring in BOTH directions. Shipping that
+    would have been a fabricated closed form dressed as a point check.
+
+    So D-E certifies what its verdict actually rests on: I independent of U,
+    I relevant for A, I excluded from R given (A, U) -- the same three
+    statements the preflight measures, at the same EPISODE granularity, since I
+    is drawn once per episode.
+    """
+    from src.envs.offline.arm_preflight import check_instrument
+
+    i = samples.get("i")
+    ep = samples.get("episode")
+    if i is None or i.size == 0 or ep is None or ep.size != i.size:
+        raise ValueError(
+            "instrument gate requires per-transition i and episode ids; the "
+            "generator did not log them."
+        )
+    rep = check_instrument(
+        i=i, u=samples["u"], action=samples["a"], reward=samples["r"], episode_ids=ep
+    )
+    # Exclusion is credited when it holds OR when the env makes it untestable
+    # (deterministic reward given (A,U)); the metadata records which, so a reader
+    # can tell "verified" from "not applicable" -- never silently conflated.
+    exclusion_ok = rep.exclusion_holds or not rep.exclusion_testable
+    return {
+        "gate_type": "instrument",
+        "gate_test_passed": bool(
+            rep.independent_of_u and rep.relevant and exclusion_ok
+        ),
+        "behavior_strength_sigma": sigma,
+        "instrument_strength": float(gate.get("instrument_strength", 0.0) or 0.0),
+        "corr_i_u": rep.corr_i_u,
+        "corr_i_action": rep.corr_i_action,
+        "corr_i_reward_given_action_and_u": rep.corr_i_reward_given_action_and_u,
+        "null_sds": dict(rep.null_sds),
+        "check_i_exogenous": rep.independent_of_u,
+        "check_i_relevant": rep.relevant,
+        "check_i_excluded": rep.exclusion_holds,
+        "exclusion_testable": rep.exclusion_testable,
+    }
 
 
 def _action_dependent_signature(
@@ -643,10 +1013,22 @@ def _action_dependent_signature(
     # A3 — the confounder is NOT inert: pi_basic has real entropy on the gated pair.
     a3 = bool(entropy > entropy_min)
     # A4 — gated U->R live within a==a_bad; dead within a!=a_bad.
+    #
+    # NULL ARM: when the gate declares no U->R edge (expect_gated_reward=False,
+    # set by the generator for c_r == 0), there is no gated correlation to
+    # detect. corr_r_u_gated is then pure noise around 0 and is NEGATIVE about
+    # half the time, so requiring `> 0.0` would reject a deliberately
+    # signature-free dataset on a coin flip. The check is SKIPPED by
+    # declaration and the metadata records that it was, so a later reader can
+    # tell "not applicable" from "passed".
+    expect_gated = bool(gate.get("expect_gated_reward", True))
     mask = a == a_bad
     corr_r_u_gated = _pearson(r[mask], u[mask]) if int(mask.sum()) > 1 else 0.0
     corr_r_u_ungated = _pearson(r[~mask], u[~mask]) if int((~mask).sum()) > 1 else 0.0
-    a4 = bool(corr_r_u_gated > 0.0 and abs(corr_r_u_ungated) < ungated_max)
+    if expect_gated:
+        a4 = bool(corr_r_u_gated > 0.0 and abs(corr_r_u_ungated) < ungated_max)
+    else:
+        a4 = True  # vacuous: no U->R edge is claimed
     # A5 — interventional fraction: ~= 1-sigma online, == 0 offline.
     iv = samples.get("intervened")
     mean_iv = float(np.mean(iv)) if iv is not None and iv.size else 0.0
@@ -666,6 +1048,7 @@ def _action_dependent_signature(
         "intervened_mean": mean_iv,
         "check_a2_point_corr": a2,
         "check_a3_p_nondegenerate": a3,
+        "gated_reward_expected": expect_gated,
         "check_a4_gated_reward": a4,
         "check_a5_intervened": a5,
     }
@@ -784,6 +1167,11 @@ def generation_fingerprint(
     rollout_device: str,
     rollout_n_envs: int,
     legacy_rollout: bool,
+    proxy_strength=None,
+    instrument_strength=None,
+    u_drift: float = 0.0,
+    gate_probs=None,
+    n_proxies: int = 2,
 ) -> str:
     """Hash of EVERY input that determines a generated dataset's contents (S4).
 
@@ -822,6 +1210,21 @@ def generation_fingerprint(
         ("rollout_n_envs", 1 if legacy_rollout else int(rollout_n_envs)),
         ("legacy_rollout", bool(legacy_rollout)),
     ]
+    # The GRACE v2 diagram channels are appended ONLY when enabled. Appending
+    # them unconditionally would change every existing dataset's fingerprint and
+    # force a full regeneration for no change in contents; appending them never
+    # would let a D-D dataset be reused to serve a D-A request, which is the
+    # dangerous direction. Conditional append gives new arms a distinct key and
+    # leaves the frozen ones bit-for-bit.
+    for key, val, off in (
+        ("proxy_strength", proxy_strength, None),
+        ("instrument_strength", instrument_strength, None),
+        ("u_drift", float(u_drift), 0.0),
+        ("gate_probs", gate_probs, None),
+        ("n_proxies", int(n_proxies), 2),
+    ):
+        if val != off:
+            parts.append((key, val))
     h = hashlib.sha256()
     for k, v in parts:
         h.update(f"{k}={v!r};".encode())
@@ -931,6 +1334,12 @@ def generate_offline_dataset(
     rollout_device: str | None = "cpu",
     rollout_n_envs: int = 1,
     legacy_rollout: bool = False,
+    proxy_strength: float | None = None,
+    instrument_strength: float | None = None,
+    u_drift: float = 0.0,
+    gate_probs=None,
+    n_proxies: int = 2,
+    preflight_episodes: int = 600,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -1020,6 +1429,11 @@ def generate_offline_dataset(
         behavior_strength,
         c_r=confounder_c_r,
         a_bad=a_bad,
+        proxy_strength=proxy_strength,
+        instrument_strength=instrument_strength,
+        u_drift=u_drift,
+        gate_probs=gate_probs,
+        n_proxies=n_proxies,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
     # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +
@@ -1101,7 +1515,16 @@ def generate_offline_dataset(
         behavior_policy in ("bias_confounded", "bias_confounded_action")
         and sig_samples is not None
     ):
-        _gate = gate if gate is not None else default_gate_for(behavior_policy)
+        _gate = dict(gate if gate is not None else default_gate_for(behavior_policy))
+        # A null arm declares no U->R edge; tell the gate so it skips A4 rather
+        # than testing for a signature the dataset deliberately lacks.
+        if _gate.get("type") == "action_dependent" and not confounder_c_r:
+            _gate["expect_gated_reward"] = False
+        # D-E certifies through the IV conditions, NOT through the action-gated
+        # closed form. Derived from the arm rather than declared in YAML, for the
+        # same reason the channels are: the diagram decides.
+        if instrument_strength is not None and gate is None:
+            _gate = {"type": "instrument", "instrument_strength": instrument_strength}
         signature = compute_confounding_signature(
             sig_samples, behavior_strength, gate=_gate, a_bad=a_bad, is_online=False
         )
@@ -1116,6 +1539,33 @@ def generate_offline_dataset(
     # arms of a cell were collected under one pi_basic (refuse a cell whose arms
     # differ). Stamped on every dataset — internal-build or pre-built agent alike.
     signature["generator_checkpoint_hash"] = generator_checkpoint_hash(agent)
+    # V-B: the arm's PREFLIGHT CERTIFICATION travels with the dataset, in the same
+    # metadata block as the confounding signature and for the same reason -- a
+    # dataset should carry its own validity proof rather than depend on a
+    # verification someone remembers having run. Capped at
+    # ``preflight_episodes`` because the permutation nulls are O(n_perm * n) and
+    # a production rollout is far larger than these statistics need; the cap is
+    # recorded so a reader knows what was actually certified.
+    if sig_samples is not None and (
+        proxy_strength is not None
+        or instrument_strength is not None
+        or u_drift
+        # The NULL arm is certified too: c_r = 0 means U must be provably inert,
+        # and that is exactly the claim L5's false-positive rate rests on.
+        or not confounder_c_r
+    ):
+        signature.update(
+            _preflight_certification(
+                sig_samples,
+                buffers,
+                proxy_strength=proxy_strength,
+                instrument_strength=instrument_strength,
+                u_drift=u_drift,
+                max_episodes=preflight_episodes,
+                null_arm=not confounder_c_r,
+                a_bad=a_bad,
+            )
+        )
     # S4: stamp the input fingerprint so a later run can PROVE that regenerating
     # this dataset would reproduce it, and reuse it instead (see
     # generation_fingerprint + regime_sweep's reuse check).
@@ -1134,6 +1584,10 @@ def generate_offline_dataset(
         rollout_device=str(roll_dev),
         rollout_n_envs=n_slots,
         legacy_rollout=legacy_rollout,
+        proxy_strength=proxy_strength,
+        instrument_strength=instrument_strength,
+        u_drift=u_drift,
+        gate_probs=gate_probs,
     )
     ds.storage.update_metadata(signature)
     return ds

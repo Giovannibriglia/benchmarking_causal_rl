@@ -1,0 +1,40 @@
+# D-D — the PROXIMAL cell. Two explicit negative-control proxies of U.
+#
+# The property that does the work is that the proxies are COVARIATE-FREE:
+# parents(Z) = parents(W) = {U} exactly, so P(Z|U) and P(W|U) do not depend on
+# (s, a), the measurement matrices are GLOBAL, and the labelling they induce is
+# global. That -- not "the proxies are explicit" -- is why D-D needs no
+# cross_stratum_label_linking assumption where D-B does, and why it is the
+# uncontested point-ID cell. See docs/diagram_catalogue.md.
+#
+# proxy_strength is the R4 sweep axis, and the Kruskal condition is EXACTLY
+# TIGHT at |U| = 2: sum(k-rank) >= 2R + 2 = 6 with each of the three views
+# capped at 2 means ALL THREE must reach k-rank 2, with no slack. Preflight
+# measures the ranks rather than assuming them; at strength 0.00 the proxy
+# views collapse to k-rank 1 and Kruskal correctly FAILS.
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+max_workers: 4
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+proxy_strength: 1.5        # measured: corr(Z,U) = +0.839, all three views k-rank 2
+
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25, 0.50, 1.00] }
+
+critics:
+  basic:      [observational, proximal, oracle_u]
+  confounded: [observational, proximal, oracle_u]

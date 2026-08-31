@@ -1,0 +1,51 @@
+# D-E — the INSTRUMENT cell. Bounds, never a point.
+#
+# This arm exists to prove L2 does not launder bounds into points: a valid
+# instrument yields Balke-Pearl bounds on the interventional value and does NOT
+# point-identify it, and the reported verdict has to say so even though the arm
+# looks superficially like the identified ones.
+#
+# The instrument is a SEPARATE coin layered on the finished action: with
+# probability instrument_strength it dictates the within-pair action, otherwise
+# the (sigma, U) machinery runs untouched. Hence, by construction rather than by
+# tuning -- I is drawn independently of U (independence), it moves A
+# (relevance), and the reward perturbation never reads it (exclusion).
+#
+# It DOES dilute the U->A channel by (1 - lambda), so the gate's A2 prediction
+# is scaled to match. That belongs in the PREDICTION, not in a widened
+# tolerance: an instrument that silently failed to fire would overshoot the
+# scaled target and be REJECTED, which is the behaviour we want.
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-E
+
+max_workers: 4
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+confounder_c_r: 1.0
+instrument_strength: 0.3   # measured: exogenous 0.4 null SDs, relevant 17.1 null SDs
+
+# R2 route (a): U shifts the PROBABILITY of the gated bonus instead of its
+# magnitude, so R stays BINARY (L4's Balke-Pearl anchor keeps its closed form)
+# while becoming stochastic given (A, U) -- which is what gives the exclusion
+# restriction I -> R an observable shadow at all. Under the deterministic gate
+# the check had literally zero variance to work with. The U->R edge magnitude is
+# c_r * (q1 - q0) = 0.6.
+gate_probs: [0.2, 0.8]
+
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25, 0.50, 1.00] }
+
+critics:
+  basic:      [observational, oracle_u]
+  confounded: [observational, oracle_u]

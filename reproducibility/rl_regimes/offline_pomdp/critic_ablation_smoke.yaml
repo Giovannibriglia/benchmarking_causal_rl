@@ -30,3 +30,8 @@ budgets:
   rollout_len: 2
   rollout_episodes: 40
   offline_grad_steps: 40
+
+critics:
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  biased:     [observational]
+  confounded: [observational, proximal, oracle_u, sensitivity]

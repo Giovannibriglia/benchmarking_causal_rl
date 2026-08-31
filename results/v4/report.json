@@ -1,0 +1,1783 @@
+[
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": -1.73947773873806e-07,
+  "hi": 3.032386302947997e-07,
+  "width": 4.771864041686057e-07,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 2.716799619415418,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 6.577274532307276e-14,
+   "replicate_var": 2.4209641687606418e-14,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 14,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": -9.427312761545181e-08,
+  "hi": 3.5539269447326646e-07,
+  "width": 4.4966582208871824e-07,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.927789138281906,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 2.3322778893349515e-14,
+   "replicate_var": 2.5138016744342352e-14,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 17,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": -3.319233655929565e-07,
+  "hi": 7.611233741044996e-08,
+  "width": 4.0803570300340647e-07,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 2.841235578286736,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 5.056785791606362e-14,
+   "replicate_var": 1.779784059530749e-14,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 25,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": -6.926414134795777e-05,
+  "hi": 8.962138622337076e-07,
+  "width": 7.016035521019148e-05,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.040707952688407066,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 3.012949441713749e-11,
+   "replicate_var": 7.401377968516176e-10,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 410,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": -1.2796372175216673e-07,
+  "hi": 6.426125764846779e-09,
+  "width": 1.343898475170135e-07,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.0,
+  "failure_rate": 0.3157894736842105,
+  "meta": {
+   "optimiser_var": 0.0,
+   "replicate_var": 3.965717561362896e-15,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 13,
+   "n_failed": 6,
+   "failure_rate": 0.3157894736842105,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 6,
+   "n_stationary": 0,
+   "n_not_finished": 6,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 6,
+   "total_backtracks": 626,
+   "reasons": [
+    "backtrack budget exhausted while still improving (EM stopped on a decrease it could not repair, and not at a stationary point)"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d_a_null",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 0.0,
+  "kind": "interval",
+  "lo": 5.457945517264307e-05,
+  "hi": 0.0011718230205588042,
+  "width": 0.0011172435653861613,
+  "covered": false,
+  "reason": "",
+  "procedural_share": 0.45402521340142415,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 5.802683209404385e-08,
+   "replicate_var": 1.278053076817558e-07,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 342,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.48454093039035795,
+  "hi": 0.5088257372379302,
+  "width": 0.024284806847572282,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.002213773556237936,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 2.032790800872893e-07,
+   "replicate_var": 9.1824694316405e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 203,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.47077118754386904,
+  "hi": 0.49759425818920133,
+  "width": 0.026823070645332292,
+  "covered": false,
+  "reason": "",
+  "procedural_share": 0.06604072175128668,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 6.436433882761605e-06,
+   "replicate_var": 9.746159206135876e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 156,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.4828909635543823,
+  "hi": 0.5113373696804047,
+  "width": 0.02844640612602234,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.02465210335739995,
+  "failure_rate": 0.15789473684210525,
+  "meta": {
+   "optimiser_var": 2.7580665061440377e-06,
+   "replicate_var": 0.00011187956119436496,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 16,
+   "n_failed": 3,
+   "failure_rate": 0.15789473684210525,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 3,
+   "n_stationary": 1,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 1,
+   "total_backtracks": 192,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.5059495508670807,
+  "hi": 0.5279033571481705,
+  "width": 0.021953806281089783,
+  "covered": false,
+  "reason": "",
+  "procedural_share": 0.03449630813377794,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 2.2418742702257077e-06,
+   "replicate_var": 6.49888173984195e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 218,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.4900238364934921,
+  "hi": 0.511757493019104,
+  "width": 0.021733656525611877,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 1.5837909740782773e-06,
+  "failure_rate": 0.15789473684210525,
+  "meta": {
+   "optimiser_var": 7.882761110522551e-11,
+   "replicate_var": 4.977147388474101e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 16,
+   "n_failed": 3,
+   "failure_rate": 0.15789473684210525,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 3,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 308,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d100",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 0.5,
+  "kind": "interval",
+  "lo": 0.4827195703983307,
+  "hi": 0.5101934850215912,
+  "width": 0.027473914623260542,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.001803354874656023,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 1.6702075485615825e-07,
+   "replicate_var": 9.261668748809978e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 181,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.9793936818838119,
+  "hi": 1.0196610927581786,
+  "width": 0.040267410874366694,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.29336582258633626,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 5.854280315986671e-05,
+   "replicate_var": 0.00019955563549887552,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 187,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.9627566814422608,
+  "hi": 0.9984923839569092,
+  "width": 0.035735702514648415,
+  "covered": false,
+  "reason": "",
+  "procedural_share": 0.8881013621598125,
+  "failure_rate": 0.10526315789473684,
+  "meta": {
+   "optimiser_var": 0.00013178337444349117,
+   "replicate_var": 0.00014838776299475707,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 17,
+   "n_failed": 2,
+   "failure_rate": 0.10526315789473684,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 2,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 239,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.9858311593532563,
+  "hi": 1.024389123916626,
+  "width": 0.038557964563369795,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.14980879291704838,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 2.39984956541169e-05,
+   "replicate_var": 0.00016019417276397967,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 205,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.9645863950252533,
+  "hi": 1.0467048048973084,
+  "width": 0.0821184098720551,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.45499118602233396,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 0.00030792957752131167,
+   "replicate_var": 0.0006767814124342103,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 207,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.987526872754097,
+  "hi": 1.0099250078201294,
+  "width": 0.022398135066032387,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.13003722941744886,
+  "failure_rate": 0.3684210526315789,
+  "meta": {
+   "optimiser_var": 9.47619714963821e-06,
+   "replicate_var": 7.287295486139188e-05,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 12,
+   "n_failed": 7,
+   "failure_rate": 0.3684210526315789,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 7,
+   "n_stationary": 0,
+   "n_not_finished": 6,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 3,
+   "total_backtracks": 1026,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data",
+    "backtrack budget exhausted while still improving (EM stopped on a decrease it could not repair, and not at a stationary point)"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d050",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 1.0,
+  "kind": "interval",
+  "lo": 0.9752091288566589,
+  "hi": 1.0339825749397278,
+  "width": 0.05877344608306889,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.295313844059523,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.0001415907445476705,
+   "replicate_var": 0.0004794585401120975,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 187,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.9384699821472169,
+  "hi": 2.078407859802246,
+  "width": 0.1399378776550293,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.10471452897215507,
+  "failure_rate": 0.10526315789473684,
+  "meta": {
+   "optimiser_var": 0.0002556205786892936,
+   "replicate_var": 0.00244111854580625,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 17,
+   "n_failed": 2,
+   "failure_rate": 0.10526315789473684,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 2,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 195,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.948640763759613,
+  "hi": 2.0146408677101135,
+  "width": 0.06600010395050049,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.785363622019437,
+  "failure_rate": 0.15789473684210525,
+  "meta": {
+   "optimiser_var": 0.00038934234824713104,
+   "replicate_var": 0.0004957478769464766,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 16,
+   "n_failed": 3,
+   "failure_rate": 0.15789473684210525,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 3,
+   "n_stationary": 1,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 1,
+   "total_backtracks": 243,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.9835323095321655,
+  "hi": 2.0454318523406982,
+  "width": 0.061899542808532715,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.39559188517314103,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.00021080593084832344,
+   "replicate_var": 0.0005328873992348421,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 187,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.9438622355461121,
+  "hi": 2.0769752502441405,
+  "width": 0.1331130146980284,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.012049144529022431,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 2.0893580672994478e-05,
+   "replicate_var": 0.0017340302145657483,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 206,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.9826464891433715,
+  "hi": 2.036312770843506,
+  "width": 0.053666281700134544,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.20150937031119104,
+  "failure_rate": 0.3157894736842105,
+  "meta": {
+   "optimiser_var": 6.572770297452735e-05,
+   "replicate_var": 0.0003261769061807102,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 13,
+   "n_failed": 6,
+   "failure_rate": 0.3157894736842105,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 6,
+   "n_stationary": 0,
+   "n_not_finished": 6,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 2,
+   "total_backtracks": 1086,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data",
+    "backtrack budget exhausted while still improving (EM stopped on a decrease it could not repair, and not at a stationary point)"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d025",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 2.0,
+  "kind": "interval",
+  "lo": 1.9278570890426636,
+  "hi": 2.0917314529418944,
+  "width": 0.16387436389923082,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.20756598727792855,
+  "failure_rate": 0.10526315789473684,
+  "meta": {
+   "optimiser_var": 0.000634862030911639,
+   "replicate_var": 0.0030586033831331225,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 17,
+   "n_failed": 2,
+   "failure_rate": 0.10526315789473684,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 2,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 229,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.9016162872314455,
+  "hi": 5.159211730957031,
+  "width": 0.2575954437255854,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 1.2933220683053945,
+  "failure_rate": 0.10526315789473684,
+  "meta": {
+   "optimiser_var": 0.010320682738968875,
+   "replicate_var": 0.007979978840453709,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 17,
+   "n_failed": 2,
+   "failure_rate": 0.10526315789473684,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 2,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 178,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.923574066162109,
+  "hi": 5.005066204071045,
+  "width": 0.08149213790893572,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 1.5305310066195736,
+  "failure_rate": 0.21052631578947367,
+  "meta": {
+   "optimiser_var": 0.0015218269187092421,
+   "replicate_var": 0.0009943130273920057,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 15,
+   "n_failed": 4,
+   "failure_rate": 0.21052631578947367,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 4,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 206,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.963802242279053,
+  "hi": 5.116554260253906,
+  "width": 0.15275201797485316,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.1357289708128273,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.0003583187356828906,
+   "replicate_var": 0.00263995765632835,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 1,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 1,
+   "total_backtracks": 169,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.803305292129517,
+  "hi": 5.208696269989013,
+  "width": 0.4053909778594962,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.10455828624182113,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.002226094759256133,
+   "replicate_var": 0.02129046715731021,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 241,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.938247871398926,
+  "hi": 5.056414413452148,
+  "width": 0.1181665420532223,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 1.1301979813668077,
+  "failure_rate": 0.3157894736842105,
+  "meta": {
+   "optimiser_var": 0.002155571691446312,
+   "replicate_var": 0.0019072514081466204,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 13,
+   "n_failed": 6,
+   "failure_rate": 0.3157894736842105,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 6,
+   "n_stationary": 0,
+   "n_not_finished": 6,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 6,
+   "total_backtracks": 780,
+   "reasons": [
+    "backtrack budget exhausted while still improving (EM stopped on a decrease it could not repair, and not at a stationary point)"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d010",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 5.0,
+  "kind": "interval",
+  "lo": 4.87529981136322,
+  "hi": 5.103329300880432,
+  "width": 0.22802948951721191,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 2.0887558940081523,
+  "failure_rate": 0.15789473684210525,
+  "meta": {
+   "optimiser_var": 0.014416796403869135,
+   "replicate_var": 0.006902097294004269,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 16,
+   "n_failed": 3,
+   "failure_rate": 0.15789473684210525,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 3,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 219,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.725152349472046,
+  "hi": 10.325094747543334,
+  "width": 0.5999423980712884,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.10483768745410219,
+  "failure_rate": 0.05263157894736842,
+  "meta": {
+   "optimiser_var": 0.0043914732204939355,
+   "replicate_var": 0.04188830684019539,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 18,
+   "n_failed": 1,
+   "failure_rate": 0.05263157894736842,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 1,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 153,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.871691989898682,
+  "hi": 10.066618156433105,
+  "width": 0.1949261665344224,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.9019078043247046,
+  "failure_rate": 0.21052631578947367,
+  "meta": {
+   "optimiser_var": 0.0039619543495064136,
+   "replicate_var": 0.004392859592198441,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 15,
+   "n_failed": 4,
+   "failure_rate": 0.21052631578947367,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 4,
+   "n_stationary": 2,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 2,
+   "total_backtracks": 227,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.886730766296386,
+  "hi": 10.122338962554931,
+  "width": 0.23560819625854457,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 1.0141782728544884,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.006627014380986415,
+   "replicate_var": 0.006534368323957617,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 221,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.54506950378418,
+  "hi": 10.407531642913819,
+  "width": 0.8624621391296383,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.2443842698381076,
+  "failure_rate": 0.0,
+  "meta": {
+   "optimiser_var": 0.021855712276192207,
+   "replicate_var": 0.0894317473488393,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 19,
+   "n_failed": 0,
+   "failure_rate": 0.0,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 0,
+   "n_stationary": 1,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 1,
+   "total_backtracks": 226,
+   "reasons": []
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.862527847290039,
+  "hi": 10.07892894744873,
+  "width": 0.2164011001586914,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 2.8202064327102536,
+  "failure_rate": 0.42105263157894735,
+  "meta": {
+   "optimiser_var": 0.01631580899114245,
+   "replicate_var": 0.005785324365586513,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 11,
+   "n_failed": 8,
+   "failure_rate": 0.42105263157894735,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 8,
+   "n_stationary": 1,
+   "n_not_finished": 6,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 7,
+   "total_backtracks": 929,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data",
+    "backtrack budget exhausted while still improving (EM stopped on a decrease it could not repair, and not at a stationary point)"
+   ]
+  }
+ },
+ {
+  "row": "interval",
+  "cell": "d005",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "truth": 10.0,
+  "kind": "interval",
+  "lo": 9.775220108032226,
+  "hi": 10.079031562805175,
+  "width": 0.3038114547729496,
+  "covered": true,
+  "reason": "",
+  "procedural_share": 0.8605877792796232,
+  "failure_rate": 0.10526315789473684,
+  "meta": {
+   "optimiser_var": 0.010018192429318637,
+   "replicate_var": 0.011641104685107914,
+   "n_init_fits": 3
+  },
+  "bootstrap_diagnostics": {
+   "n_requested": 19,
+   "n_used": 17,
+   "n_failed": 2,
+   "failure_rate": 0.10526315789473684,
+   "n_non_monotone": 0,
+   "n_saturated_at_init": 0,
+   "n_init_determined": 0,
+   "n_degenerate_mechanism": 2,
+   "n_stationary": 0,
+   "n_not_finished": 0,
+   "n_stopped_while_tempered": 0,
+   "max_initial_saturation": 0.0,
+   "n_backtrack_exhausted": 0,
+   "total_backtracks": 264,
+   "reasons": [
+    "a mechanism's fitted scale is on its min_scale floor; the likelihood is measuring the floor, not the data"
+   ]
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "bp": [
+   -0.00015942641935751123,
+   0.7837792809303256
+  ],
+  "bp_covered": true,
+  "walk_kind": "bounds",
+  "walk_lo": 0.45814067125320435,
+  "walk_hi": 0.5551978349685669,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 821.3625,
+   "start_spread": {
+    "lo": [
+     0.4581,
+     0.4602,
+     0.4633
+    ],
+    "hi": [
+     0.5505,
+     0.5543,
+     0.5552
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 683.828125,
+    "q90": 821.3625
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "bp": [
+   -0.14055271853409435,
+   0.6582109008913786
+  ],
+  "bp_covered": true,
+  "walk_kind": "bounds",
+  "walk_lo": 0.4562550187110901,
+  "walk_hi": 0.5387927889823914,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 1099.340625,
+   "start_spread": {
+    "lo": [
+     0.4563,
+     0.4611,
+     0.4621
+    ],
+    "hi": [
+     0.5337,
+     0.5354,
+     0.5388
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 624.1875,
+    "q90": 1099.340625
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "bp": [
+   -0.14886888141774457,
+   0.6949322629202208
+  ],
+  "bp_covered": true,
+  "walk_kind": "bounds",
+  "walk_lo": 0.4250369668006897,
+  "walk_hi": 0.56821209192276,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 1939.053125,
+   "start_spread": {
+    "lo": [
+     0.425,
+     0.4282,
+     0.4315
+    ],
+    "hi": [
+     0.5596,
+     0.5666,
+     0.5682
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 1675.296875,
+    "q90": 1939.053125
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "bp": [
+   -0.23111738830300316,
+   0.4578852830552609
+  ],
+  "bp_covered": false,
+  "walk_kind": "bounds",
+  "walk_lo": 0.4514455795288086,
+  "walk_hi": 0.5687310099601746,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 3168.7,
+   "start_spread": {
+    "lo": [
+     0.4514,
+     0.4535,
+     0.4597
+    ],
+    "hi": [
+     0.5599,
+     0.5666,
+     0.5687
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 1627.625,
+    "q90": 3168.7
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "bp": [
+   -0.06023876565590569,
+   0.6444876373005469
+  ],
+  "bp_covered": true,
+  "walk_kind": "bounds",
+  "walk_lo": 0.455302894115448,
+  "walk_hi": 0.5350180864334106,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 880.6999999999999,
+   "start_spread": {
+    "lo": [
+     0.4553,
+     0.4557,
+     0.4558
+    ],
+    "hi": [
+     0.5333,
+     0.5346,
+     0.535
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 401.5,
+    "q90": 880.6999999999999
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_e",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "bp": [
+   -0.3226608772060426,
+   0.37438124897557773
+  ],
+  "bp_covered": false,
+  "walk_kind": "bounds",
+  "walk_lo": 0.4460466504096985,
+  "walk_hi": 0.551084041595459,
+  "walk_covered": true,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 4202.749999999999,
+   "start_spread": {
+    "lo": [
+     0.446,
+     0.4518,
+     0.4522
+    ],
+    "hi": [
+     0.5456,
+     0.546,
+     0.5511
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 2794.0,
+    "q90": 4202.749999999999
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "CartPole-v1",
+  "seed": 0,
+  "walk_kind": "bounds",
+  "walk_lo": 0.654495894908905,
+  "walk_hi": 0.8231096267700195,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 790.2015624999999,
+   "start_spread": {
+    "lo": [
+     0.6545,
+     0.6684,
+     0.6708
+    ],
+    "hi": [
+     0.8142,
+     0.8163,
+     0.8231
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 554.1796875,
+    "q90": 790.2015624999999
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "CartPole-v1",
+  "seed": 1,
+  "walk_kind": "bounds",
+  "walk_lo": 0.635908842086792,
+  "walk_hi": 0.7364773154258728,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 1798.85,
+   "start_spread": {
+    "lo": [
+     0.6359,
+     0.643,
+     0.6436
+    ],
+    "hi": [
+     0.7294,
+     0.73,
+     0.7365
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 1237.8125,
+    "q90": 1798.85
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "CartPole-v1",
+  "seed": 2,
+  "walk_kind": "bounds",
+  "walk_lo": 0.6382071375846863,
+  "walk_hi": 0.7407305240631104,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 830.70625,
+   "start_spread": {
+    "lo": [
+     0.6382,
+     0.6466,
+     0.6494
+    ],
+    "hi": [
+     0.7321,
+     0.7356,
+     0.7407
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 511.046875,
+    "q90": 830.70625
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "Acrobot-v1",
+  "seed": 0,
+  "walk_kind": "bounds",
+  "walk_lo": 0.7317878007888794,
+  "walk_hi": 0.8568729162216187,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 3789.0874999999996,
+   "start_spread": {
+    "lo": [
+     0.7318,
+     0.7457,
+     0.7465
+    ],
+    "hi": [
+     0.8471,
+     0.8479,
+     0.8569
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 2517.9375,
+    "q90": 3789.0874999999996
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "Acrobot-v1",
+  "seed": 1,
+  "walk_kind": "bounds",
+  "walk_lo": 0.6428784132003784,
+  "walk_hi": 0.6940498352050781,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 550.9499999999999,
+   "start_spread": {
+    "lo": [
+     0.6429,
+     0.6431,
+     0.6437
+    ],
+    "hi": [
+     0.6923,
+     0.6938,
+     0.694
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 173.0,
+    "q90": 550.9499999999999
+   }
+  }
+ },
+ {
+  "row": "bounds",
+  "cell": "d_b_prime",
+  "env": "Acrobot-v1",
+  "seed": 2,
+  "walk_kind": "bounds",
+  "walk_lo": 0.7038485407829285,
+  "walk_hi": 0.8304157257080078,
+  "walk_covered": false,
+  "inner_approximation": true,
+  "reason": "",
+  "meta": {
+   "c_alpha": 4705.349999999999,
+   "start_spread": {
+    "lo": [
+     0.7038,
+     0.7136,
+     0.7143
+    ],
+    "hi": [
+     0.8243,
+     0.8246,
+     0.8304
+    ]
+   },
+   "lr_calibration_quantiles": {
+    "q50": 3200.0,
+    "q90": 4705.349999999999
+   }
+  }
+ }
+]

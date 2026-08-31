@@ -1,0 +1,346 @@
+from __future__ import annotations
+
+from typing import Tuple
+
+import torch
+import torch.nn as nn
+from torch.distributions import Categorical
+
+from nbn.learning.warm_start import check_branch, check_shapes
+from nbn.learning.weighting import select, validate_weights, weighted_mean
+from nbn.mechanisms.base import Mechanism
+from nbn.mechanisms.parametric.mdn import _build_mlp
+from nbn.update import online_laplace
+from nbn.utils.batching import ensure_2d, flatten_samples
+
+
+class NeuralCategoricalMechanism(Mechanism):
+    """MLP-based categorical CPD: logits = MLP(embed(pa)).
+
+    Use this instead of ``CategoricalTableMechanism`` when the product of
+    parent cardinalities is large (> ~1 million states), since this scales
+    linearly rather than exponentially in parent cardinality.
+
+    Parameters
+    ----------
+    n_classes: int
+        Number of output classes K.
+    hidden: tuple of int
+        MLP hidden layer widths.
+    embedding_dim: int | None
+        If not None, discrete parent values are embedded (requires
+        ``parent_cards`` to be passed at fit time).
+    activation: str
+        Activation function.
+    """
+
+    is_discrete: bool = True
+    supports_weights: bool = True
+    supports_update: bool = True
+    warm_start_is_noop: bool = False
+
+    def __init__(
+        self,
+        n_classes: int = 2,
+        hidden: Tuple[int, ...] = (64, 64),
+        embedding_dim: int | None = None,
+        activation: str = "relu",
+    ) -> None:
+        super().__init__()
+        self.n_classes = int(n_classes)
+        # #153: LikelihoodWeightingEngine.query builds its weighted histogram
+        # (probs over the K classes) only for mechanisms exposing
+        # ``_class_values``.  Label-encoded classes are the contiguous indices
+        # 0..K-1 — exactly what ``forward()``'s Categorical samples — matching
+        # CategoricalTableMechanism's ``arange(K)`` convention.  K is fixed at
+        # construction (fit_local never widens it), so set it here.
+        self._class_values: torch.Tensor = torch.arange(self.n_classes)
+        self.hidden = tuple(hidden)
+        self.embedding_dim = embedding_dim
+        self.activation = activation
+        self.output_dim = 1
+        self.net: nn.Module | None = None
+        self.embeddings: nn.ModuleList | None = None
+        self._d_pa = 0
+        # Online-EWC state for incremental update (theta* and diagonal Fisher),
+        # flat concatenations over parameters().  Buffers so .to()/state_dict/
+        # intervene()-deepcopy carry them; populated by online_laplace.consolidate
+        # at the end of fit_local.  None until fitted.
+        self.register_buffer("_ewc_mu", None)
+        self.register_buffer("_ewc_fisher", None)
+
+    def fit_local(
+        self,
+        x: torch.Tensor,
+        parents: torch.Tensor | None,
+        parent_cards: list | None = None,
+        epochs: int = 100,
+        lr: float = 1e-3,
+        batch_size: int = 512,
+        weights: torch.Tensor | None = None,
+        consolidate: bool = True,
+        warm_start: bool = False,
+        **kwargs,
+    ) -> dict:
+        x = x.long().reshape(-1)
+        k = self.n_classes
+        device = x.device
+        w_vec = validate_weights(
+            weights, x.shape[0], where="NeuralCategoricalMechanism.fit_local",
+        )
+        if w_vec is not None:
+            w_vec = w_vec.to(device)
+
+        is_root = parents is None or parents.shape[-1] == 0
+        # ``n_classes`` is fixed at construction and fit_local never widens it,
+        # so it cannot drift; ``_d_pa`` and the root/non-root branch can.
+        warm = bool(warm_start) and self.is_fitted
+        if warm:
+            where = "NeuralCategoricalMechanism.fit_local"
+            check_branch(where, was_root=self._d_pa == 0, is_root=is_root)
+            if not is_root:
+                check_shapes(where, {
+                    "d_pa": (self._d_pa, ensure_2d(parents).shape[1]),
+                })
+                wants_embeddings = (
+                    self.embedding_dim is not None and parent_cards is not None
+                )
+                if (self.embeddings is not None) != wants_embeddings:
+                    had = "embedded" if self.embeddings is not None else "raw"
+                    now = "embedded" if wants_embeddings else "raw"
+                    raise ValueError(
+                        f"{where}: warm_start=True, but the existing fit uses "
+                        f"{had} parent inputs and this call asks for {now} "
+                        f"ones (embedding_dim and parent_cards must both be "
+                        f"supplied for embeddings).  The MLP's input width "
+                        f"differs between the two, so there is nothing to "
+                        f"continue from.  Pass warm_start=False to refit."
+                    )
+                if self.embeddings is not None and parent_cards is not None:
+                    check_shapes(where, {
+                        f"parent_cards[{i}]": (emb.num_embeddings, int(c))
+                        for i, (emb, c) in enumerate(
+                            zip(self.embeddings, parent_cards)
+                        )
+                    })
+
+        if is_root:
+            self._d_pa = 0
+            # v0.8-#52: pre-fix initialised ``_root_logits`` to zeros
+            # (uniform distribution over K classes) and returned
+            # immediately, ignoring training data — surfaced by the
+            # v0.7-#43 audit.  Closed-form MLE for a marginal categorical
+            # is the empirical log-frequency; ``+1e-8`` smoothing avoids
+            # ``log(0)`` when a class doesn't appear in train_data.
+            # Root MLE is the empirical log-frequency; weighting makes those
+            # frequencies weighted counts.  float64 accumulation for the same
+            # reason as CategoricalTableMechanism.
+            if w_vec is None:
+                counts = torch.bincount(x, minlength=k).to(torch.float64)
+            else:
+                counts = torch.zeros(k, device=device, dtype=torch.float64)
+                counts.scatter_add_(0, x, w_vec)
+            counts = counts.float() + 1e-8
+            log_freq = torch.log(counts / counts.sum())
+            #
+            # Closed form, so it recomputes even under warm_start=True: there
+            # is no trajectory to continue, and freezing it would stop a root
+            # node responding to the E-step entirely.  Deterministic in the
+            # data, so the bitwise epochs=0 contract still holds.
+            self._root_logits = nn.Parameter(log_freq.to(device))
+            if consolidate:
+                online_laplace.consolidate(self, x, None)
+            return {"n_classes": k, "warm_started": False}
+
+        parents = ensure_2d(parents).to(device=device)
+        d_pa = parents.shape[1]
+        self._d_pa = d_pa
+
+        if self.embedding_dim is not None and parent_cards is not None:
+            if not warm:
+                self.embeddings = nn.ModuleList([
+                    nn.Embedding(c, self.embedding_dim) for c in parent_cards
+                ])
+            in_dim = self.embedding_dim * d_pa
+        else:
+            in_dim = d_pa
+
+        # The embedding table is as much a learned parameter as the MLP is, so
+        # a warm start keeps both or neither.
+        if not warm:
+            self.net = _build_mlp(in_dim, self.hidden, k, self.activation).to(device)
+        # Fresh optimiser either way -- Adam's moments are not in
+        # state_dict(), so persisting them would survive a caller's
+        # load_state_dict revert of a rejected step.
+        opt = torch.optim.Adam(self.parameters(), lr=lr)
+        n = x.shape[0]
+        self.train()
+        for _ in range(epochs):
+            perm = torch.randperm(n, device=device)
+            for i in range(0, n, batch_size):
+                idx = perm[i:i + batch_size]
+                bp, bx = parents[idx], x[idx]
+                logits = self._logits_from_parents(bp.float())
+                # reduction="none" so rows can be weighted before the mean;
+                # CrossEntropyLoss's own reduction would average them first.
+                loss = weighted_mean(
+                    nn.functional.cross_entropy(logits, bx, reduction="none"),
+                    select(w_vec, idx),
+                )
+                opt.zero_grad(); loss.backward()
+                opt.step()
+        self.eval()
+        # Opt-out (consolidate=False): the Fisher pass costs up to sample_cap
+        # sequential per-sample backward passes — pure overhead for fit-only
+        # workloads that never call update().
+        if consolidate:
+            online_laplace.consolidate(self, x, parents)
+        return {"n_classes": k, "d_pa": d_pa, "warm_started": warm}
+
+    # ------------------------------------------------------------------
+    # Incremental update
+    # ------------------------------------------------------------------
+
+    def update_local(
+        self,
+        x: torch.Tensor,
+        parents: torch.Tensor | None,
+        *,
+        forgetting: float = 1.0,
+        lam: float = online_laplace.DEFAULT_LAM,
+        epochs: int = 100,
+        lr: float = 1e-3,
+        batch_size: int = 512,
+        fisher_batch_size: int = 1,
+        sample_cap: int = 4096,
+        weights: torch.Tensor | None = None,
+        **kw,
+    ) -> dict:
+        """Fold new data in via online EWC (no rehearsal).
+
+        Trains the MLP (or the root logits) on the new data under a Fisher-
+        weighted quadratic anchor to the post-fit weights, then refreshes the
+        running prior.  ``lam`` is the stability↔plasticity knob (see
+        :data:`nbn.update.online_laplace.DEFAULT_LAM`).  ``fisher_batch_size=1``
+        (default) is the exact per-sample empirical Fisher; ``>1`` is a faster,
+        biased-low approximation.
+        """
+        if weights is not None:
+            raise NotImplementedError(
+                "NeuralCategoricalMechanism.update_local does not accept per-sample weights: "
+                "weighting is supported on the fitting path (fit / fit_local) "
+                "only.  A weighted fit does persist weighted sufficient "
+                "statistics, so update() folds new data onto the correct "
+                "prior — but the new data itself is taken at face value."
+            )
+        x = x.long().reshape(-1)
+        if parents is not None:
+            parents = ensure_2d(parents).to(device=x.device)
+        return online_laplace.ewc_update(
+            self, x, parents,
+            epochs=epochs, lr=lr, batch_size=batch_size,
+            lam=lam, forgetting=forgetting,
+            fisher_batch_size=fisher_batch_size, sample_cap=sample_cap,
+        )
+
+    def _logits_from_parents(self, parents: torch.Tensor) -> torch.Tensor:
+        if self.embeddings is not None:
+            parts = [self.embeddings[i](parents[:, i].long()) for i in range(parents.shape[1])]
+            inp = torch.cat(parts, dim=-1)
+        else:
+            inp = parents.float()
+        return self.net(inp)
+
+    def forward(self, parents: torch.Tensor | None) -> Categorical:
+        if self._d_pa == 0 or parents is None:
+            b = 1 if parents is None else ensure_2d(parents).shape[0]
+            return Categorical(logits=self._root_logits.unsqueeze(0).expand(b, -1))
+        parents_2d = ensure_2d(parents)
+        return Categorical(logits=self._logits_from_parents(parents_2d))
+
+    @property
+    def is_fitted(self) -> bool:
+        """True iff ``fit_local`` produced a usable CPD.
+
+        Root nodes (``_d_pa == 0``): fitted iff ``_root_logits``
+        parameter is registered.  Non-root: fitted iff the MLP
+        ``net`` is built.  Pre-``fit_local``: ``_d_pa = 0`` (default)
+        and ``_root_logits`` is unregistered, so this returns
+        ``False``.
+        """
+        if self._d_pa == 0:
+            return getattr(self, "_root_logits", None) is not None
+        return self.net is not None
+
+    def tabulate(
+        self, parent_cards: list[int] | None = None
+    ) -> torch.Tensor:
+        """Return tabulated CPD in logit space.
+
+        Root nodes (``self._d_pa == 0``): returns ``self._root_logits``
+        of shape ``[K]``.
+
+        Non-root nodes: enumerates the cartesian product of parent
+        values once, runs a single batched ``_logits_from_parents``
+        forward pass, and reshapes to ``[*parent_cards, K]``.
+        ``parent_cards`` is required (the mechanism does not store
+        them; embeddings store them implicitly via ``num_embeddings``
+        but the no-embedding path would have no signal).
+
+        At v0.6c-d cardinality / max_in_degree caps (4 / 4),
+        ``prod(parent_cards) <= 256`` so enumeration is a single
+        small MLP forward — well under the 10ms budget surfaced in
+        Phase 0.
+        """
+        if self._d_pa == 0:
+            assert self._root_logits is not None, "Call fit_local first."
+            return self._root_logits
+        if parent_cards is None:
+            raise ValueError(
+                "NeuralCategoricalMechanism.tabulate(): parent_cards is "
+                "required for non-root nodes — the mechanism does not "
+                "store parent cardinalities, and the MLP cannot be "
+                "enumerated without them."
+            )
+        if len(parent_cards) != self._d_pa:
+            raise ValueError(
+                f"parent_cards has {len(parent_cards)} entries but "
+                f"mechanism was fit with d_pa={self._d_pa}."
+            )
+        device = next(self.net.parameters()).device
+        grids = torch.meshgrid(
+            *[torch.arange(c, device=device) for c in parent_cards],
+            indexing="ij",
+        )
+        pa_flat = torch.stack(
+            [g.reshape(-1) for g in grids], dim=-1,
+        ).float()  # [prod(pa_cards), d_pa]
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                logits_flat = self._logits_from_parents(pa_flat)
+        finally:
+            if was_training:
+                self.train()
+        return logits_flat.reshape(*parent_cards, self.n_classes)
+
+    def log_prob(self, x: torch.Tensor, parents: torch.Tensor | None) -> torch.Tensor:
+        squeeze_s = False
+        if x.dim() == 1:
+            x = x.unsqueeze(-1)
+        if x.dim() == 2:
+            x = x.unsqueeze(1); squeeze_s = True
+        b, s, _ = x.shape
+        x_idx = x.long().squeeze(-1)  # [B, S]
+
+        if self._d_pa == 0 or parents is None:
+            logits = self._root_logits.view(1, 1, -1).expand(b, s, -1)
+        else:
+            if parents.dim() == 2:
+                parents = parents.unsqueeze(1).expand(-1, s, -1)
+            flat, _, _ = flatten_samples(parents)
+            logits = self._logits_from_parents(flat.float()).reshape(b, s, -1)
+
+        lp = torch.log_softmax(logits, dim=-1).gather(-1, x_idx.unsqueeze(-1)).squeeze(-1)
+        return lp.squeeze(1) if squeeze_s else lp

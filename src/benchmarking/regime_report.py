@@ -423,7 +423,9 @@ def compute_null_calibration(
     judgment. That is the whole fix: the bare-DQN base-confound inflates the JUDGED
     cell's noise almost as fast as the gap, so a gap/(cell-noise) gate greenlit the
     confound (broken ratio 1.58 PASSED k=2.0). With a fixed reference the endpoints
-    separate — correct gap/noise_ref ~= 1, broken ~= 5.75 — and k=2.4 splits them.
+    separate — correct gap/noise_ref ~= 1, broken ~= 5.75 — and ``NULL_CALIBRATION_K``
+    splits them (2.4 at that original budget; re-pinned to 1.5 for the 50k-step
+    budget — see the constant's comment block for the re-derivation).
 
     A MISSING (env, algo) reference -> ``null_calibrated = None`` (UNCALIBRATED): a
     gate with no reference must not verdict. The judged cell's own pooled seed-sd is
@@ -491,6 +493,12 @@ _REPORT_METRICS = (
     "eval_return_mean",
     "train_return_mean",
     "action_coverage",
+    # MC-anchored value accuracy (absolute, budget-independent; additive,
+    # blank -> NaN for critics that do not emit it).
+    "value_mse_to_mc",
+    "value_mse_to_mc_u0",
+    "mc_rtg_mean",
+    "mc_rtg_u0_mean",
 )
 
 

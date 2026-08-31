@@ -1,0 +1,64 @@
+
+=== d_e CartPole-v1 s0  c=821.3625  (grace-v2/d_e-cartpole/medium-bias_confounded_action-sigma100-seed0-v0) ===
+fit: finished=True final_ll=-45486.8047
+[H] final_ll=-45486.8047  recomputed ll(theta-hat)=-80829.7344  LR(theta-hat)=70685.8594  c=821.3625  feasible_at_start=False
+[A/B] start 0: |theta-theta0|=0.0000 LR=70685.8594 tgt=0.5053 |g_t|=1.057e+00
+  [C/D] step 0: LR 70685.86 -> 70686.02 (tangent) -> 70080.59 after 20 restorations feasible=False tgt=0.4974 |g_l|=1.629e+04 |proj|=9.828e-01
+  [C/D] step 1: LR 70080.59 -> 70080.70 (tangent) -> 69449.95 after 20 restorations feasible=False tgt=0.4889 |g_l|=1.501e+04 |proj|=9.411e-01
+  [C/D] step 2: LR 69449.95 -> 69450.02 (tangent) -> 68739.36 after 20 restorations feasible=False tgt=0.4808 |g_l|=1.669e+04 |proj|=9.348e-01
+  [C/D] step 3: LR 68739.36 -> 68739.42 (tangent) -> 67933.64 after 20 restorations feasible=False tgt=0.4728 |g_l|=1.889e+04 |proj|=9.391e-01
+  [C/D] step 4: LR 67933.64 -> 67933.72 (tangent) -> 67026.83 after 20 restorations feasible=False tgt=0.4649 |g_l|=2.142e+04 |proj|=9.407e-01
+  [C/D] step 10: LR 61407.02 -> 61407.12 (tangent) -> 60198.31 after 20 restorations feasible=False tgt=0.4207 |g_l|=3.025e+04 |proj|=9.719e-01
+  [C/D] step 20: LR 50265.36 -> 50265.53 (tangent) -> 49280.23 after 20 restorations feasible=False tgt=0.3769 |g_l|=2.489e+04 |proj|=1.059e+00
+  start 0: 0/30 feasible iterates, best=None
+[A/B] start 1: |theta-theta0|=0.2891 LR=70829.2812 tgt=0.5093 |g_t|=1.063e+00
+  [C/D] step 0: LR 70829.28 -> 70829.42 (tangent) -> 70204.52 after 20 restorations feasible=False tgt=0.5014 |g_l|=1.695e+04 |proj|=9.879e-01
+  [C/D] step 1: LR 70204.52 -> 70204.62 (tangent) -> 69571.97 after 20 restorations feasible=False tgt=0.4928 |g_l|=1.524e+04 |proj|=9.425e-01
+  [C/D] step 2: LR 69571.97 -> 69572.06 (tangent) -> 68867.05 after 20 restorations feasible=False tgt=0.4844 |g_l|=1.660e+04 |proj|=9.344e-01
+  [C/D] step 3: LR 68867.05 -> 68867.14 (tangent) -> 68072.44 after 20 restorations feasible=False tgt=0.4764 |g_l|=1.869e+04 |proj|=9.355e-01
+  [C/D] step 4: LR 68072.44 -> 68072.52 (tangent) -> 67179.84 after 20 restorations feasible=False tgt=0.4685 |g_l|=2.107e+04 |proj|=9.400e-01
+  [C/D] step 10: LR 61608.86 -> 61608.95 (tangent) -> 60399.30 after 20 restorations feasible=False tgt=0.4238 |g_l|=3.023e+04 |proj|=9.732e-01
+  [C/D] step 20: LR 50427.94 -> 50428.11 (tangent) -> 49439.22 after 20 restorations feasible=False tgt=0.3787 |g_l|=2.498e+04 |proj|=1.058e+00
+  start 1: 0/30 feasible iterates, best=None
+[A/B] start 2: |theta-theta0|=0.5927 LR=72205.5469 tgt=0.5011 |g_t|=1.051e+00
+  [C/D] step 0: LR 72205.55 -> 72205.70 (tangent) -> 71349.56 after 20 restorations feasible=False tgt=0.4952 |g_l|=2.261e+04 |proj|=1.005e+00
+  [C/D] step 1: LR 71349.56 -> 71349.66 (tangent) -> 70516.28 after 20 restorations feasible=False tgt=0.4885 |g_l|=2.083e+04 |proj|=9.766e-01
+  [C/D] step 2: LR 70516.28 -> 70516.38 (tangent) -> 69652.62 after 20 restorations feasible=False tgt=0.4813 |g_l|=2.107e+04 |proj|=9.629e-01
+  [C/D] step 3: LR 69652.62 -> 69652.72 (tangent) -> 68730.91 after 20 restorations feasible=False tgt=0.4738 |g_l|=2.224e+04 |proj|=9.531e-01
+  [C/D] step 4: LR 68730.91 -> 68730.98 (tangent) -> 67737.80 after 20 restorations feasible=False tgt=0.4663 |g_l|=2.392e+04 |proj|=9.478e-01
+  [C/D] step 10: LR 61887.31 -> 61887.42 (tangent) -> 60647.67 after 20 restorations feasible=False tgt=0.4215 |g_l|=3.105e+04 |proj|=9.740e-01
+  [C/D] step 20: LR 50536.98 -> 50537.17 (tangent) -> 49541.70 after 20 restorations feasible=False tgt=0.3761 |g_l|=2.516e+04 |proj|=1.055e+00
+  start 2: 0/30 feasible iterates, best=None
+
+=== d_b_prime CartPole-v1 s0  c=790.2016  (grace-v2/d_b_prime-cartpole/medium-bias_confounded_action-sigma100-seed0-v0) ===
+fit: finished=True final_ll=-36343.3711
+[H] final_ll=-36343.3711  recomputed ll(theta-hat)=-37592.3281  LR(theta-hat)=2497.9141  c=790.2016  feasible_at_start=False
+[A/B] start 0: |theta-theta0|=0.0000 LR=2497.9141 tgt=0.7615 |g_t|=2.597e+00
+  [C/D] step 0: LR 2497.91 -> 2498.73 (tangent) -> 797.45 after 20 restorations feasible=False tgt=0.7307 |g_l|=4.517e+04 |proj|=1.983e+00
+  [C/D] step 1: LR 797.45 -> 798.16 (tangent) -> 717.52 after 1 restorations feasible=True tgt=0.7314 |g_l|=4.015e+04 |proj|=2.264e+00
+  [C/D] step 2: LR 717.52 -> 718.20 (tangent) -> 718.20 after 0 restorations feasible=True tgt=0.7336 |g_l|=4.023e+04 |proj|=2.244e+00
+  [C/D] step 3: LR 718.20 -> 718.90 (tangent) -> 718.90 after 0 restorations feasible=True tgt=0.7358 |g_l|=4.051e+04 |proj|=2.212e+00
+  [C/D] step 4: LR 718.90 -> 719.59 (tangent) -> 719.59 after 0 restorations feasible=True tgt=0.7380 |g_l|=4.082e+04 |proj|=2.180e+00
+  [C/D] step 10: LR 723.30 -> 724.24 (tangent) -> 724.24 after 0 restorations feasible=True tgt=0.7505 |g_l|=4.318e+04 |proj|=2.007e+00
+  [C/D] step 20: LR 729.65 -> 730.10 (tangent) -> 730.10 after 0 restorations feasible=True tgt=0.7690 |g_l|=4.841e+04 |proj|=1.714e+00
+  start 0: 29/30 feasible iterates, best=0.7839244604110718
+[A/B] start 1: |theta-theta0|=0.3750 LR=2304.8359 tgt=0.7555 |g_t|=2.685e+00
+  [C/D] step 0: LR 2304.84 -> 2305.73 (tangent) -> 761.71 after 18 restorations feasible=True tgt=0.7293 |g_l|=4.528e+04 |proj|=2.158e+00
+  [C/D] step 1: LR 761.71 -> 762.45 (tangent) -> 762.45 after 0 restorations feasible=True tgt=0.7316 |g_l|=4.071e+04 |proj|=2.344e+00
+  [C/D] step 2: LR 762.45 -> 763.36 (tangent) -> 763.36 after 0 restorations feasible=True tgt=0.7340 |g_l|=4.097e+04 |proj|=2.339e+00
+  [C/D] step 3: LR 763.36 -> 764.10 (tangent) -> 764.10 after 0 restorations feasible=True tgt=0.7363 |g_l|=4.126e+04 |proj|=2.303e+00
+  [C/D] step 4: LR 764.10 -> 764.81 (tangent) -> 764.81 after 0 restorations feasible=True tgt=0.7385 |g_l|=4.157e+04 |proj|=2.281e+00
+  [C/D] step 10: LR 768.66 -> 769.75 (tangent) -> 769.75 after 0 restorations feasible=True tgt=0.7514 |g_l|=4.387e+04 |proj|=2.072e+00
+  [C/D] step 20: LR 775.57 -> 776.05 (tangent) -> 776.05 after 0 restorations feasible=True tgt=0.7705 |g_l|=4.923e+04 |proj|=1.774e+00
+  start 1: 30/30 feasible iterates, best=0.7858214378356934
+[A/B] start 2: |theta-theta0|=0.7454 LR=5021.2266 tgt=0.7397 |g_t|=2.638e+00
+  [C/D] step 0: LR 5021.23 -> 5021.96 (tangent) -> 3360.14 after 20 restorations feasible=False tgt=0.7162 |g_l|=4.536e+04 |proj|=2.328e+00
+  [C/D] step 1: LR 3360.14 -> 3360.82 (tangent) -> 1863.49 after 20 restorations feasible=False tgt=0.6947 |g_l|=3.897e+04 |proj|=2.377e+00
+  [C/D] step 2: LR 1863.49 -> 1864.04 (tangent) -> 738.59 after 16 restorations feasible=True tgt=0.6810 |g_l|=3.598e+04 |proj|=2.527e+00
+  [C/D] step 3: LR 738.59 -> 739.34 (tangent) -> 739.34 after 0 restorations feasible=True tgt=0.6836 |g_l|=3.424e+04 |proj|=2.614e+00
+  [C/D] step 4: LR 739.34 -> 739.88 (tangent) -> 739.88 after 0 restorations feasible=True tgt=0.6862 |g_l|=3.443e+04 |proj|=2.613e+00
+  [C/D] step 10: LR 743.16 -> 744.18 (tangent) -> 744.18 after 0 restorations feasible=True tgt=0.7016 |g_l|=3.588e+04 |proj|=2.546e+00
+  [C/D] step 20: LR 750.70 -> 751.29 (tangent) -> 751.29 after 0 restorations feasible=True tgt=0.7251 |g_l|=3.983e+04 |proj|=2.213e+00
+  start 2: 28/30 feasible iterates, best=0.7438696622848511
+
+WALK DIAGNOSIS COMPLETE -> results/v4/walk_diagnosis.json

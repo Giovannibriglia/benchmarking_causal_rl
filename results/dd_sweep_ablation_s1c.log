@@ -1,0 +1,259 @@
+=== d100 ===
+device = cuda
+    Acrobot-v1 s0 with/random fit_seed=0 ll=-56399.2 conv=False
+    Acrobot-v1 s0 with/random fit_seed=1 ll=-56295.7 conv=True
+    Acrobot-v1 s0 with/random fit_seed=2 ll=-56208.0 conv=False
+  Acrobot-v1   s0 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4288 conv=False
+    Acrobot-v1 s0 without/random fit_seed=0 ll=-54650.5 conv=False
+    Acrobot-v1 s0 without/random fit_seed=1 ll=-54587.0 conv=True
+    Acrobot-v1 s0 without/random fit_seed=2 ll=-54403.1 conv=False
+  Acrobot-v1   s0 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4299 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-56298.8 conv=True
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-56195.6 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-56148.6 conv=False
+  Acrobot-v1   s0 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4300 conv=False
+    Acrobot-v1 s1 with/random fit_seed=0 ll=-173567.8 conv=False
+    Acrobot-v1 s1 with/random fit_seed=1 ll=-173354.7 conv=False
+    Acrobot-v1 s1 with/random fit_seed=2 ll=-173358.6 conv=True
+  Acrobot-v1   s1 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4725 conv=False
+    Acrobot-v1 s1 without/random fit_seed=0 ll=-171816.6 conv=False
+    Acrobot-v1 s1 without/random fit_seed=1 ll=-171790.6 conv=False
+    Acrobot-v1 s1 without/random fit_seed=2 ll=-171541.3 conv=False
+  Acrobot-v1   s1 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5275 conv=False
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=0 ll=-207217.6 conv=False
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=1 ll=-207369.3 conv=False
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=2 ll=-207477.3 conv=False
+  Acrobot-v1   s1 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.6310 do=+0.5069 conv=False
+    Acrobot-v1 s2 with/random fit_seed=0 ll=-125548.2 conv=False
+    Acrobot-v1 s2 with/random fit_seed=1 ll=-125651.1 conv=True
+    Acrobot-v1 s2 with/random fit_seed=2 ll=-125688.3 conv=True
+  Acrobot-v1   s2 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4800 conv=False
+    Acrobot-v1 s2 without/random fit_seed=0 ll=-124040.9 conv=True
+    Acrobot-v1 s2 without/random fit_seed=1 ll=-123838.1 conv=True
+    Acrobot-v1 s2 without/random fit_seed=2 ll=-123846.4 conv=False
+  Acrobot-v1   s2 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5200 conv=True
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-125621.0 conv=True
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-125578.8 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-125774.2 conv=True
+  Acrobot-v1   s2 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5200 conv=False
+    CartPole-v1 s0 with/random fit_seed=0 ll=-5718.9 conv=False
+    CartPole-v1 s0 with/random fit_seed=1 ll=-5717.5 conv=False
+    CartPole-v1 s0 with/random fit_seed=2 ll=-5738.9 conv=False
+  CartPole-v1  s0 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5050 conv=False
+    CartPole-v1 s0 without/random fit_seed=0 ll=-4084.3 conv=False
+    CartPole-v1 s0 without/random fit_seed=1 ll=-4087.0 conv=False
+    CartPole-v1 s0 without/random fit_seed=2 ll=-4111.2 conv=False
+  CartPole-v1  s0 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9999 do=+0.4949 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-5724.8 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-5730.4 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-5759.4 conv=False
+  CartPole-v1  s0 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5050 conv=False
+    CartPole-v1 s1 with/random fit_seed=0 ll=-26552.0 conv=False
+    CartPole-v1 s1 with/random fit_seed=1 ll=-26410.4 conv=False
+    CartPole-v1 s1 with/random fit_seed=2 ll=-26391.7 conv=False
+  CartPole-v1  s1 with            init=random  recovery(best-LL)=1.0000 mean=0.9983 max=1.0000 sep=1.0000 do=+0.5044 conv=False
+    CartPole-v1 s1 without/random fit_seed=0 ll=-24709.9 conv=False
+    CartPole-v1 s1 without/random fit_seed=1 ll=-24745.6 conv=False
+    CartPole-v1 s1 without/random fit_seed=2 ll=-24648.6 conv=False
+  CartPole-v1  s1 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9989 do=+0.5011 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=0 ll=-26373.2 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=1 ll=-26441.3 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=2 ll=-26354.3 conv=False
+  CartPole-v1  s1 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.4906 conv=False
+    CartPole-v1 s2 with/random fit_seed=0 ll=-10441.7 conv=False
+    CartPole-v1 s2 with/random fit_seed=1 ll=-10427.4 conv=False
+    CartPole-v1 s2 with/random fit_seed=2 ll=-11056.4 conv=False
+  CartPole-v1  s2 with            init=random  recovery(best-LL)=1.0000 mean=0.9642 max=1.0000 sep=1.0000 do=+0.4674 conv=False
+    CartPole-v1 s2 without/random fit_seed=0 ll=-8778.7 conv=False
+    CartPole-v1 s2 without/random fit_seed=1 ll=-9090.0 conv=False
+    CartPole-v1 s2 without/random fit_seed=2 ll=-8775.6 conv=True
+  CartPole-v1  s2 without         init=random  recovery(best-LL)=1.0000 mean=0.9258 max=1.0000 sep=1.0000 do=+0.5493 conv=True
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-10466.2 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-10466.5 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-10454.7 conv=False
+  CartPole-v1  s2 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.5500 conv=False
+
+=== summary ===
+  delta_recovery         mean +0.0000   range [+0.0000, +0.0000]
+  delta_separability     mean +0.0002   range [+0.0000, +0.0011]
+  delta_contrast         mean -0.0274   range [-0.0818, +0.0101]
+
+A delta near zero on ALL THREE means the proxies are decorative: the estimator gets the same latent, the same confidence and the same estimand from (S, A, R) alone.
+=== d050 ===
+device = cuda
+    Acrobot-v1 s0 with/random fit_seed=0 ll=-62536.1 conv=False
+    Acrobot-v1 s0 with/random fit_seed=1 ll=-62323.2 conv=False
+    Acrobot-v1 s0 with/random fit_seed=2 ll=-62366.5 conv=False
+  Acrobot-v1   s0 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.9222 conv=False
+    Acrobot-v1 s0 without/random fit_seed=0 ll=-60882.8 conv=False
+    Acrobot-v1 s0 without/random fit_seed=1 ll=-60421.4 conv=False
+    Acrobot-v1 s0 without/random fit_seed=2 ll=-60621.7 conv=False
+  Acrobot-v1   s0 without         init=random  recovery(best-LL)=0.9975 mean=0.9975 max=0.9975 sep=0.9998 do=+0.9504 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-62703.1 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-62496.7 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-62686.3 conv=False
+  Acrobot-v1   s0 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+1.0827 conv=False
+    Acrobot-v1 s1 with/random fit_seed=0 ll=978339.2 conv=True
+    Acrobot-v1 s1 with/random fit_seed=1 ll=978872.5 conv=True
+    Acrobot-v1 s1 with/random fit_seed=2 ll=979421.2 conv=True
+  Acrobot-v1   s1 with            init=random  recovery(best-LL)=0.9975 mean=0.9983 max=1.0000 sep=1.0000 do=+0.9684 conv=True
+    Acrobot-v1 s1 without/random fit_seed=0 ll=980563.4 conv=True
+    Acrobot-v1 s1 without/random fit_seed=1 ll=975231.9 conv=True
+    Acrobot-v1 s1 without/random fit_seed=2 ll=981328.5 conv=True
+  Acrobot-v1   s1 without         init=random  recovery(best-LL)=0.9975 mean=0.9992 max=1.0000 sep=1.0000 do=+0.9649 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=0 ll=979281.8 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=1 ll=975233.6 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=2 ll=977509.8 conv=True
+  Acrobot-v1   s1 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=0.9975 max=1.0000 sep=1.0000 do=+1.0230 conv=True
+    Acrobot-v1 s2 with/random fit_seed=0 ll=-148756.8 conv=False
+    Acrobot-v1 s2 with/random fit_seed=1 ll=-148468.5 conv=False
+    Acrobot-v1 s2 with/random fit_seed=2 ll=-148402.1 conv=False
+  Acrobot-v1   s2 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+0.9697 conv=False
+    Acrobot-v1 s2 without/random fit_seed=0 ll=-146913.1 conv=False
+    Acrobot-v1 s2 without/random fit_seed=1 ll=-146686.0 conv=False
+    Acrobot-v1 s2 without/random fit_seed=2 ll=-146535.5 conv=False
+  Acrobot-v1   s2 without         init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9999 do=+0.9742 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-148439.2 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-148435.7 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-147969.1 conv=False
+  Acrobot-v1   s2 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+1.0220 conv=False
+    CartPole-v1 s0 with/random fit_seed=0 ll=-6936.4 conv=False
+    CartPole-v1 s0 with/random fit_seed=1 ll=-6968.5 conv=False
+    CartPole-v1 s0 with/random fit_seed=2 ll=-6971.6 conv=False
+  CartPole-v1  s0 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9996 do=+1.0523 conv=False
+    CartPole-v1 s0 without/random fit_seed=0 ll=-5209.8 conv=False
+    CartPole-v1 s0 without/random fit_seed=1 ll=-5274.9 conv=False
+    CartPole-v1 s0 without/random fit_seed=2 ll=-5269.9 conv=False
+  CartPole-v1  s0 without         init=random  recovery(best-LL)=0.8975 mean=0.8992 max=0.9100 sep=0.8963 do=+1.0253 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-6934.8 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-6967.2 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-6981.4 conv=False
+  CartPole-v1  s0 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9996 do=+1.0591 conv=False
+    CartPole-v1 s1 with/random fit_seed=0 ll=-37887.2 conv=False
+    CartPole-v1 s1 with/random fit_seed=1 ll=-37960.6 conv=False
+    CartPole-v1 s1 with/random fit_seed=2 ll=-37819.3 conv=False
+  CartPole-v1  s1 with            init=random  recovery(best-LL)=0.9975 mean=0.9975 max=1.0000 sep=0.9999 do=+0.9905 conv=False
+    CartPole-v1 s1 without/random fit_seed=0 ll=-36351.6 conv=False
+    CartPole-v1 s1 without/random fit_seed=1 ll=-36145.6 conv=False
+    CartPole-v1 s1 without/random fit_seed=2 ll=-36069.4 conv=False
+  CartPole-v1  s1 without         init=random  recovery(best-LL)=0.9850 mean=0.9875 max=0.9900 sep=0.9966 do=+0.9676 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=0 ll=-37751.8 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=1 ll=-37872.3 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=2 ll=-37752.3 conv=False
+  CartPole-v1  s1 with_proxyinit  init=proxy   recovery(best-LL)=0.9975 mean=0.9975 max=1.0000 sep=0.9993 do=+0.9729 conv=False
+    CartPole-v1 s2 with/random fit_seed=0 ll=-14698.5 conv=False
+    CartPole-v1 s2 with/random fit_seed=1 ll=-14698.1 conv=False
+    CartPole-v1 s2 with/random fit_seed=2 ll=-14673.8 conv=False
+  CartPole-v1  s2 with            init=random  recovery(best-LL)=0.9975 mean=0.9983 max=1.0000 sep=0.9998 do=+1.0509 conv=False
+    CartPole-v1 s2 without/random fit_seed=0 ll=-13063.5 conv=False
+    CartPole-v1 s2 without/random fit_seed=1 ll=-13062.9 conv=False
+    CartPole-v1 s2 without/random fit_seed=2 ll=-13010.6 conv=False
+  CartPole-v1  s2 without         init=random  recovery(best-LL)=0.9675 mean=0.9650 max=0.9675 sep=0.9829 do=+1.0113 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-14778.1 conv=True
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-14704.2 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-14718.3 conv=False
+  CartPole-v1  s2 with_proxyinit  init=proxy   recovery(best-LL)=0.9975 mean=0.9983 max=1.0000 sep=0.9999 do=+1.0524 conv=False
+
+=== summary ===
+  delta_recovery         mean +0.0246   range [+0.0000, +0.1025]
+  delta_separability     mean +0.0206   range [+0.0000, +0.1033]
+  delta_contrast         mean +0.0100   range [-0.0282, +0.0396]
+
+A delta near zero on ALL THREE means the proxies are decorative: the estimator gets the same latent, the same confidence and the same estimand from (S, A, R) alone.
+=== d025 ===
+device = cuda
+    Acrobot-v1 s0 with/random fit_seed=0 ll=-63433.2 conv=False
+    Acrobot-v1 s0 with/random fit_seed=1 ll=-63406.6 conv=False
+    Acrobot-v1 s0 with/random fit_seed=2 ll=-63396.3 conv=False
+  Acrobot-v1   s0 with            init=random  recovery(best-LL)=0.9975 mean=0.9975 max=0.9975 sep=0.9997 do=+2.1707 conv=False
+    Acrobot-v1 s0 without/random fit_seed=0 ll=-61840.2 conv=False
+    Acrobot-v1 s0 without/random fit_seed=1 ll=-61717.2 conv=False
+    Acrobot-v1 s0 without/random fit_seed=2 ll=-61797.7 conv=False
+  Acrobot-v1   s0 without         init=random  recovery(best-LL)=0.9350 mean=0.9458 max=0.9575 sep=0.9703 do=+2.0655 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-63684.9 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-63417.8 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-63523.3 conv=False
+  Acrobot-v1   s0 with_proxyinit  init=proxy   recovery(best-LL)=0.9975 mean=0.9983 max=1.0000 sep=0.9994 do=+1.9134 conv=False
+    Acrobot-v1 s1 with/random fit_seed=0 ll=969600.9 conv=True
+    Acrobot-v1 s1 with/random fit_seed=1 ll=961752.6 conv=True
+    Acrobot-v1 s1 with/random fit_seed=2 ll=967817.4 conv=True
+  Acrobot-v1   s1 with            init=random  recovery(best-LL)=1.0000 mean=0.6850 max=1.0000 sep=1.0000 do=+2.0143 conv=True
+    Acrobot-v1 s1 without/random fit_seed=0 ll=970708.2 conv=True
+    Acrobot-v1 s1 without/random fit_seed=1 ll=968922.8 conv=True
+    Acrobot-v1 s1 without/random fit_seed=2 ll=969471.1 conv=True
+  Acrobot-v1   s1 without         init=random  recovery(best-LL)=0.9975 mean=0.6833 max=0.9975 sep=1.0000 do=+1.9645 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=0 ll=970469.2 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=1 ll=965966.1 conv=True
+    Acrobot-v1 s1 with_proxyinit/proxy fit_seed=2 ll=971307.2 conv=True
+  Acrobot-v1   s1 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=0.8425 max=1.0000 sep=1.0000 do=+1.9568 conv=True
+    Acrobot-v1 s2 with/random fit_seed=0 ll=-152585.7 conv=False
+    Acrobot-v1 s2 with/random fit_seed=1 ll=-152395.9 conv=False
+    Acrobot-v1 s2 with/random fit_seed=2 ll=-152269.2 conv=False
+  Acrobot-v1   s2 with            init=random  recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+1.9612 conv=False
+    Acrobot-v1 s2 without/random fit_seed=0 ll=-150956.7 conv=False
+    Acrobot-v1 s2 without/random fit_seed=1 ll=-150979.3 conv=False
+    Acrobot-v1 s2 without/random fit_seed=2 ll=-150613.1 conv=False
+  Acrobot-v1   s2 without         init=random  recovery(best-LL)=0.9950 mean=0.9950 max=0.9975 sep=0.9957 do=+1.9746 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-152251.1 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-152534.9 conv=False
+    Acrobot-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-152544.2 conv=False
+  Acrobot-v1   s2 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=1.0000 do=+1.9382 conv=False
+    CartPole-v1 s0 with/random fit_seed=0 ll=-7181.0 conv=False
+    CartPole-v1 s0 with/random fit_seed=1 ll=-7213.1 conv=False
+    CartPole-v1 s0 with/random fit_seed=2 ll=-7277.7 conv=False
+  CartPole-v1  s0 with            init=random  recovery(best-LL)=0.9975 mean=0.9967 max=1.0000 sep=0.9991 do=+2.0951 conv=False
+    CartPole-v1 s0 without/random fit_seed=0 ll=-5342.7 conv=False
+    CartPole-v1 s0 without/random fit_seed=1 ll=-5399.7 conv=False
+    CartPole-v1 s0 without/random fit_seed=2 ll=-5412.3 conv=False
+  CartPole-v1  s0 without         init=random  recovery(best-LL)=0.6125 mean=0.6375 max=0.7025 sep=0.7339 do=+2.0694 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-7176.8 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-7219.5 conv=False
+    CartPole-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-7234.2 conv=False
+  CartPole-v1  s0 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=1.0000 max=1.0000 sep=0.9996 do=+2.0885 conv=False
+    CartPole-v1 s1 with/random fit_seed=0 ll=-39817.6 conv=False
+    CartPole-v1 s1 with/random fit_seed=1 ll=-39914.7 conv=False
+    CartPole-v1 s1 with/random fit_seed=2 ll=-39884.8 conv=False
+  CartPole-v1  s1 with            init=random  recovery(best-LL)=0.9950 mean=0.9975 max=1.0000 sep=0.9990 do=+2.0000 conv=False
+    CartPole-v1 s1 without/random fit_seed=0 ll=-38055.2 conv=False
+    CartPole-v1 s1 without/random fit_seed=1 ll=-38098.0 conv=False
+    CartPole-v1 s1 without/random fit_seed=2 ll=-38203.2 conv=False
+  CartPole-v1  s1 without         init=random  recovery(best-LL)=0.9225 mean=0.9275 max=0.9325 sep=0.9769 do=+1.9198 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=0 ll=-39832.6 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=1 ll=-40009.3 conv=False
+    CartPole-v1 s1 with_proxyinit/proxy fit_seed=2 ll=-39846.7 conv=False
+  CartPole-v1  s1 with_proxyinit  init=proxy   recovery(best-LL)=1.0000 mean=0.9983 max=1.0000 sep=0.9984 do=+1.9397 conv=False
+    CartPole-v1 s2 with/random fit_seed=0 ll=-15363.4 conv=False
+    CartPole-v1 s2 with/random fit_seed=1 ll=-15431.5 conv=False
+    CartPole-v1 s2 with/random fit_seed=2 ll=-15374.5 conv=False
+  CartPole-v1  s2 with            init=random  recovery(best-LL)=0.9975 mean=0.9975 max=1.0000 sep=0.9990 do=+1.8922 conv=False
+    CartPole-v1 s2 without/random fit_seed=0 ll=-13665.1 conv=False
+    CartPole-v1 s2 without/random fit_seed=1 ll=-13686.5 conv=False
+    CartPole-v1 s2 without/random fit_seed=2 ll=-13616.4 conv=False
+  CartPole-v1  s2 without         init=random  recovery(best-LL)=0.8575 mean=0.8592 max=0.8650 sep=0.8911 do=+2.0723 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=0 ll=-15404.8 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=1 ll=-15443.6 conv=False
+    CartPole-v1 s2 with_proxyinit/proxy fit_seed=2 ll=-15395.5 conv=False
+  CartPole-v1  s2 with_proxyinit  init=proxy   recovery(best-LL)=0.9975 mean=0.9983 max=1.0000 sep=0.9983 do=+2.0446 conv=False
+
+=== summary ===
+  delta_recovery         mean +0.1113   range [+0.0025, +0.3850]
+  delta_separability     mean +0.0715   range [+0.0000, +0.2652]
+  delta_contrast         mean +0.0112   range [-0.1801, +0.1052]
+
+A delta near zero on ALL THREE means the proxies are decorative: the estimator gets the same latent, the same confidence and the same estimand from (S, A, R) alone.
+=== d010 ===
+device = cuda
+    Acrobot-v1 s0 with/random fit_seed=0 ll=-63990.1 conv=False
+    Acrobot-v1 s0 with/random fit_seed=1 ll=-63713.3 conv=False
+    Acrobot-v1 s0 with/random fit_seed=2 ll=-63977.6 conv=False
+  Acrobot-v1   s0 with            init=random  recovery(best-LL)=0.9975 mean=0.9967 max=0.9975 sep=0.9995 do=+4.9409 conv=False
+    Acrobot-v1 s0 without/random fit_seed=0 ll=-62150.3 conv=False
+    Acrobot-v1 s0 without/random fit_seed=1 ll=-62072.5 conv=False
+    Acrobot-v1 s0 without/random fit_seed=2 ll=-61994.0 conv=False
+  Acrobot-v1   s0 without         init=random  recovery(best-LL)=0.8400 mean=0.8275 max=0.8400 sep=0.9160 do=+5.0846 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=0 ll=-63965.6 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=1 ll=-63892.6 conv=False
+    Acrobot-v1 s0 with_proxyinit/proxy fit_seed=2 ll=-64207.5 conv=False
+  Acrobot-v1   s0 with_proxyinit  init=proxy   recovery(best-LL)=0.9925 mean=0.9925 max=0.9925 sep=0.9979 do=+4.8245 conv=False
+    Acrobot-v1 s1 with/random fit_seed=0 ll=963972.7 conv=False
+    Acrobot-v1 s1 with/random fit_seed=1 ll=964186.3 conv=True

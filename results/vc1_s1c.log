@@ -1,0 +1,40 @@
+  d_a_null  CartPole-v1  s0  truth= 0.00  naive_tr= +0.000  grace= -0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  CartPole-v1  s1  truth= 0.00  naive_tr= +0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  CartPole-v1  s2  truth= 0.00  naive_tr= +0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  CartPole-v1  s3  truth= 0.00  naive_tr= +0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  CartPole-v1  s4  truth= 0.00  naive_tr= +0.000  grace= -0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  Acrobot-v1   s0  truth= 0.00  naive_tr= +0.002  grace= -0.000  |e|_naive=0.002  |e|_grace=0.000  conv=True
+  d_a_null  Acrobot-v1   s1  truth= 0.00  naive_tr= -0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  Acrobot-v1   s2  truth= 0.00  naive_tr= +0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  Acrobot-v1   s3  truth= 0.00  naive_tr= -0.000  grace= +0.000  |e|_naive=0.000  |e|_grace=0.000  conv=True
+  d_a_null  Acrobot-v1   s4  truth= 0.00  naive_tr= +0.006  grace= -0.001  |e|_naive=0.006  |e|_grace=0.001  conv=True
+  d100      CartPole-v1  s0  truth= 0.50  naive_tr= +0.597  grace= +0.494  |e|_naive=0.097  |e|_grace=0.006  conv=True
+  d100      CartPole-v1  s1  truth= 0.50  naive_tr= +0.393  grace= +0.497  |e|_naive=0.107  |e|_grace=0.003  conv=True
+  d100      CartPole-v1  s2  truth= 0.50  naive_tr= +0.598  grace= +0.489  |e|_naive=0.098  |e|_grace=0.011  conv=True
+  d100      Acrobot-v1   s0  truth= 0.50  naive_tr= +0.591  grace= +0.511  |e|_naive=0.091  |e|_grace=0.011  conv=True
+  d100      Acrobot-v1   s1  truth= 0.50  naive_tr= +0.538  grace= +0.506  |e|_naive=0.038  |e|_grace=0.006  conv=True
+  d100      Acrobot-v1   s2  truth= 0.50  naive_tr= +0.555  grace= +0.497  |e|_naive=0.055  |e|_grace=0.003  conv=True
+  d050      CartPole-v1  s0  truth= 1.00  naive_tr= +1.098  grace= +0.978  |e|_naive=0.098  |e|_grace=0.022  conv=True
+  d050      CartPole-v1  s1  truth= 1.00  naive_tr= +0.892  grace= +0.994  |e|_naive=0.108  |e|_grace=0.006  conv=True
+  d050      CartPole-v1  s2  truth= 1.00  naive_tr= +1.101  grace= +0.994  |e|_naive=0.101  |e|_grace=0.006  conv=True
+  d050      Acrobot-v1   s0  truth= 1.00  naive_tr= +1.090  grace= +0.991  |e|_naive=0.090  |e|_grace=0.009  conv=True
+  d050      Acrobot-v1   s1  truth= 1.00  naive_tr= +1.038  grace= +0.985  |e|_naive=0.038  |e|_grace=0.015  conv=True
+  d050      Acrobot-v1   s2  truth= 1.00  naive_tr= +1.053  grace= +0.985  |e|_naive=0.053  |e|_grace=0.015  conv=True
+  d025      CartPole-v1  s0  truth= 2.00  naive_tr= +2.107  grace= +1.984  |e|_naive=0.106  |e|_grace=0.016  conv=True
+  d025      CartPole-v1  s1  truth= 2.00  naive_tr= +1.893  grace= +1.994  |e|_naive=0.107  |e|_grace=0.006  conv=True
+  d025      CartPole-v1  s2  truth= 2.00  naive_tr= +2.100  grace= +2.021  |e|_naive=0.100  |e|_grace=0.021  conv=True
+  d025      Acrobot-v1   s0  truth= 2.00  naive_tr= +2.091  grace= +1.991  |e|_naive=0.091  |e|_grace=0.009  conv=True
+  d025      Acrobot-v1   s1  truth= 2.00  naive_tr= +2.038  grace= +2.024  |e|_naive=0.038  |e|_grace=0.024  conv=True
+  d025      Acrobot-v1   s2  truth= 2.00  naive_tr= +2.051  grace= +1.988  |e|_naive=0.051  |e|_grace=0.012  conv=True
+  d010      CartPole-v1  s0  truth= 5.00  naive_tr= +5.099  grace= +4.955  |e|_naive=0.100  |e|_grace=0.045  conv=True
+  d010      CartPole-v1  s1  truth= 5.00  naive_tr= +4.889  grace= +4.975  |e|_naive=0.111  |e|_grace=0.025  conv=True
+  d010      CartPole-v1  s2  truth= 5.00  naive_tr= +5.105  grace= +4.986  |e|_naive=0.105  |e|_grace=0.014  conv=True
+  d010      Acrobot-v1   s0  truth= 5.00  naive_tr= +5.110  grace= +5.020  |e|_naive=0.110  |e|_grace=0.020  conv=True
+  d010      Acrobot-v1   s1  truth= 5.00  naive_tr= +5.038  grace= +5.005  |e|_naive=0.038  |e|_grace=0.005  conv=True
+  d010      Acrobot-v1   s2  truth= 5.00  naive_tr= +5.043  grace= +4.994  |e|_naive=0.043  |e|_grace=0.006  conv=True
+  d005      CartPole-v1  s0  truth=10.00  naive_tr=+10.107  grace= +9.901  |e|_naive=0.107  |e|_grace=0.099  conv=True
+  d005      CartPole-v1  s1  truth=10.00  naive_tr= +9.884  grace= +9.975  |e|_naive=0.116  |e|_grace=0.025  conv=True
+  d005      CartPole-v1  s2  truth=10.00  naive_tr=+10.086  grace= +9.964  |e|_naive=0.086  |e|_grace=0.036  conv=True
+  d005      Acrobot-v1   s0  truth=10.00  naive_tr=+10.118  grace= +9.842  |e|_naive=0.118  |e|_grace=0.158  conv=True
+  d005      Acrobot-v1   s1  truth=10.00  naive_tr=+10.035  grace=+10.046  |e|_naive=0.035  |e|_grace=0.046  conv=True
+  d005      Acrobot-v1   s2  truth=10.00  naive_tr=+10.033  grace= +9.974  |e|_naive=0.033  |e|_grace=0.026  conv=True

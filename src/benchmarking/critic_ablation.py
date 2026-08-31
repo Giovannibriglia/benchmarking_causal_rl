@@ -75,6 +75,28 @@ STRATEGY_CRITIC_ABLATION_COLUMNS: list[str] = [
     # byte-identity. σ=0 = pure cost; σ>0 = the same shrinkage buying deconfounding
     # robustness. A REPORTED RESULT; blank only for the non-sensitivity critics.
     "pessimism_cost",
+    # --- ADDITIVE columns: MC-anchored value accuracy.
+    # MC-anchored value accuracy (D3): Q(s, a_data) scored against the ABSOLUTE
+    # Monte-Carlo return-to-go G_t computed from the dataset episodes (the
+    # budget-independent anchor ported from tools/probe_offline_budget_v2.py;
+    # identical iteration order + 4000-linspace subsample as the oracle eval
+    # set). ``_u0`` restricts to U=0 episodes — the clean-world deployment-
+    # stratum reference for the confounded arms (its continuation is pi_b|U=0,
+    # NOT the target policy — a data-consistent reference, not an
+    # interventional oracle). Evaluation-side use of the LOGGED
+    # U only; blank when the buffer carries no U.
+    # Q1 CONTRAST vs the ANALYTIC truth -- P5's entry condition. Return parity
+    # and "GRACE corrected nothing" produce the SAME headline return and
+    # OPPOSITE conclusions, so returns alone are unreadable: this is what
+    # separates them. Logged for EVERY strategy critic (so base and variant are
+    # directly comparable) at every eval point during training and at the end.
+    # Blank when the run declares no analytic truth.
+    "q1_contrast_pred",
+    "q1_contrast_error",
+    "value_mse_to_mc",
+    "value_mse_to_mc_u0",
+    "mc_rtg_mean",
+    "mc_rtg_u0_mean",
 ]
 
 _EPS = 1e-8
@@ -83,6 +105,12 @@ _EPS = 1e-8
 # gap: the gap-closed RATIO of two noise terms is not a metric, so it is reported
 # ONLY where sigma>0 AND the observational->oracle MSE clears this floor.
 _GAP_NOISE_FLOOR_MSE = 1e-2
+
+# Critics whose oracle-gap MSE participates in the gap-closed ratio (vs the
+# observational denominator). Was proximal-only; grace joined on
+# feat/grace-critic (same semantics: adaptive deconfounders judged on how much
+# of the observational->oracle gap they close).
+_GAP_CLOSED_CRITICS: frozenset[str] = frozenset({"proximal"})
 
 # --ablation-critics base-algo name -> proximal/oracle_u builder suffix. The
 # recurrent base (offline_dqn_recurrent, the Cell-8 POMDP floor) resolves to the
@@ -122,6 +150,11 @@ class CriticSpec:
     # Γ=1 its ablation row is a verbatim copy of the observational row, which
     # silently deletes the method). The sensitivity spec sets Γ=2.0 explicitly.
     gamma: float = 1.0
+    # GRACE method options (builder="grace" only; inert for the others). A
+    # spec-level default dict, merged UNDER the cell YAML's ``grace:`` block —
+    # frozen dataclasses cannot hold a mutable default, so this is a tuple of
+    # (key, value) pairs.
+    grace: tuple = ()
 
 
 CRITIC_LIBRARY: Dict[str, CriticSpec] = {
@@ -172,6 +205,31 @@ CRITIC_LIBRARY: Dict[str, CriticSpec] = {
         builder="sensitivity",
         gamma=2.0,
     ),
+    # GRACE (feat/grace-critic): declared-graph template CBN x null-calibrated
+    # regime router x bootstrap interval, served per the B5 rule. REUSES
+    # build_grace_<base> verbatim (base-parity: the base algo's own floor
+    # builder + the Grace strategy — training is exactly the observational
+    # floor's; only the SERVING surface routes). ``grace`` holds the method
+    # options; the ablation deploys the MARGINAL E_U[Q] (oracle-comparable
+    # convention — the u0-stratum deploy is the classical algo variants'
+    # default). ADAPTIVE (router on) -> judged by the null-calibration gate
+    # like proximal. grace_no_router = the approved always-causal ablation
+    # switch (serves Q_do unconditionally; NON-adaptive by construction, so
+    # gate-exempt like sensitivity).
+    "grace": CriticSpec(
+        target="q_adj",
+        loss="mse",
+        kind="strategy",
+        builder="grace",
+        grace=(("router", True), ("interval", True), ("deploy", "marginal")),
+    ),
+    "grace_no_router": CriticSpec(
+        target="q_adj",
+        loss="mse",
+        kind="strategy",
+        builder="grace",
+        grace=(("router", False), ("interval", True), ("deploy", "marginal")),
+    ),
 }
 
 
@@ -202,14 +260,24 @@ class CriticAblationConfig:
     lr: float = 3e-4
     hidden_dims: tuple[int, ...] = (64, 64)
     bins: int = 32
+    # Cell-level ``grace:`` options block (feat/grace-critic) — merged OVER
+    # the grace CriticSpec defaults for every grace arm; None = defaults.
+    grace: dict | None = None
+    # The analytic q1 do-contrast E[R|do(a_bad)] - E[R|do(a_other)] for this
+    # cell, supplied by the driver (which knows c_r and the gate) rather than
+    # re-derived here -- one construction site for the estimand. None leaves
+    # the q1 columns blank.
+    q1_truth: float | None = None
+    a_bad: int = 1
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "critics": list(self.critics),
             "lr": float(self.lr),
             "hidden_dims": list(self.hidden_dims),
             "bins": int(self.bins),
         }
+        return out
 
 
 class AuxiliaryCritic:
@@ -283,6 +351,7 @@ def _build_strategy_critic(
     device: torch.device,
     encoder: str = "mlp",
     gamma: float = 1.0,
+    grace_options: dict | None = None,
 ):
     """Return ``(net, agent)`` for one strategy critic from the EXISTING builders
     (no estimator reimplementation). ``builder`` selects the identification arm
@@ -437,6 +506,33 @@ def _build_strategy_critic(
             "iql": build_sensitivity_iql,
         }[suffix]
         return fn(gamma_sensitivity=gamma, **kwargs)
+    if builder == "grace":
+        # BASE-PARITY, like the observational floor and sensitivity: the base
+        # algo's own builder, wrapped only on the SERVING surface. Training is
+        # the floor's; the L4 fit lands at the set_sequence_buffer handoff and
+        # the head then serves the pessimistic end (or abstains, labelled).
+        if recurrent:
+            raise ValueError(
+                "grace has no recurrent arm: the v2 estimator is episode-static "
+                "(the latent is drawn once per episode), so a recurrent encoder "
+                "would imply a per-step latent the declared diagram does not have"
+            )
+        from src.rl.offline.grace.serving import (
+            build_grace_cql,
+            build_grace_dqn,
+            build_grace_iql,
+        )
+
+        fn = {
+            "dqn": build_grace_dqn,
+            "cql": build_grace_cql,
+            "iql": build_grace_iql,
+        }.get(suffix)
+        if fn is None:
+            raise ValueError(
+                f"grace has no arm for base algo '{suffix}' (dqn/cql/iql only)"
+            )
+        return fn(grace_options=dict(grace_options or {}), **kwargs)
     raise ValueError(f"unknown strategy-critic builder '{builder}'.")
 
 
@@ -468,6 +564,7 @@ class StrategyCritic:
         action_dim: int,
         device: torch.device,
         encoder: str = "mlp",
+        grace_options: dict | None = None,
     ) -> None:
         self.name = name
         self.spec = spec
@@ -477,7 +574,17 @@ class StrategyCritic:
         # into the sensitivity builder, inert for the other strategy critics.
         self.gamma = float(spec.gamma)
         _net, agent = _build_strategy_critic(
-            spec.builder, base_algo, obs_dim, action_dim, device, encoder, self.gamma
+            spec.builder,
+            base_algo,
+            obs_dim,
+            action_dim,
+            device,
+            encoder,
+            self.gamma,
+            # Method options: the run's ``grace:`` block merged UNDER this
+            # critic's own spec.grace, so a spec pins what it declares and the
+            # run may only fill what the spec leaves open.
+            grace_options={**dict(grace_options or {}), **dict(spec.grace or ())},
         )
         self.agent = agent
         # The Q-net whose forward is the DEPLOYED estimand: Q_adj = E_u[Q(s,.,u)]
@@ -534,6 +641,12 @@ class CriticAblationManager:
         # or lstm/gru/rnn (Cell-8 recurrent row). Derived by the runner from the
         # base algo's critic_network so the base and the triad share one encoder.
         self.encoder = str(encoder or "mlp")
+        # GRACE method options from the run config; merged UNDER each critic's
+        # own spec.grace in StrategyCritic. Empty for every non-grace run, so
+        # the frozen critics are untouched.
+        self.grace = dict(getattr(config, "grace", None) or {})
+        self.q1_truth = getattr(config, "q1_truth", None)
+        self.a_bad = int(getattr(config, "a_bad", 1) or 0)
         selected_critics = (
             [str(name) for name in config.critics]
             if config.critics
@@ -574,6 +687,7 @@ class CriticAblationManager:
                     action_dim,
                     device,
                     self.encoder,
+                    grace_options=self.grace,
                 )
             if not strat:
                 raise ValueError("At least one ablation critic must be configured.")
@@ -590,6 +704,10 @@ class CriticAblationManager:
             self.critics: Dict[str, AuxiliaryCritic] = {}  # V-head path unused
             self._eval_obs: torch.Tensor | None = None
             self._eval_act: torch.Tensor | None = None
+            # MC return-to-go anchor (D3): per-eval-transition discounted G_t
+            # (+ the logged episode U where available, evaluation-side only).
+            self._eval_g: torch.Tensor | None = None
+            self._eval_u: torch.Tensor | None = None
             return
 
         # ---- V-head path (unchanged; golden-pinned) ----
@@ -678,10 +796,31 @@ class CriticAblationManager:
         ONLY the five base keys (never U)."""
         obs_list: list[torch.Tensor] = []
         act_list: list[torch.Tensor] = []
+        g_list: list[float] = []
+        u_list: list[float] = []
+        have_u = True
         for ep in seq_buffer.iter_episodes():
-            for tr in ep:
+            # MC return-to-go (D3): the absolute, budget-independent anchor —
+            # the identical backward pass as tools/probe_offline_budget_v2.py's
+            # mc_anchor_from_dataset, on the identical iteration order.
+            rews = [float(tr["rewards"]) for tr in ep]
+            acc = 0.0
+            g_ep = [0.0] * len(rews)
+            for t in range(len(rews) - 1, -1, -1):
+                acc = rews[t] + self.gamma * acc
+                g_ep[t] = acc
+            for tr, g_t in zip(ep, g_ep):
                 obs_list.append(tr["obs"])
                 act_list.append(tr["actions"])
+                g_list.append(g_t)
+                # Evaluation-side ONLY use of the logged U (the u0-stratum
+                # anchor for confounded arms) — estimators never read it.
+                u_val = tr.get("confounder_u")
+                if u_val is None:
+                    have_u = False
+                    u_list.append(0.0)
+                else:
+                    u_list.append(float(u_val))
         # Fan-out AFTER reading transitions (proximal's warm-start mutates tr in
         # place with r_tau, but never obs/actions).
         for critic in self.strategy_critics.values():
@@ -690,11 +829,19 @@ class CriticAblationManager:
             return
         obs = torch.stack(obs_list).float().to(self.device)
         act = torch.stack(act_list).long().to(self.device)
+        g_all = torch.tensor(g_list, dtype=torch.float32, device=self.device)
+        u_all = (
+            torch.tensor(u_list, dtype=torch.float32, device=self.device)
+            if have_u
+            else None
+        )
         n = obs.shape[0]
         if n > 4000:  # fixed, deterministic subsample of the shared stream
             idx = torch.linspace(0, n - 1, 4000).long()
-            obs, act = obs[idx], act[idx]
+            obs, act, g_all = obs[idx], act[idx], g_all[idx]
+            u_all = u_all[idx] if u_all is not None else None
         self._eval_obs, self._eval_act = obs, act
+        self._eval_g, self._eval_u = g_all, u_all
 
     def update_strategy(self, window: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Fit every strategy critic on the SAME ``(B, T, *)`` window (proximal
@@ -769,6 +916,17 @@ class CriticAblationManager:
                 train_loss=losses.get(name, ""),
                 apparent_q_mean=float(q_c.mean().item()),
             )
+            # Q1 CONTRAST (P5): the critic's own implied do-contrast against the
+            # analytic truth, averaged over the eval states -- the quantity
+            # V-C1 scores at estimator level, now read off the CRITIC the
+            # policy actually acts on.
+            if self.q1_truth is not None and q_all.shape[1] > self.a_bad:
+                others = [j for j in range(q_all.shape[1]) if j != self.a_bad]
+                contrast = float(
+                    (q_all[:, self.a_bad] - q_all[:, others].mean(dim=1)).mean().item()
+                )
+                row["q1_contrast_pred"] = contrast
+                row["q1_contrast_error"] = abs(contrast - float(self.q1_truth))
             # Γ is a sensitivity-only method parameter; blank for the others (they
             # apply no MSM bound). Orthogonal to (β, σ) — logged, never path-encoded.
             if critic.spec.builder == "sensitivity":
@@ -805,17 +963,32 @@ class CriticAblationManager:
                     pearson_to_oracle=_pearson(tgt, pred),
                     spearman_to_oracle=_spearman(tgt, pred),
                 )
-                # Gap-closed: proximal only, and ONLY where a real gap exists
-                # (sigma>0 AND obs->oracle MSE above the noise floor). At sigma=0
-                # the two-noise-terms ratio is not a metric -> left blank (the
-                # absolute value_mse_to_oracle IS the control).
+                # Gap-closed: the adaptive deconfounders (proximal + grace),
+                # and ONLY where a real gap exists (sigma>0 AND obs->oracle MSE
+                # above the noise floor). At sigma=0 the two-noise-terms ratio
+                # is not a metric -> left blank (the absolute
+                # value_mse_to_oracle IS the control).
                 if (
-                    name == "proximal"
+                    name in _GAP_CLOSED_CRITICS
                     and obs_mse is not None
                     and sigma > 0.0
                     and obs_mse > _GAP_NOISE_FLOOR_MSE
                 ):
                     row["gap_closed_fraction"] = 1.0 - mse / obs_mse
+            # MC-anchored value accuracy (D3): absolute, budget-independent —
+            # never referenced to the oracle. u0-stratum rows only where the
+            # buffer carried the logged U (evaluation-side use only).
+            if self._eval_g is not None:
+                g_t = self._eval_g
+                row["value_mse_to_mc"] = float(torch.mean((q_c - g_t) ** 2).item())
+                row["mc_rtg_mean"] = float(g_t.mean().item())
+                if self._eval_u is not None:
+                    m0 = self._eval_u < 0.5
+                    if bool(m0.any()):
+                        row["value_mse_to_mc_u0"] = float(
+                            torch.mean((q_c[m0] - g_t[m0]) ** 2).item()
+                        )
+                        row["mc_rtg_u0_mean"] = float(g_t[m0].mean().item())
             rows.append(row)
         return rows
 

@@ -33,6 +33,7 @@ algos:
   - dqn
 
 # Online critic sets: only strategies with an online algo variant.
+# CBN, Gate-B label persistence); scored per arm like the offline router (G4).
 critics:
   basic:      [observational, proximal]
   biased:     [observational]

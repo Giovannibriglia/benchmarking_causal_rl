@@ -28,6 +28,11 @@ dependencies = [
     "tqdm>=4.67.3",
     "imageio[pyav]>=2.37.2",
     "imageio-ffmpeg>=0.6.0",
+    # nbn/ (vendored NeuralBayesianNetworks snapshot, see nbn/NOTICE.md):
+    # opt-einsum is its one missing hard dep; networkx arrives transitively via
+    # torch but nbn imports it directly, so declare it explicitly.
+    "opt-einsum>=3.3",
+    "networkx>=3.0",
 ]
 
 [project.urls]
@@ -63,7 +68,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src", "nbn"]
 
 # Pin the PyTorch CUDA 13.0 wheel index so uv resolves torch 2.10.0+cu130
 # (the working build with CUDA available), not the CPU wheel.

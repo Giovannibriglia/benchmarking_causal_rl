@@ -1,0 +1,44 @@
+# D-D compensated gate-separation sweep -- point d = 0.10 (q = 0.45, 0.55).
+#
+# One YAML per sweep point; the grid (approved 2026-08-21): d in
+# {1.00, 0.50, 0.25, 0.10, 0.05} at M = 1.0, sigma = 0.25 uniform. Pairs are
+# SYMMETRIC about 0.5, so the MARGINAL bonus rate on gated steps is constant
+# along the sweep and only the U-separation varies -- one more thing held
+# fixed. d = 1.00 is (0, 1): the deterministic gate exactly, regenerated WITH
+# V under its own -d100 id so the with-arm is uniformly three-proxy; the
+# frozen two-proxy originals remain the historical record and the sigma = 1.0
+# contrast. c_r is DERIVED as M / d in arm_knobs (no confounder_c_r line here
+# BY DESIGN -- declaring both raises).
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+max_workers: 4
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.45, 0.55]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+seeds: [0, 1, 2]
+
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  # basic: false ACKNOWLEDGES the loader's null-anchor warning deliberately:
+  # the sweep's deliverables use NO per-point null calibration (recovery reads
+  # logged U, the do-contrast reads the known M, and the naive-bias null scales
+  # from the FROZEN sigma=0 arms by c_r). Per-point sigma=0 companions would be
+  # redundant generation; the approved grid is sigma = 0.25 only, 30 datasets.
+  basic:      false
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25] }
+
+critics:
+  basic:      [observational, proximal, oracle_u]
+  confounded: [observational, proximal, oracle_u]
