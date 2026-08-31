@@ -71,6 +71,7 @@ V_EPOCHS = 3  # regression passes per sweep
 BATCH = 4096
 FK = dict(max_iter=30, m_step_budget=400, batch_size=4096)
 MDN_STEP_BUDGET = 4000
+A_BAD = 1  # the generator's gated action
 
 
 def _terminal(env_id, s):
@@ -151,12 +152,51 @@ def main() -> int:
             with torch.no_grad():
                 return agent.act(s_batch, deterministic=True).action.reshape(-1)
 
-        # ---- anchor: on-policy RTG from the true env (deterministic) --------
+        # ---- anchor: on-policy RTG from the DEPLOYMENT env ------------------
+        # THE ANCHOR MUST BE THE ENVIRONMENT THE ESTIMAND DESCRIBES. r-hat is
+        # E_U[R | do(a), s], which includes the marginal gate bonus; a CLEAN
+        # gym env never fires the gate, so V-hat would be compared against a
+        # return that structurally omits a term it correctly contains.
+        # Measured on d_d d100 CartPole before this was fixed: every seed
+        # biased POSITIVE (+0.60/+8.05/+4.61 on RTG 6.5/56.6/17.3, 14-30% rel)
+        # against ~5% on d_a_null -- where the reward is constant, so a clean
+        # anchor happened to be right and the defect stayed invisible.
+        #
+        # do(a) severs U->A and leaves everything else, so the deployment env
+        # is the wrapper with c_a = 0 and c_r intact (the same construction
+        # site the runner uses for eval_confounded_reward -- not a second
+        # implementation of the gate).
         env = gym.make(env_id)
+        # c_r via arm_knobs -- THE single construction site for the derived
+        # c_r = M / d (diagram_arms.py). Reading it any other way would be a
+        # second implementation of the estimand's scale.
+        _c_r_anchor = 0.0
+        if cell != "d_a_null":
+            from src.envs.offline.diagram_arms import arm_knobs
+
+            _k = arm_knobs(
+                spec.diagram,
+                sigma=0.25,
+                confounder_c_r=(
+                    None
+                    if getattr(spec, "gate_mean_effect", None) is not None
+                    else spec.confounder_c_r
+                ),
+                proxy_strength=spec.proxy_strength,
+                instrument_strength=spec.instrument_strength,
+                u_drift=spec.u_drift,
+                gate_probs=spec.gate_probs,
+                gate_mean_effect=getattr(spec, "gate_mean_effect", None),
+            )
+            _c_r_anchor = float(getattr(_k, "confounder_c_r", 0.0) or 0.0)
+            _gp = getattr(_k, "gate_probs", None) or spec.gate_probs or (0.0, 0.0)
+        if cell != "d_a_null" and _c_r_anchor:
+            pass  # the U-expectation is taken analytically in the rollout
+            # below; wrapping the env to SAMPLE U would only add variance.
         anchor_s, anchor_rtg, ep_lens = [], [], []
         for k in range(N_EVAL):
             obs, _ = env.reset(seed=10_000 + k)
-            states, rewards = [], []
+            states, rewards, bad_flags = [], [], []
             for _t in range(MAX_STEPS):
                 states.append(np.asarray(obs, dtype=np.float32))
                 a = int(
@@ -166,14 +206,33 @@ def main() -> int:
                         )
                     )[0]
                 )
+                bad_flags.append(1.0 if a == A_BAD else 0.0)
                 obs, r, term, trunc, _ = env.step(a)
                 rewards.append(float(r))
                 if term or trunc:
                     break
-            rtg = np.zeros(len(rewards), dtype=np.float64)
+            # THE ANCHOR IS EXACT, ANALYTICALLY. U perturbs only the REWARD --
+            # it never enters the dynamics, and the deterministic target policy
+            # cannot see it -- so the trajectory is IDENTICAL under every U
+            # draw and only the per-step reward differs. Taking the
+            # U-expectation in closed form therefore gives V^pi = E_U[RTG] with
+            # NO Monte-Carlo noise. DRAWING U per episode instead leaves each
+            # state's RTG U-CONDITIONAL while V-hat is U-MARGINAL, an
+            # irreducible residual equal to the discounted bonus swing:
+            # measured on d100 s1, it doubled RMSE (9.05 -> 16.35) while the
+            # bias it was meant to fix had already collapsed.
+            #   E_U[r_t] = base_r + c_r * E_U[q_U] * 1[a = a_bad]
+            # with P(U=1) = 0.5, the generator's declared prior.
+            rew_arr = np.asarray(rewards, dtype=np.float64)
+            if _c_r_anchor:
+                q_bar = 0.5 * float(_gp[0]) + 0.5 * float(_gp[1])
+                rew_arr = rew_arr + _c_r_anchor * q_bar * np.asarray(
+                    bad_flags, dtype=np.float64
+                )
+            rtg = np.zeros(rew_arr.size, dtype=np.float64)
             acc = 0.0
-            for i in range(len(rewards) - 1, -1, -1):
-                acc = rewards[i] + GAMMA * acc
+            for i in range(rew_arr.size - 1, -1, -1):
+                acc = rew_arr[i] + GAMMA * acc
                 rtg[i] = acc
             anchor_s.append(np.stack(states))
             anchor_rtg.append(rtg)
