@@ -1442,6 +1442,28 @@ class BenchmarkRunner:
                 "by construction)."
             )
 
+    def _apply_grace_transform(self):
+        """Substitute INTERVENTIONAL rewards into the offline buffer, once,
+        before any gradient step. ONE construction site, called from BOTH
+        offline paths (flat and episode-grouped): the E1 smoke caught a hook
+        that existed on the flat path only, which the grouped path -- taken
+        whenever critic ablation is configured -- silently bypassed.
+
+        Returns the ``GraceServing`` (carrying the C3 label) or None when this
+        arm is not a GRACE arm. Abstention leaves the rewards untouched, so an
+        abstained run is byte-identical to its base.
+        """
+        if not getattr(self.env_cfg, "grace_reward_transform", False):
+            return None
+        from src.rl.offline.grace.serving import transform_offline_rewards
+
+        pn = tuple(getattr(self.env_cfg, "grace_proxy_names", ()) or ())
+        serving = transform_offline_rewards(
+            self.replay_buffer, proxy_names=pn, device=self.device
+        )
+        print(f"[grace] {serving.label()}", file=sys.stderr)
+        return serving
+
     def _train_offline(
         self,
         train_logger: CSVLogger,
@@ -1542,15 +1564,7 @@ class BenchmarkRunner:
         # column replaced, not a different critic. Abstention leaves the column
         # untouched, so an abstained run is byte-identical to its base and says
         # so in the label.
-        self.grace_serving = None
-        if getattr(self.env_cfg, "grace_reward_transform", False):
-            from src.rl.offline.grace.serving import transform_offline_rewards
-
-            pn = tuple(getattr(self.env_cfg, "grace_proxy_names", ()) or ())
-            self.grace_serving = transform_offline_rewards(
-                self.replay_buffer, proxy_names=pn, device=self.device
-            )
-            print(f"[grace] {self.grace_serving.label()}", file=sys.stderr)
+        self.grace_serving = self._apply_grace_transform()
 
         # Apparent-value trace queryability (Cells 7-8): warn once at run start
         # if the critic can't be queried at (s, a) so the curve is skipped rather
@@ -1751,9 +1765,19 @@ class BenchmarkRunner:
                 self.device,
                 mask_indices=getattr(self.env_cfg, "mask_indices", None),
                 load_u=load_u,
+                load_proxies=bool(
+                    getattr(self.env_cfg, "grace_reward_transform", False)
+                ),
             )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
+
+        # GRACE on the GROUPED path. This is the path taken whenever critic
+        # ablation is configured, so the transform must live here as well as on
+        # the flat path -- a hook on one branch only would leave the arm
+        # byte-identical to its baseline with no error anywhere, which is
+        # exactly what the E1 smoke caught.
+        self.grace_serving = self._apply_grace_transform()
 
         # Hand the episode-grouped buffer to the agent (the proximal E-step needs
         # whole episodes); a no-op for agents that don't consume it. [PR-2b]

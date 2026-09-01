@@ -235,6 +235,15 @@ def apply_reward_transform(buffer, serving: GraceServing) -> bool:
     """
     if serving.abstained or serving.rewards is None:
         return False
+    eps = getattr(buffer, "episodes", None)
+    if eps is not None and len(eps) > 0:  # sequence layout: write per transition
+        vals = serving.rewards.reshape(-1)
+        i = 0
+        for e in eps:
+            for tr in e.transitions:
+                tr["rewards"] = vals[i].to(tr["rewards"].dtype).to(tr["rewards"].device)
+                i += 1
+        return True
     col = getattr(buffer, "_data", {}).get("rewards")
     if col is None:
         raise TypeError(f"{type(buffer).__name__} exposes no reward column to rewrite")
@@ -260,7 +269,24 @@ def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
     # scope decision. Take the dict form first, then fall back to attributes
     # (the sequence buffer and the test fixtures).
     cols = None
-    if hasattr(buffer, "gather") and len(buffer) > 0:
+    # SequenceReplayBuffer: episodes -> transitions. This is the buffer the
+    # GROUPED offline loop uses, which is the path taken whenever critic
+    # ablation is configured -- so a transform that only understood the flat
+    # ReplayBuffer would never fire on a run that has an ablation critic, and
+    # the arm would be byte-identical to its baseline with no error anywhere.
+    eps = getattr(buffer, "episodes", None)
+    if eps is not None and len(eps) > 0:
+        keys = list(eps[0].transitions[0].keys())
+        cols = {
+            k: torch.stack([tr[k] for e in eps for tr in e.transitions]) for k in keys
+        }
+        cols["episode_ids"] = torch.cat(
+            [
+                torch.full((len(e.transitions),), i, dtype=torch.long)
+                for i, e in enumerate(eps)
+            ]
+        )
+    elif hasattr(buffer, "gather") and len(buffer) > 0:
         cols = buffer.gather(range(len(buffer)))
     elif isinstance(buffer, dict):
         cols = buffer

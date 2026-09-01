@@ -34,6 +34,8 @@ these, not rediscover them.**
 | **S12** | **Bit-identical output from a procedure that should vary means THE CODE DID NOT CHANGE.** Check the file on disk before believing any relaunch — never trust a patch script's own success message. | Two runs of a stochastic procedure cannot agree to three decimals. Caught the Q2-A "exact anchor" run reproducing the sampled-U run bit-for-bit: the heredoc printed success and `ast.parse` passed, but the write never persisted, so the same code ran twice and a verdict computed from a DUPLICATE row was about to be reported as a third measurement. This project has now tripped on unpersisted or misdirected edits four times (the `old`-string that no longer matched after the formatter; the `n_classes` replacement landing in the wrong function; the backgrounded `cd` writing into a sibling checkout; this one). The tell is cheap and universal, and it generalises past patching: any "changed" configuration whose output is bitwise identical to the unchanged one changed nothing. |
 | **S13** | **Where a nuisance variable perturbs only the REWARD — never the dynamics, and unseen by the policy — take its expectation in CLOSED FORM, never by sampling.** | The trajectory is then identical under every draw, so `E_U[·]` is exact and carries NO Monte-Carlo noise. Sampling instead makes the metric a one-draw estimate of the same quantity, and the variance lands wherever the comparison's noise band is. Measured twice: the Q2-A anchor's RMSE fell **3-5x** (s1 16.35 → 5.85, s2 5.73 → 1.16) purely from switching sampled-U to analytic-U, because a sampled anchor leaves each state's return `U`-CONDITIONAL while the estimate is `U`-MARGINAL; the same substitution at `eval_env` buys the experiment statistical power for free. **Always ask whether the nuisance touches dynamics: if it does, this does not apply.** |
 | **S14** | **For a component whose failures are SILENT, the smoke must include a POSITIVE CONTROL: a quantity predicted to move, and a check that it moved in the predicted direction.** "No error" is not evidence that such a component works. | The GRACE seam produced three silent failures in one build, each of which would have yielded plausible numbers and a clean-looking experiment: (a) an additive offset that DOUBLE-COUNTED the base critic's own contrast — and because doubling preserves sign, argmax policies mostly would not move, so the no-harm prediction would have PASSED while the seam was broken; (b) an extractor reading buffer attributes that `ReplayBuffer` does not expose, which would have made every run abstain, and abstention is *designed* to look like a scope decision; (c) declared proxy channels never reaching the buffer, so a proximal cell would have quietly fitted the ablation's "without" arm. None raises. The control that separates them is one number: the SERVED contrast against the BASE critic's contrast — predicted strictly lower, since the base carries the upward `M · tilt` bias that GRACE removes. Equal ⇒ passthrough in disguise; higher ⇒ sign inverted. Same family as S12 (bit-identical output means nothing changed): both are cheap tells for changes that fail without complaining. |
+| **S15** | **Require every run to record WHAT IT ACTUALLY DID, not only what it produced.** For a component that can no-op silently, the artifact must carry evidence of the action — which branch ran, what changed, how long it took — because output that looks right is compatible with nothing having happened. | The E1 smoke's leaf said `"grace": null` and `seconds: 400` where a served run takes ~5000; the CSVs, the dataset id and the returns were all correct and plausible. `_needs_episode_grouping_run()` is True whenever critic ablation is configured, so every run took the GROUPED offline path while the transform hook sat on the FLAT one — every grace arm would have been byte-identical to its baseline, for 36 hours, with **P1 passing perfectly, P3 absent and P5 reading "the bias did not cross a decision boundary"**, and the conclusion that GRACE does nothing. No test caught it and no error was raised; the provenance record did. Companion to S14 (positive controls) and to the input-check rule: of six silent failures in this seam, FIVE were inputs or wiring arriving wrong rather than outputs computed wrong, and that class is invisible to output inspection **by construction**. The fix form matters too — ONE construction site called from both paths, never a second hook, which removes the class rather than the instance (the same move as `_episode_log_liks`' deduplication). |
+| **S16** | **A component that fails silently needs a check PER INPUT, not a check per output.** | Same tally: the additive offset (double-counted the base's own contrast), the unreadable `ReplayBuffer` (attributes vs `gather()`), the declared proxies never reaching the buffer, the inverted pessimism sign, the dataset-id collision across cells, and the hook on the unused branch. Only the first is an output defect; the rest are inputs arriving wrong. Checking outputs would have caught one of six. |
 | **C3** | Estimates carry their conditions **on the object**. | `fit.estimate()` is the only way a number is produced, so none escapes without `monotone`/`converged`/`separability`. |
 
 ### Library rules (NBN v0.14.0, vendored)
@@ -1230,6 +1232,26 @@ back biased −13.3 on RTG ≈ 57 and the bias vanished at K = 500).
   sup-change can be large at buffer states outside the anchor's support
   while anchor-region V is stable (CartPole s1: supΔ 31 with RMSE 2.86) —
   report it, don't gate on it blindly.
+
+### KNOWN GAP — a diagram cell has never trained through `run_cell` (2026-09-01)
+
+`SweepSpec.arm_generator_kwargs` splats `proxy_strength`, `instrument_strength`,
+`u_drift`, `n_proxies` into `EnvConfig`, which has none of them, so
+`_run_point` raises `TypeError` on any cell with a `diagram:` key. The diagram
+cells were only ever GENERATED (`tools/generate_diagram_arms.py`) and consumed
+by estimator-level tools; none was ever trained through the sweep driver.
+
+**Worse, and the reason E1 does not use it:** `_dataset_id` is built from
+`(prefix, regime, env, beta, sigma, seed)` — **the cell name is not in it**.
+Every D-D sweep cell is `offline_mdp` at beta=0, sigma=0.25, so they all
+collide onto ONE id. Training them through the sweep would have generated
+fresh, uncertified data and trained every cell on the SAME dataset, with every
+comparison between identical arms, completing without error.
+
+**Not fixed** — deliberately, and not to be fixed mid-experiment. `tools/run_e1.py`
+bypasses it and PINS the certified id read from the generation reports, with two
+assertions before any training: ids distinct across cells, and every id present
+in the store and carrying its certification stamp.
 
 ### Open threads
 

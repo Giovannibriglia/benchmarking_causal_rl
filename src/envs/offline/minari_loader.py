@@ -169,6 +169,7 @@ def fill_sequence_buffer_from_minari(
     device: torch.device,
     mask_indices: tuple[int, ...] | None = None,
     load_u: bool = False,
+    load_proxies: bool = False,
 ) -> int:
     """Episode-grouped offline fill: a Minari dataset into a ``SequenceReplayBuffer``.
 
@@ -207,6 +208,24 @@ def fill_sequence_buffer_from_minari(
         truncations = torch.as_tensor(episode.truncations, dtype=torch.bool)
         dones = (terminations | truncations).float()
         steps = rewards.shape[0]
+        # PROXIES on the sequence path too -- the grouped offline loop is what
+        # runs whenever critic ablation is configured, so a proximal cell's
+        # declared channels must arrive here as well or GRACE fits the
+        # "without" arm. (This file's two loaders are deliberate duplicates;
+        # the flat one carries the same block.)
+        proxy_vals = {}
+        if load_proxies:
+            infos = getattr(episode, "infos", None) or {}
+            for nm, key in (("Z", "proxy_z"), ("W", "proxy_w"), ("V", "proxy_v")):
+                if key in infos:
+                    proxy_vals[nm] = torch.as_tensor(
+                        infos[key], dtype=torch.float32
+                    ).reshape(-1)
+            if not proxy_vals:
+                raise ValueError(
+                    f"load_proxies=True but Minari dataset '{dataset_id}' has no "
+                    "infos['proxy_z'/'proxy_w'/'proxy_v']"
+                )
         u_vals = None
         if load_u:
             infos = getattr(episode, "infos", None) or {}
@@ -228,6 +247,8 @@ def fill_sequence_buffer_from_minari(
             }
             if u_vals is not None:
                 transition["confounder_u"] = u_vals[t]
+            for _pn, _pv in proxy_vals.items():
+                transition[f"proxy_{_pn}"] = _pv[t]
             seq_buffer.add(ep_idx, transition)
             n_added += 1
         seq_buffer.mark_episode_end(ep_idx)
