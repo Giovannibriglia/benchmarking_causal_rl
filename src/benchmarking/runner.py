@@ -1550,9 +1550,10 @@ class BenchmarkRunner:
                 # A proximal cell's DECLARED proxy channels, needed by the
                 # GRACE reward transform. Off unless this arm asks for it, so
                 # every other transition path stays byte-identical.
-                load_proxies=bool(
-                    getattr(self.env_cfg, "grace_reward_transform", False)
-                ),
+                # Keyed on the DECLARED channels, not on the arm flag: a cell
+                # that declares no proxies (d_a_null) has none in its dataset
+                # and asking for them raises. The diagram decides, not the arm.
+                load_proxies=bool(getattr(self.env_cfg, "grace_proxy_names", ())),
             )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")
@@ -1765,9 +1766,10 @@ class BenchmarkRunner:
                 self.device,
                 mask_indices=getattr(self.env_cfg, "mask_indices", None),
                 load_u=load_u,
-                load_proxies=bool(
-                    getattr(self.env_cfg, "grace_reward_transform", False)
-                ),
+                # Keyed on the DECLARED channels, not on the arm flag: a cell
+                # that declares no proxies (d_a_null) has none in its dataset
+                # and asking for them raises. The diagram decides, not the arm.
+                load_proxies=bool(getattr(self.env_cfg, "grace_proxy_names", ())),
             )
         if n_added == 0:
             raise ValueError(f"Minari dataset '{dataset_id}' yielded no transitions.")

@@ -127,3 +127,21 @@ def test_grace_is_not_a_critic_strategy_any_more():
 
     assert "grace" not in KNOWN_STRATEGIES
     assert EnvConfig(env_id="CartPole-v1").grace_reward_transform is False
+
+
+def test_a_cell_declaring_no_proxies_does_not_request_them():
+    """d_a_null has no proxy channels in its datasets, so requesting them
+    raises in the loader. The request must key on the DECLARED channels, not
+    on 'is this a grace arm' -- the diagram decides."""
+    from src.config.defaults import EnvConfig
+
+    null_arm = EnvConfig(
+        env_id="CartPole-v1", grace_reward_transform=True, grace_proxy_names=()
+    )
+    dd_arm = EnvConfig(
+        env_id="CartPole-v1",
+        grace_reward_transform=True,
+        grace_proxy_names=("Z", "W", "V"),
+    )
+    assert bool(null_arm.grace_proxy_names) is False  # would not request
+    assert bool(dd_arm.grace_proxy_names) is True  # would request
