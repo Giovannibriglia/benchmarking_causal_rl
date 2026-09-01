@@ -267,6 +267,31 @@ def read_leaf_metric(leaf: str | Path, column: str) -> Optional[float]:
     return _read_last_checkpoint(Path(leaf) / filename, column)
 
 
+def read_leaf_series(leaf: str | Path, column: str) -> List[Tuple[int, float]]:
+    """EVERY checkpoint of ``column``, not just the last -- ``[(episode, value)]``.
+
+    ``_read_last_checkpoint`` collapses each leaf to its final row, so no
+    learning curve can be reconstructed from the aggregate afterwards; the
+    per-leaf CSVs are the only place the curve lives. Same
+    ``_METRIC_SOURCE_FILE`` dispatch as ``read_leaf_metric``, so a column
+    resolves to the same file whether read as a point or as a series.
+    """
+    filename = _METRIC_SOURCE_FILE.get(column, "critic_ablation_metrics.csv")
+    path = Path(leaf) / filename
+    if not path.exists():
+        return []
+    out: List[Tuple[int, float]] = []
+    for r in csv.DictReader(path.open()):
+        v = r.get(column, "")
+        if v in ("", None):
+            continue
+        try:
+            out.append((int(r["episode"]), float(v)))
+        except (ValueError, KeyError):
+            continue
+    return sorted(out)
+
+
 def _mean_sd(values: List[float]) -> Tuple[float, float, int]:
     xs = [v for v in values if v is not None and not math.isnan(v)]
     n = len(xs)
@@ -277,6 +302,36 @@ def _mean_sd(values: List[float]) -> Tuple[float, float, int]:
         return mean, float("nan"), n
     var = sum((x - mean) ** 2 for x in xs) / (n - 1)  # sample sd (ddof=1)
     return mean, math.sqrt(var), n
+
+
+def aggregate_per_seed(
+    results_root: str | Path,
+    regime: str,
+    metrics: Tuple[str, ...] = ("value_mse_to_oracle",),
+) -> List[Dict]:
+    """One record PER LEAF -- the seed axis kept, never collapsed.
+
+    Required, not cosmetic: the D-D reporting constraint forbids averaging
+    across dataset seeds (CartPole s1 behaves differently from s0/s2 and a mean
+    hides it), and s1 is pre-registered as the row to watch. Everything below
+    ``build_report`` is seed-collapsed, so paired per-seed deltas are
+    impossible without this.
+    """
+    out: List[Dict] = []
+    for leaf in iter_leaves(results_root, regime):
+        rec = {
+            "regime": leaf["regime"],
+            "beta": leaf["beta"],
+            "sigma": leaf["sigma"],
+            "env": leaf["env"],
+            "algo": leaf["algo"],
+            "critic": leaf["critic"],
+            "seed": leaf["seed"],
+        }
+        for m in metrics:
+            rec[m] = read_leaf_metric(leaf["path"], m)
+        out.append(rec)
+    return sorted(out, key=lambda r: (r["env"], r["algo"], r["critic"], r["seed"]))
 
 
 def aggregate_over_seeds(
@@ -481,7 +536,84 @@ def compute_null_calibration(
 # --------------------------------------------------------------------------- #
 # The aggregated report (CHANGE 2/3 + N1)                                      #
 # --------------------------------------------------------------------------- #
+def build_paired_report(
+    results_root: str | Path,
+    regime: str,
+    arm_a: str = "base",
+    arm_b: str = "grace",
+    metrics: Tuple[str, ...] = ("eval_return_mean",),
+) -> List[Dict]:
+    """Pair two ARMS per seed and return one record per matched pair.
+
+    E1's arms are SEPARATE RUNS (GRACE substitutes a training input, so it
+    cannot be a per-critic leaf of a shared run), which means pairing is by
+    CONFIGURATION rather than by a shared run object. The match key is
+    ``(regime, beta, sigma, env, algo, seed)`` -- everything except the arm.
+
+    **The match is verified, never assumed.** A mispairing produces a perfectly
+    plausible table that means nothing -- the same silent-failure species as
+    everything else in this seam (S16) -- so:
+
+    * an arm-A row with no arm-B partner (or the reverse) RAISES, naming the
+      key; it is never dropped silently;
+    * duplicate rows on one key RAISE -- a leaf counted twice would corrupt the
+      delta without changing the table's shape.
+
+    ``delta_<metric>`` is B minus A, per seed. Seeds are NEVER averaged here:
+    the D-D reporting constraint applies, and s1 is pre-registered as the row
+    to watch.
+    """
+    per_seed = aggregate_per_seed(results_root, regime, metrics=metrics)
+    sides: Dict[str, Dict[Tuple, Dict]] = {arm_a: {}, arm_b: {}}
+    for r in per_seed:
+        arm = r["critic"]  # the leaf's arm segment
+        if arm not in sides:
+            continue
+        key = (r["regime"], r["beta"], r["sigma"], r["env"], r["algo"], r["seed"])
+        if key in sides[arm]:
+            raise ValueError(
+                f"duplicate {arm!r} row for {key} -- a leaf counted twice would "
+                "corrupt the delta without changing the table's shape"
+            )
+        sides[arm][key] = r
+    only_a = set(sides[arm_a]) - set(sides[arm_b])
+    only_b = set(sides[arm_b]) - set(sides[arm_a])
+    if only_a or only_b:
+        raise ValueError(
+            f"UNMATCHED PAIRS -- {arm_a!r} without partner: {sorted(only_a)}; "
+            f"{arm_b!r} without partner: {sorted(only_b)}. A paired comparison "
+            "with dropped rows is not a paired comparison."
+        )
+    out: List[Dict] = []
+    for key in sorted(sides[arm_a]):
+        a, b = sides[arm_a][key], sides[arm_b][key]
+        rec = {
+            "regime": key[0],
+            "beta": key[1],
+            "sigma": key[2],
+            "env": key[3],
+            "algo": key[4],
+            "seed": key[5],
+        }
+        for m in metrics:
+            va, vb = a.get(m), b.get(m)
+            rec[f"{arm_a}_{m}"] = va
+            rec[f"{arm_b}_{m}"] = vb
+            rec[f"delta_{m}"] = (
+                None if va is None or vb is None else float(vb) - float(va)
+            )
+        out.append(rec)
+    return out
+
+
 _REPORT_METRICS = (
+    # P5's readability, and the reason a return-parity outcome is interpretable
+    # rather than ambiguous: "the bias never crossed a decision boundary" and
+    # "the correction did nothing" produce the SAME return and OPPOSITE
+    # conclusions. These columns are written per critic by critic_ablation but
+    # had no consumer until now.
+    "q1_contrast_pred",
+    "q1_contrast_error",
     "value_mse_to_oracle",
     "apparent_q_mean",
     "gap_closed_fraction",
