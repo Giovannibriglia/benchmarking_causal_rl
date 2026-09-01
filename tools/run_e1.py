@@ -42,7 +42,7 @@ os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grac
 REGIME = "offline_mdp"
 BETA, SIGMA = 0.0, 0.25  # SIGMA is the campaign default; cells may override
 ENVS = ("CartPole-v1",)
-SEEDS = (0, 1, 2)
+SEEDS = (0, 1, 2)  # campaign default; cells may override (see CELLS)
 ALGOS = ("cql", "iql")
 PROXIES = ("Z", "W", "V")
 
@@ -58,12 +58,35 @@ PROXIES = ("Z", "W", "V")
 # Same cell as d100, so the three proxy channels match by construction rather
 # than by convention -- a two-proxy control against a three-proxy treatment
 # would confound the very comparison P1 makes.
+#
+# d100s0 RUNS SEEDS (0, 2, 3), NOT (0, 1, 2). Its s1 dataset failed the
+# covariate-free preflight (proxy_vs_state_given_u p = 0.0100 against
+# _NULL_ALPHA = 0.01) and an uncertified dataset is unrepresentable here. The
+# substitute seed 3 was DECLARED BEFORE IT WAS GENERATED, and is a distinct seed
+# from the cell's grid rather than a re-roll of s1 -- re-rolling until a check
+# passes selects data for having passed, and leaves the old label on it.
+#
+# The exclusion is noise, not structure, and was checked rather than assumed.
+# The gate's alpha is 0.01, so across the campaign's ~90 preflight checks the
+# expected number of failures under a VALID null is ~0.9; two were observed
+# (P(>=2) ~ 0.23). Both landed on s1 at sigma = 0, but that pairing was picked
+# after seeing which two failed, and the structural argument runs the other way:
+# at sigma = 0 there is no U -> A edge, so proxy _||_ S | U reduces to
+# proxy _||_ S, true by construction -- a real violation would not fail where
+# covariate-freedom is most trivially true and pass at sigma = 0.25 on the SAME
+# seed, where a U -> A -> S path actually exists. The decisive check: the two
+# failures implicate DIFFERENT proxies (W x S2 at |r| = 0.134 here; Z x S2 at
+# |r| = 0.146 on d_d Acrobot), so there is no shared pair to be structural.
+#
+# P1a/P1b are WITHIN-cell comparisons of grace against base at sigma = 0, so
+# three seeds or two both answer them; only the secondary cross-cell sigma = 0
+# vs sigma = 0.25 reading carries the caveat.
 CELLS = (
-    ("danull", "d_a_null", (), SIGMA),
-    ("d100s0", "d_d_sweep_d100", PROXIES, 0.0),
-    ("d100", "d_d_sweep_d100", PROXIES, SIGMA),
-    ("d025", "d_d_sweep_d025", PROXIES, SIGMA),
-    ("d010asym", "d_d_sweep_d010_asym", PROXIES, SIGMA),
+    ("danull", "d_a_null", (), SIGMA, SEEDS),
+    ("d100s0", "d_d_sweep_d100", PROXIES, 0.0, (0, 2, 3)),
+    ("d100", "d_d_sweep_d100", PROXIES, SIGMA, SEEDS),
+    ("d025", "d_d_sweep_d025", PROXIES, SIGMA, SEEDS),
+    ("d010asym", "d_d_sweep_d010_asym", PROXIES, SIGMA, SEEDS),
 )
 # The analytic q1 do-contrast truth per cell: M = c_r * P(U=1). Read from
 # arm_knobs at runtime rather than tabulated here.
@@ -106,9 +129,9 @@ def _resolve_ids() -> dict:
         if p.exists():
             srcs.extend(json.loads(p.read_text()))
     out, stamps = {}, {}
-    for tag, cell, _pn, sg in CELLS:
+    for tag, cell, _pn, sg, seeds in CELLS:
         for env in ENVS:
-            for sd in SEEDS:
+            for sd in seeds:
                 hits = [
                     r
                     for r in srcs
@@ -199,10 +222,10 @@ def main() -> int:
     spec0 = load_sweep_spec(Path("reproducibility/rl_regimes/diagrams/e1_d100.yaml"))
     n_steps = spec0.budgets.get("offline_grad_steps")
 
-    for tag, cell, proxies, sg in CELLS:
+    for tag, cell, proxies, sg, seeds in CELLS:
         truth = _q1_truth(cell, sg)
         for env in ENVS:
-            for sd in SEEDS:
+            for sd in seeds:
                 did = ids[(tag, env, sd)]
                 for algo in ALGOS:
                     for arm in ("base", "grace"):
@@ -301,6 +324,12 @@ def main() -> int:
                         leaf.mkdir(parents=True, exist_ok=True)
                         for f in (
                             "eval_metrics.csv",
+                            # The analytic return's decomposition. Written by the
+                            # runner into staging; if it is not promoted here it
+                            # is rmtree'd with the staging dir and the run has no
+                            # record of whether the base component saturated --
+                            # a diagnostic that does not survive is not a record.
+                            "eval_deployment.csv",
                             "train_metrics.csv",
                             "critic_ablation_metrics.csv",
                             "arm_diagnostics.csv",

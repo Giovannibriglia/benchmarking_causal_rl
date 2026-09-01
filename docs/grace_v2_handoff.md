@@ -1256,6 +1256,45 @@ in the store and carrying its certification stamp.
 
 ### Open threads
 
+* **`--resume` NEVER reuses, and "correcting" it naively DELETES THE WHOLE
+  STORE. Read this entire item before touching it.** `generate_diagram_arms.py`
+  offers `--resume` to "keep datasets whose generation_fingerprint already
+  matches". It cannot match. `generate_offline_dataset` stamps the fingerprint
+  WITHOUT forwarding `n_proxies`, so it always hashes the default 2, while the
+  resume site passes the real value out of `arm_generator_kwargs` (3 for every
+  V-carrying cell, i.e. every cell E1 uses). Measured 2026-09-01 on
+  `d_d_sweep_d100` sigma = 0 seed 0: stored `480f5c317dfbe9b1`; recomputed with
+  the real `n_proxies=3` gives `7cb1aab77247ba9b`; recomputed with `n_proxies=2`
+  reproduces the stored hash BIT-IDENTICALLY. So every `--resume` run falls
+  through to `minari.delete_dataset(did)` and regenerates.
+
+  **Two things follow, and the second is the dangerous one.**
+
+  (a) The stored fingerprint is WRONG, not merely mismatched. Its stated purpose
+  is to prove that regenerating would reproduce the dataset; it omits a real
+  generation input, so a two-proxy and a three-proxy dataset agreeing on
+  everything else hash IDENTICALLY. This project holds both -- the frozen
+  two-proxy `d_d` arms and the three-proxy `-d100` regenerations -- so that
+  collision is in the direction that matters.
+
+  (b) **The obvious fix is a trap.** Correcting the store site alone changes
+  every FUTURE fingerprint while all 163 existing datasets keep the old wrong
+  one. The next `--resume` then mismatches on the ENTIRE STORE and deletes it --
+  campaign-wide, the catastrophe that `--sigmas` narrowly contained on
+  2026-09-01, when the only thing standing between a routine generation command
+  and the loss of 15 certified pinned datasets was a filter added that morning
+  for an unrelated reason. The fix is therefore THREE steps, in order:
+  (1) correct the store site to forward `n_proxies`; (2) BACKFILL the corrected
+  hash into existing datasets' metadata, or add an explicit compatibility path
+  that recognises the legacy hash; (3) only then rely on `--resume` again.
+
+  **Root cause is S6's, applied to the fingerprint rather than the id:** two
+  construction sites that disagree. Identity got consolidated to one site after
+  three collision bugs; the fingerprint never did. Same fix shape when it is
+  time. **Until then the operative guard is `--sigmas` (and not running
+  generation against a live cell at all) -- NOT `--resume`, which does nothing.**
+
+
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.
 * **D-D's reward-view coupling** — documented in the catalogue, to be *quantified by R4*, deliberately not engineered away. Third-proxy remedy held in reserve, evidence-driven only.
 * **L4's threshold must never become a constant** — this is the single most
