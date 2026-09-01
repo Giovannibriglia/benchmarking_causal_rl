@@ -15,6 +15,17 @@ class EnvConfig:
     n_train_envs: int = 16
     n_eval_envs: int = 16
     rollout_len: int = 1024
+    # THE EVALUATION HORIZON, separated from ``rollout_len`` on 2026-09-01.
+    # ``rollout_len`` carried three meanings at once -- on-policy collection
+    # length, the legacy offline budget (grad steps per epoch), and the number
+    # of steps every evaluation rollout runs. On an OFFLINE run the first two
+    # are inert (``offline_grad_steps`` sizes the learner), so E1 set it to 2
+    # for them and silently cut evaluation to two environment steps: every
+    # policy scored 2.0-3.0, the metric had three reachable values, and no
+    # return-based prediction could fail. Nothing errored; the CSVs were
+    # well-formed. None => fall back to ``rollout_len``, so every existing run
+    # is byte-identical.
+    eval_rollout_len: Optional[int] = None
     seed: int = 42
     env_wrapper: str = "auto"
     env_entry_point: Optional[str] = None

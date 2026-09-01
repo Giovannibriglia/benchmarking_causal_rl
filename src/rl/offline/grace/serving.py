@@ -192,7 +192,12 @@ def fit_reward_transform(
         init_seeds=init_seeds,
     )
     if res.kind == "abstain":
-        return GraceServing(reason=res.reason, fit_label=res.label)
+        # An abstention carries diagnostics too, and an abstained run is
+        # reported SEPARATELY rather than pooled -- so why it abstained is the
+        # whole content of that row.
+        return GraceServing(
+            reason=res.reason, fit_label=res.label, meta=_l4_diagnostics(res)
+        )
 
     # r_hat per transition, from the observed fit (deterministic, so this is
     # the same fit the interval was built around).
@@ -204,6 +209,14 @@ def fit_reward_transform(
     # bootstrap's low end can sit above the point estimate, and applying that
     # unclamped would raise a_bad -- inverting the correction.
     pess = max(0.0, contrast_hat - float(res.lo))
+    # Scale for the determinism sentinel below. Normalising by the CONTRAST
+    # alone is ill-conditioned exactly where the contrast is ~0 -- on d_a_null
+    # both quantities are float noise near zero and the ratio came out 1.3,
+    # 10^5 past the flag line, on a perfectly healthy fit. The summation error
+    # the sentinel watches scales with the SUMMANDS (r_hat, order of the reward)
+    # and not with their difference, so the reward scale is the honest floor.
+    _r_scale = float(np.mean(np.abs(r_hat))) or 1.0
+    _sc_abs = abs(contrast_hat - float(res.observed))
     acts = data.action.reshape(-1).detach().cpu().numpy()
     new_r = r_hat[np.arange(acts.size), acts].astype(np.float32)
     new_r[acts == a_bad] -= pess
@@ -217,13 +230,58 @@ def fit_reward_transform(
         meta={
             "contrast_point": contrast_hat,
             "contrast_observed_l4": res.observed,
+            # THE SELF-CHECK, as a number rather than an eyeball. These two are
+            # the same quantity from the same deterministic fit, summed in two
+            # different orders -- mean-of-differences here, difference-of-means
+            # inside ``contrast_target`` -- so over ~5e4 float32 rows they agree
+            # to ~1e-7 relative and to nothing tighter. That makes this a
+            # DETERMINISM sentinel, not a drift detector between two estimates:
+            # it can only fire if the observed fit stopped being reproducible,
+            # which is the CUDA nondeterminism this module carried until
+            # deterministic kernels became the default. Flag past ~1e-5; that is
+            # far too wide to be summation order.
+            "contrast_selfcheck_abs": _sc_abs,
+            "contrast_selfcheck_rel": _sc_abs / max(abs(float(res.observed)), _r_scale),
             "pessimism_applied": pess,
             "n_transitions": int(data.n),
             "n_a_bad": int((acts == a_bad).sum()),
             "procedural_share": res.procedural_share,
             "failure_rate": res.failure_rate,
+            **_l4_diagnostics(res),
         },
     )
+
+
+def _l4_diagnostics(res) -> dict:
+    """L4's variance decomposition and bootstrap health, flattened to scalars.
+
+    **The founding rule this restores** (ruled 2026-08-23, stated in
+    ``l4.py``): "failures may correlate with the statistic, so their REASONS
+    travel with every interval -- a rate without reasons is uninterpretable."
+    ``point_id_interval`` obeys it and puts them in ``res.meta``. This seam
+    dropped ``res.meta`` wholesale, so every run artifact recorded a bare
+    ``failure_rate`` with no reasons attached -- precisely the shape the rule
+    forbids, and the reason a 3/19 rate could not be read for structure.
+
+    Flattened because the artifact writers keep only ``(int, float, str,
+    bool)``: a nested dict was discarded a second time downstream, so
+    propagating ``res.meta`` unflattened would have fixed nothing.
+    """
+    m = dict(getattr(res, "meta", None) or {})
+    out = {
+        "optimiser_var": float(m.get("optimiser_var", float("nan"))),
+        "replicate_var": float(m.get("replicate_var", float("nan"))),
+        "n_init_fits": int(m.get("n_init_fits", 0)),
+    }
+    for k, v in (m.get("bootstrap_diagnostics") or {}).items():
+        if k == "reasons":
+            # The REASONS themselves, not just how many. Joined rather than
+            # counted: two replicates failing for different causes is a
+            # different fact than two failing for one.
+            out["boot_reasons"] = " | ".join(v) if v else ""
+        elif isinstance(v, (int, float, bool)):
+            out[f"boot_{k}"] = v
+    return out
 
 
 def apply_reward_transform(buffer, serving: GraceServing) -> bool:
@@ -233,6 +291,8 @@ def apply_reward_transform(buffer, serving: GraceServing) -> bool:
     byte-identical to its base -- which is what makes ``GRACE-ABSTAINED`` a
     safe fallback rather than a silent third behaviour.
     """
+    serving.meta["transform_applied"] = False
+    serving.meta["n_rewards_written"] = 0
     if serving.abstained or serving.rewards is None:
         return False
     eps = getattr(buffer, "episodes", None)
@@ -243,13 +303,43 @@ def apply_reward_transform(buffer, serving: GraceServing) -> bool:
             for tr in e.transitions:
                 tr["rewards"] = vals[i].to(tr["rewards"].dtype).to(tr["rewards"].device)
                 i += 1
+        _record_write(serving, written=i, rows=i, spare=int(vals.numel()) - i)
         return True
     col = getattr(buffer, "_data", {}).get("rewards")
     if col is None:
         raise TypeError(f"{type(buffer).__name__} exposes no reward column to rewrite")
     n = serving.rewards.shape[0]
     col[:n] = serving.rewards.reshape(col[:n].shape).to(col.dtype).to(col.device)
+    # ``col[:n]`` is a PREFIX write: any row past n keeps its OBSERVATIONAL
+    # reward, and nothing about the run would look wrong if that happened.
+    # Compare against the buffer's FILL, never its capacity -- a ReplayBuffer
+    # allocates its column at capacity, so ``col.shape[0]`` reported coverage
+    # 300/310 = 0.97 on a complete transform and would have flagged a partial
+    # write on every healthy run.
+    rows = len(buffer) if hasattr(buffer, "__len__") else int(col.shape[0])
+    _record_write(serving, written=n, rows=int(rows), spare=0)
     return True
+
+
+def _record_write(serving: GraceServing, *, written: int, rows: int, spare: int):
+    """Evidence that the substitution ACTUALLY HAPPENED, on the artifact.
+
+    The sixth silent failure of this campaign was a GRACE arm that ran the
+    whole way through and produced correct-looking CSVs while the transform sat
+    on a path nothing called -- byte-identical to its own baseline, no error
+    anywhere. The rule adopted from it: **a component that can no-op silently
+    must record what it DID, not only what it produced**, because output that
+    looks right is compatible with nothing having happened.
+
+    So the count of rewards actually overwritten travels into the provenance.
+    ``coverage < 1`` means part of the buffer trained on observational rewards
+    -- a partial transform, which is a silent half-no-op of the same species.
+    """
+    serving.meta["transform_applied"] = written > 0
+    serving.meta["n_rewards_written"] = int(written)
+    serving.meta["n_buffer_rows"] = int(rows)
+    serving.meta["n_rewards_unused"] = int(spare)
+    serving.meta["rewards_coverage"] = float(written) / float(rows) if rows else 0.0
 
 
 def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
@@ -361,4 +451,10 @@ def transform_offline_rewards(buffer, **options) -> GraceServing:
     serving = fit_reward_transform(buffer, **options)
     if not serving.abstained:
         apply_reward_transform(buffer, serving)
+    else:
+        # EVERY run records what it did, abstentions included -- an absent key
+        # and a False one are not the same evidence, and "no key" is exactly
+        # how a silent no-op looks.
+        serving.meta["transform_applied"] = False
+        serving.meta["n_rewards_written"] = 0
     return serving

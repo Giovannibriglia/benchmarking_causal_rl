@@ -40,22 +40,55 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grace-v2"))
 
 REGIME = "offline_mdp"
-BETA, SIGMA = 0.0, 0.25
+BETA, SIGMA = 0.0, 0.25  # SIGMA is the campaign default; cells may override
 ENVS = ("CartPole-v1",)
 SEEDS = (0, 1, 2)
 ALGOS = ("cql", "iql")
 PROXIES = ("Z", "W", "V")
 
-# (e1 tag, source cell in the generation reports, declared proxy channels)
+# (e1 tag, source cell in the generation reports, declared proxy channels, sigma)
+#
+# ``d100s0`` is the NO-HARM CONTROL and the reason sigma became per-cell.
+# d_a_null cannot serve that role: its reward is constant, so the do-contrast is
+# identically zero for the data AND every resample -- an untestable pass, not a
+# clean one (S9). At sigma = 0 on d100, U -> R survives so GRACE fits a real,
+# nonzero r_hat (truth M = 0.5, unchanged by sigma), while U -> A is severed so
+# the bias to remove is zero WITHOUT being zero by construction. That is what
+# "does GRACE invent a correction where there is nothing to correct" needs.
+# Same cell as d100, so the three proxy channels match by construction rather
+# than by convention -- a two-proxy control against a three-proxy treatment
+# would confound the very comparison P1 makes.
 CELLS = (
-    ("danull", "d_a_null", ()),
-    ("d100", "d_d_sweep_d100", PROXIES),
-    ("d025", "d_d_sweep_d025", PROXIES),
-    ("d010asym", "d_d_sweep_d010_asym", PROXIES),
+    ("danull", "d_a_null", (), SIGMA),
+    ("d100s0", "d_d_sweep_d100", PROXIES, 0.0),
+    ("d100", "d_d_sweep_d100", PROXIES, SIGMA),
+    ("d025", "d_d_sweep_d025", PROXIES, SIGMA),
+    ("d010asym", "d_d_sweep_d010_asym", PROXIES, SIGMA),
 )
 # The analytic q1 do-contrast truth per cell: M = c_r * P(U=1). Read from
 # arm_knobs at runtime rather than tabulated here.
 RESULTS_ROOT = Path("results/e1")
+
+
+def _scalar_meta(meta) -> dict:
+    """The seam's scalar diagnostics, as VALID JSON.
+
+    ``json.dumps`` writes bare ``Infinity``/``NaN`` for non-finite floats.
+    Python reads those back, nothing else does, and a reader that does parse
+    them sees "inf" where the honest value is "undefined" -- so the
+    non-finite cases become ``null``. They arise for real: an undefined
+    variance share (0/0 on a cell whose statistic cannot vary) and an
+    unmeasurable optimiser arm both report non-finite by design.
+    """
+    import math
+
+    out = {}
+    for k, v in (meta or {}).items():
+        if isinstance(v, bool) or isinstance(v, (int, str)):
+            out[k] = v
+        elif isinstance(v, float):
+            out[k] = v if math.isfinite(v) else None
+    return out
 
 
 def _resolve_ids() -> dict:
@@ -65,12 +98,15 @@ def _resolve_ids() -> dict:
         "results/vb_recertification/report.json",
         "results/dd_sweep_generation/report.json",
         "results/dd_asym_generation/report.json",
+        # the sigma = 0 no-harm point, generated separately so the existing
+        # sigma = 0.25 report stays the untouched record of what certified it
+        "results/dd_sweep_sigma0_generation/report.json",
     ):
         p = Path(f)
         if p.exists():
             srcs.extend(json.loads(p.read_text()))
     out, stamps = {}, {}
-    for tag, cell, _pn in CELLS:
+    for tag, cell, _pn, sg in CELLS:
         for env in ENVS:
             for sd in SEEDS:
                 hits = [
@@ -79,7 +115,7 @@ def _resolve_ids() -> dict:
                     if r["cell"] == cell
                     and r["env"] == env
                     and r["seed"] == sd
-                    and (r.get("sigma") in (None, SIGMA) or cell == "d_a_null")
+                    and (r.get("sigma") in (None, sg) or cell == "d_a_null")
                 ]
                 if not hits:
                     raise SystemExit(f"no certified dataset for {cell} {env} s{sd}")
@@ -117,7 +153,7 @@ def _assert_safe(ids: dict, stamps: dict) -> None:
     print(f"  [assert] {len(ids)} ids, all distinct, present and stamped", flush=True)
 
 
-def _q1_truth(cell: str) -> float | None:
+def _q1_truth(cell: str, sigma: float) -> float | None:
     """M = c_r * P(U=1), via arm_knobs -- the one construction site for c_r."""
     if cell == "d_a_null":
         return 0.0
@@ -127,7 +163,7 @@ def _q1_truth(cell: str) -> float | None:
     spec = load_sweep_spec(Path(f"reproducibility/rl_regimes/diagrams/{cell}.yaml"))
     k = arm_knobs(
         spec.diagram,
-        sigma=SIGMA,
+        sigma=sigma,
         confounder_c_r=(
             None
             if getattr(spec, "gate_mean_effect", None) is not None
@@ -163,8 +199,8 @@ def main() -> int:
     spec0 = load_sweep_spec(Path("reproducibility/rl_regimes/diagrams/e1_d100.yaml"))
     n_steps = spec0.budgets.get("offline_grad_steps")
 
-    for tag, cell, proxies in CELLS:
-        truth = _q1_truth(cell)
+    for tag, cell, proxies, sg in CELLS:
+        truth = _q1_truth(cell, sg)
         for env in ENVS:
             for sd in SEEDS:
                 did = ids[(tag, env, sd)]
@@ -177,7 +213,7 @@ def main() -> int:
                             RESULTS_ROOT,
                             f"{REGIME}_{tag}",
                             BETA,
-                            SIGMA,
+                            sg,
                             env,
                             algo,
                             arm,
@@ -193,12 +229,23 @@ def main() -> int:
                         env_cfg = EnvConfig(
                             env_id=env,
                             n_train_envs=2,
-                            n_eval_envs=2,
+                            # 16, the default: two rollouts per checkpoint cannot
+                            # produce the MC band "parity within seed noise" is
+                            # judged against. The analytic return removes U-draw
+                            # variance, NOT initial-state variance.
+                            n_eval_envs=16,
                             rollout_len=2,
+                            # THE EVAL HORIZON, separate from rollout_len above.
+                            # rollout_len=2 is right for the inert on-policy
+                            # params on an offline run and was catastrophic for
+                            # evaluation: 2 environment steps, so every policy
+                            # scored 2.0-3.0 and no return prediction could fail.
+                            # 500 = CartPole-v1's episode cap.
+                            eval_rollout_len=500,
                             seed=sd,
                             offline_dataset=did,  # PINNED, read not derived
                             behavior_policy="bias_confounded_action",
-                            behavior_strength=SIGMA,
+                            behavior_strength=sg,
                             eval_confounded_reward=True,
                             eval_confounded_mode="analytic",
                             grace_reward_transform=(arm == "grace"),
@@ -213,7 +260,7 @@ def main() -> int:
                             )
                             k = arm_knobs(
                                 sp.diagram,
-                                sigma=SIGMA,
+                                sigma=sg,
                                 confounder_c_r=(
                                     None
                                     if getattr(sp, "gate_mean_effect", None) is not None
@@ -284,13 +331,7 @@ def main() -> int:
                                             "label": sv.label(),
                                             "lo": sv.lo,
                                             "hi": sv.hi,
-                                            "meta": {
-                                                k: v
-                                                for k, v in (sv.meta or {}).items()
-                                                if isinstance(
-                                                    v, (int, float, str, bool)
-                                                )
-                                            },
+                                            "meta": _scalar_meta(sv.meta),
                                         }
                                     ),
                                     "seconds": round(time.time() - t0, 1),

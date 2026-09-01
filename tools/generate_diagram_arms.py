@@ -137,6 +137,19 @@ def main() -> int:
         action="store_true",
         help="keep datasets whose generation_fingerprint already matches",
     )
+    ap.add_argument(
+        "--sigmas",
+        nargs="+",
+        type=float,
+        default=None,
+        help=(
+            "generate ONLY these sweep sigmas. Adding a point to an existing "
+            "cell otherwise walks every already-certified sigma through the "
+            "delete-and-regenerate branch below, where a fingerprint mismatch "
+            "destroys a pinned dataset a campaign is running against. This "
+            "filter keeps the new point's generation from ever reaching them."
+        ),
+    )
     args = ap.parse_args()
 
     from src.benchmarking.regime_sweep import load_sweep_spec
@@ -186,6 +199,10 @@ def main() -> int:
                     run_dir=str(out / "generator" / f"{env_id}_s{seed}"),
                 )
                 for beta, sigma in spec.points():
+                    if args.sigmas is not None and not any(
+                        abs(sigma - w) < 1e-12 for w in args.sigmas
+                    ):
+                        continue
                     kw = spec.arm_generator_kwargs(sigma)
                     from src.envs.offline.diagram_arms import arm_knobs
 

@@ -756,7 +756,10 @@ class BenchmarkRunner:
             else None
         )
         z_steps = 0
-        for _ in range(self.env_cfg.rollout_len):
+        # The EVAL horizon, not the collection length -- see EnvConfig.
+        for _ in range(
+            getattr(self.env_cfg, "eval_rollout_len", None) or self.env_cfg.rollout_len
+        ):
             with torch.no_grad():
                 if self.algo_spec.kind == "off_policy":
                     if self.action_type == "discrete":
