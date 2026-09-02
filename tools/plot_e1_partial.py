@@ -21,21 +21,25 @@ BASE, GRACE = "#2a78d6", "#eb6834"
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e3e2df"
 ARM_C = {"base": BASE, "grace": GRACE}
 OUT = "results/e1/figures"
-CELL_ORDER, ALGO_ORDER = ["danull", "d100"], ["cql", "iql"]
-CELL_TITLE = {"danull": "d_a_null  (no confounding)", "d100": "d100  (σ=0.25)"}
+CELL_ORDER, ALGO_ORDER = ["danull", "d100s0", "d100"], ["cql", "iql"]
+CELL_TITLE = {
+    "danull": "d_a_null  (R constant — smoke test, not a no-harm measurement)",
+    "d100s0": "d100 σ=0  (the no-harm control: U→R live, U→A severed)",
+    "d100": "d100  σ=0.25  (the treatment)",
+}
 
 
 def load():
     runs = []
     for p in sorted(
-        glob.glob(
-            "results/e1/*/beta_000_sigma_025/CartPole-v1/*/*/*/e1_provenance.json"
-        )
+        glob.glob("results/e1/*/beta_*/CartPole-v1/*/*/*/e1_provenance.json")
     ):
         d = json.load(open(p))
         leaf = os.path.dirname(p)
         d["eval"] = pd.read_csv(f"{leaf}/eval_metrics.csv")
         d["ca"] = pd.read_csv(f"{leaf}/critic_ablation_metrics.csv")
+        dep = f"{leaf}/eval_deployment.csv"
+        d["dep"] = pd.read_csv(dep) if os.path.exists(dep) else None
         runs.append(d)
     return runs
 
@@ -84,10 +88,10 @@ def _grid_fig(runs, title, sub):
         if any(r["cell"] == c and r["algo"] == a for r in runs)
     ]
     fig, axes = plt.subplots(
-        len(CELL_ORDER), len(ALGO_ORDER), figsize=(10, 6.4), facecolor=SURFACE
+        len(CELL_ORDER), len(ALGO_ORDER), figsize=(11, 9.2), facecolor=SURFACE
     )
     fig.suptitle(title, x=0.012, ha="left", fontsize=14, color=INK, weight="bold")
-    fig.text(0.012, 0.935, sub, ha="left", fontsize=9.5, color=INK2)
+    fig.text(0.012, 0.955, sub, ha="left", fontsize=9.5, color=INK2)
     return fig, axes, present
 
 
@@ -155,7 +159,7 @@ def fig_return(runs):
         color=INK,
         va="bottom",
     )
-    fig.subplots_adjust(top=0.855, bottom=0.155, hspace=0.42, wspace=0.2)
+    fig.subplots_adjust(top=0.90, bottom=0.115, hspace=0.45, wspace=0.2)
     fig.savefig(f"{OUT}/e1_return.png", dpi=170, facecolor=SURFACE)
     plt.close(fig)
 
@@ -225,14 +229,19 @@ def fig_contrast(runs):
         color=INK,
         va="bottom",
     )
-    fig.subplots_adjust(top=0.855, bottom=0.155, hspace=0.42, wspace=0.2)
+    fig.subplots_adjust(top=0.90, bottom=0.115, hspace=0.45, wspace=0.2)
     fig.savefig(f"{OUT}/e1_reward_model_quality.png", dpi=170, facecolor=SURFACE)
     plt.close(fig)
 
 
 def fig_seam(runs):
     """The SEAM's own reward model, on the two axes P1a is registered against."""
-    g = [r for r in runs if r["arm"] == "grace" and r.get("grace")]
+    # Abstained runs carry no interval and no point estimate. They are reported
+    # SEPARATELY, never pooled, so they are excluded from the panels and named
+    # in the title rather than silently dropped.
+    allg = [r for r in runs if r["arm"] == "grace" and r.get("grace")]
+    abst = [r for r in allg if r["grace"].get("abstained")]
+    g = [r for r in allg if not r["grace"].get("abstained")]
     g.sort(key=lambda r: (-CELL_ORDER.index(r["cell"]), r["algo"], r["seed"]))
     lab = [f"{r['cell']} · {r['algo']} · s{r['seed']}" for r in g]
     yy = range(len(g))
@@ -244,7 +253,13 @@ def fig_seam(runs):
         gridspec_kw=dict(width_ratios=[1.25, 1]),
     )
     fig.suptitle(
-        "The seam's reward model, per GRACE run",
+        "The seam's reward model, per GRACE run"
+        + (
+            "   —   ABSTAINED (excluded, reported separately): "
+            + ", ".join(f"{r['cell']}·{r['algo']}·s{r['seed']}" for r in abst)
+            if abst
+            else ""
+        ),
         x=0.008,
         ha="left",
         fontsize=14,
@@ -391,6 +406,102 @@ def fig_seam(runs):
     plt.close(fig)
 
 
+def fig_deployment(runs):
+    """THE DECOMPOSITION. The reported return is base + bonus_rate * a_bad_steps,
+    and those two move in OPPOSITE directions as the policy learns -- so the
+    headline metric can fall while task performance rises."""
+    sel = [r for r in runs if r.get("dep") is not None]
+    if not sel:
+        return
+    cells = [c for c in CELL_ORDER if any(r["cell"] == c for r in sel)]
+    fig, axes = plt.subplots(
+        len(cells), 2, figsize=(11, 3.1 * len(cells)), facecolor=SURFACE, squeeze=False
+    )
+    fig.suptitle(
+        "What the deployment return is actually made of",
+        x=0.012,
+        ha="left",
+        fontsize=14,
+        color=INK,
+        weight="bold",
+    )
+    fig.text(
+        0.012,
+        0.945,
+        "LEFT: task performance (surviving steps).   RIGHT: how often the paying "
+        "action a_bad is taken.   return = left + 0.5 x right.",
+        ha="left",
+        fontsize=9.5,
+        color=INK2,
+    )
+    import matplotlib.lines as _ml
+
+    fig.legend(
+        handles=[
+            _ml.Line2D([], [], color=BASE, lw=3.2, label="base (unmodified critic)"),
+            _ml.Line2D(
+                [],
+                [],
+                color=GRACE,
+                lw=1.8,
+                ls=(0, (3, 2)),
+                label="grace (reward transform)",
+            ),
+        ],
+        loc="upper left",
+        bbox_to_anchor=(0.012, 0.925),
+        frameon=False,
+        fontsize=9.5,
+        labelcolor=INK2,
+        ncol=2,
+        handlelength=2.6,
+    )
+    for i, cell in enumerate(cells):
+        for j, (col, lab) in enumerate(
+            (
+                ("eval_return_base_mean", "base return (surviving steps)"),
+                ("eval_bad_action_steps_mean", "a_bad steps"),
+            ),
+        ):
+            ax = axes[i][j]
+            _style(ax)
+            rs = [r for r in sel if r["cell"] == cell]
+            for r in rs:
+                _draw(ax, r["dep"].episode, r["dep"][col], r)
+            if j == 0 and rs:
+                h = rs[0]["dep"].eval_horizon.iloc[0]
+                ax.axhline(h, color=INK, lw=1.2, ls=(0, (4, 3)))
+                ax.text(
+                    rs[0]["dep"].episode.max(),
+                    h,
+                    "  cap",
+                    fontsize=8,
+                    color=INK,
+                    va="center",
+                )
+            ax.set_title(
+                f"{CELL_TITLE[cell]}", fontsize=9, color=INK, loc="left", pad=6
+            )
+            ax.set_ylabel(lab, fontsize=8.5, color=INK2)
+            if i == len(cells) - 1:
+                ax.set_xlabel("gradient steps", fontsize=9, color=INK2)
+    fig.text(
+        0.012,
+        0.012,
+        "The two panels move in OPPOSITE directions: as the policy learns to balance, "
+        "surviving steps RISE and a_bad steps FALL.\nBecause the bonus is 0.5 per a_bad "
+        "step, the reported return can DECLINE while task performance improves -- so an "
+        "arm scoring lower is not\nautomatically performing worse. GRACE takes a_bad less "
+        "BY DESIGN, which is exactly the direction this metric penalises.",
+        fontsize=8.5,
+        color=INK,
+        va="bottom",
+    )
+    fig.subplots_adjust(top=0.855, bottom=0.135, hspace=0.55, wspace=0.22)
+    fig.savefig(f"{OUT}/e1_return_decomposition.png", dpi=170, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def _legend(fig):
     import matplotlib.lines as ml
 
@@ -424,5 +535,6 @@ if __name__ == "__main__":
     fig_return(runs)
     fig_contrast(runs)
     fig_seam(runs)
+    fig_deployment(runs)
     for f in sorted(glob.glob(f"{OUT}/*.png")):
         print("wrote", os.path.abspath(f))
