@@ -76,6 +76,22 @@ class EnvConfig:
     # The cell's DECLARED proxy channels (D-D: Z, W, V). Empty for cells that
     # declare none -- the diagram decides, never the config's convenience.
     grace_proxy_names: tuple = ()
+    # Transform-cache root (None = off). The GRACE fit is a measured pure
+    # function of (data, options) — see grace/transform_cache.py — so a shared
+    # cache lets one fit serve every algorithm and training seed on the same
+    # dataset. Content-addressed; safe to share across runs.
+    grace_cache_dir: str | None = None
+    # The user contract's ONE knob: the declared observability. "mdp" (the
+    # default, the historical behavior) or "pomdp" (the window branch:
+    # selection -> augmented state -> the MDP machinery). The declaration is
+    # an INPUT — L5 may contradict it, never override it (ruled 2026-09-03).
+    declared_observability: str = "mdp"
+    # POMDP-branch knobs. grace_dr2_cut is REQUIRED for the pomdp branch and
+    # comes from the L5 calibration report — the branch refuses to run
+    # without it rather than defaulting to the statistical-only selector.
+    grace_k_max: int = 2
+    grace_dr2_cut: float | None = None
+    grace_l5_alpha: float = 0.05
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

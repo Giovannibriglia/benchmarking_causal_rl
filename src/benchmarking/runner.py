@@ -1515,12 +1515,30 @@ class BenchmarkRunner:
         """
         if not getattr(self.env_cfg, "grace_reward_transform", False):
             return None
-        from src.rl.offline.grace.serving import transform_offline_rewards
-
         pn = tuple(getattr(self.env_cfg, "grace_proxy_names", ()) or ())
-        serving = transform_offline_rewards(
-            self.replay_buffer, proxy_names=pn, device=self.device
+        common = dict(
+            proxy_names=pn,
+            device=self.device,
+            cache_dir=getattr(self.env_cfg, "grace_cache_dir", None),
+            dataset_id=str(getattr(self.env_cfg, "offline_dataset", "") or ""),
         )
+        declared = str(getattr(self.env_cfg, "declared_observability", "mdp"))
+        if declared == "pomdp":
+            from src.rl.offline.grace.pomdp_branch import (
+                transform_offline_rewards_pomdp,
+            )
+
+            serving = transform_offline_rewards_pomdp(
+                self.replay_buffer,
+                dr2_cut=getattr(self.env_cfg, "grace_dr2_cut", None),
+                alpha=float(getattr(self.env_cfg, "grace_l5_alpha", 0.05)),
+                k_max=int(getattr(self.env_cfg, "grace_k_max", 2)),
+                **common,
+            )
+        else:
+            from src.rl.offline.grace.serving import transform_offline_rewards
+
+            serving = transform_offline_rewards(self.replay_buffer, **common)
         print(f"[grace] {serving.label()}", file=sys.stderr)
         return serving
 

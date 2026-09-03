@@ -102,6 +102,7 @@ def dataset_name(
     tier: str,
     behavior_policy: str = "agent",
     behavior_strength: float | None = None,
+    behavior_mask_indices: tuple | None = None,
 ) -> str:
     """``generated/{env_slug}/{tier}[-{behavior}][-sigma{NNN}]-v0``.
 
@@ -125,7 +126,49 @@ def dataset_name(
         suffix = f"-{behavior_policy}{_sigma_suffix(float(behavior_strength))}"
     else:
         suffix = f"-{behavior_policy}"
+    if behavior_mask_indices:
+        # S6: a masked-behavior dataset is a DIFFERENT identity -- same config
+        # without the marker would collide with the full-view dataset.
+        suffix += "-om" + "".join(str(i) for i in behavior_mask_indices)
     return f"generated/{slug}/{tier}{suffix}-v0"
+
+
+class _MaskedViewPolicy:
+    """Behavior-policy INFORMATION-SET restriction (Finding 1, 2026-09-02).
+
+    Deletes the masked observation columns BEFORE delegating to the inner
+    policy, so the behavior acts on the partial view (`O -> A`, the edge
+    D-F/D-G declare) while the rollout loops -- untouched -- keep storing the
+    FULL observation for ground truth and preflight. Masking at load time
+    instead leaves the logged actions dependent on the hidden components
+    (`S -> A`), a different diagram than the catalogue asserts.
+
+    The inner policy's diagnostic prob reads (``action_probs``,
+    ``_base_action_probs``) are forwarded THROUGH the same view: the inner
+    network is masked-dim, and their ABSENCE is mirrored (``__getattr__``
+    raises), so the rollout's ``getattr(..., None)`` probes see exactly what
+    the inner policy exposes.
+    """
+
+    def __init__(self, inner, indices):
+        self._inner = inner
+        self._idx = tuple(int(i) for i in indices)
+
+    def _view(self, obs):
+        if isinstance(obs, torch.Tensor):
+            keep = [i for i in range(obs.shape[-1]) if i not in set(self._idx)]
+            return obs[..., keep]
+        a = np.asarray(obs)
+        return np.delete(a, list(self._idx), axis=-1)
+
+    def act(self, obs):
+        return self._inner.act(self._view(obs))
+
+    def __getattr__(self, name):
+        v = getattr(self._inner, name)  # AttributeError propagates, mirrored
+        if name in ("action_probs", "_base_action_probs"):
+            return lambda obs, _f=v: _f(self._view(obs))
+        return v
 
 
 def build_rollout_env(
@@ -1242,6 +1285,7 @@ def build_generator_agent(
     fraction: float = 1.0 / 3.0,
     run_dir: str | None = None,
     device: str | None = None,
+    behavior_mask_indices: tuple | None = None,
 ):
     """Build ONE generator agent for a cell and return ``(agent, hash)``.
 
@@ -1276,7 +1320,14 @@ def build_generator_agent(
         if run_dir is None:
             raise ValueError("non-random tiers require run_dir for the generator")
         _train_generator(
-            env_id, generator_algo, train_episodes, n_checkpoints, seed, run_dir, dev
+            env_id,
+            generator_algo,
+            train_episodes,
+            n_checkpoints,
+            seed,
+            run_dir,
+            dev,
+            mask_indices=behavior_mask_indices,
         )
         sel_ep = select_tier_episode(_read_eval_returns(run_dir), tier, fraction)
 
@@ -1340,6 +1391,7 @@ def generate_offline_dataset(
     gate_probs=None,
     n_proxies: int = 2,
     preflight_episodes: int = 600,
+    behavior_mask_indices: tuple | None = None,
 ):
     """Train an online generator, snapshot the ``tier`` policy by return, roll it
     out (optionally via a collection policy), and write a Minari dataset to the
@@ -1415,7 +1467,14 @@ def generate_offline_dataset(
         if run_dir is None:
             raise ValueError("non-random tiers require run_dir for the generator")
         _train_generator(
-            env_id, generator_algo, train_episodes, n_checkpoints, seed, run_dir, dev
+            env_id,
+            generator_algo,
+            train_episodes,
+            n_checkpoints,
+            seed,
+            run_dir,
+            dev,
+            mask_indices=behavior_mask_indices,
         )
         sel_ep = select_tier_episode(_read_eval_returns(run_dir), tier, fraction)
 
@@ -1436,6 +1495,12 @@ def generate_offline_dataset(
         n_proxies=n_proxies,
     )
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(rollout_env)
+    if behavior_mask_indices:
+        # The generator/behavior networks are MASKED-dim: they were trained on
+        # the masked view and act through _MaskedViewPolicy below. The dataset
+        # still stores the full observation (the loops are untouched).
+        obs_dim = obs_dim - len(tuple(behavior_mask_indices))
+        obs_shape = (obs_dim,)
     # CHANGE 1: a pre-built shared generator agent short-circuits the fresh build +
     # checkpoint load — the SAME pi_basic across all sweep points of the cell.
     if agent is None:
@@ -1489,6 +1554,12 @@ def generate_offline_dataset(
             pi_basic_epsilon=pi_basic_epsilon,
         )
 
+    if behavior_mask_indices:
+        # A pre-built full-obs agent cannot act through the masked view -- its
+        # input dim will mismatch loudly on the first act; the guard makes the
+        # cause readable instead.
+        collection_policy = _MaskedViewPolicy(collection_policy, behavior_mask_indices)
+
     # S2: >1 slot routes to the vectorized collector (same output contract).
     _collect = _rollout_vectorized if n_slots > 1 else _rollout
     buffers, sig_samples = _collect(
@@ -1498,7 +1569,13 @@ def generate_offline_dataset(
 
     import minari
 
-    name = dataset_id or dataset_name(env_id, tier, behavior_policy, behavior_strength)
+    name = dataset_id or dataset_name(
+        env_id,
+        tier,
+        behavior_policy,
+        behavior_strength,
+        behavior_mask_indices=behavior_mask_indices,
+    )
     ds = minari.create_dataset_from_buffers(
         dataset_id=name,
         buffer=buffers,
@@ -1539,6 +1616,14 @@ def generate_offline_dataset(
     # arms of a cell were collected under one pi_basic (refuse a cell whose arms
     # differ). Stamped on every dataset — internal-build or pre-built agent alike.
     signature["generator_checkpoint_hash"] = generator_checkpoint_hash(agent)
+    # The behavior policy's INFORMATION SET, stamped so the two constructions
+    # (O->A masked-behavior vs S->A load-time mask) can never be conflated: a
+    # reader of the dataset can tell which diagram the logged actions realise.
+    signature["behavior_information_set"] = (
+        "masked:" + ",".join(str(i) for i in behavior_mask_indices)
+        if behavior_mask_indices
+        else "full"
+    )
     # V-B: the arm's PREFLIGHT CERTIFICATION travels with the dataset, in the same
     # metadata block as the confounding signature and for the same reason -- a
     # dataset should carry its own validity proof rather than depend on a
@@ -1593,13 +1678,31 @@ def generate_offline_dataset(
     return ds
 
 
-def _train_generator(env_id, algo, train_episodes, n_checkpoints, seed, run_dir, dev):
+def _train_generator(
+    env_id,
+    algo,
+    train_episodes,
+    n_checkpoints,
+    seed,
+    run_dir,
+    dev,
+    *,
+    mask_indices=None,
+):
     from src.benchmarking.registry import registry
     from src.benchmarking.runner import BenchmarkRunner
     from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
 
     env_cfg = EnvConfig(
-        env_id=env_id, n_train_envs=4, n_eval_envs=4, rollout_len=64, seed=seed
+        env_id=env_id,
+        n_train_envs=4,
+        n_eval_envs=4,
+        rollout_len=64,
+        seed=seed,
+        # Masked-behavior generation: the generator LEARNS on the partial view,
+        # so the pi_basic it defines has the O->A information set by training,
+        # not by projection of a full-obs policy.
+        mask_indices=(tuple(mask_indices) if mask_indices else None),
     )
     train_cfg = TrainingConfig(
         n_episodes=train_episodes,

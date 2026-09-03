@@ -56,6 +56,15 @@ from .l4 import point_id_interval
 SERVE_PESSIMISTIC = "Q-minus"
 SERVE_ABSTAINED = "GRACE-ABSTAINED"
 
+# The fit's effective defaults, ONE construction site: the signature below and
+# the transform cache's key builder both read these — a default that drifted
+# between them would silently key two different fits identically.
+DEFAULT_ALPHA = 0.1
+DEFAULT_B = 19
+DEFAULT_FIT_SEED = 0
+DEFAULT_INIT_SEEDS = (1, 2)
+DEFAULT_FIT_KWARGS = dict(max_iter=30, m_step_budget=400, batch_size=4096)
+
 
 @dataclass
 class GraceServing:
@@ -99,10 +108,10 @@ def fit_reward_transform(
     buffer,
     *,
     proxy_names: tuple = (),
-    alpha: float = 0.1,
-    b: int = 19,
-    fit_seed: int = 0,
-    init_seeds: tuple = (1, 2),
+    alpha: float = DEFAULT_ALPHA,
+    b: int = DEFAULT_B,
+    fit_seed: int = DEFAULT_FIT_SEED,
+    init_seeds: tuple = DEFAULT_INIT_SEEDS,
     fit_kwargs: Optional[dict] = None,
     device=None,
 ) -> GraceServing:
@@ -129,7 +138,7 @@ def fit_reward_transform(
     turn the comparison into "regularised vs unregularised". Substituting one
     column does not.
     """
-    fk = dict(fit_kwargs or dict(max_iter=30, m_step_budget=400, batch_size=4096))
+    fk = dict(fit_kwargs or DEFAULT_FIT_KWARGS)
     try:
         data, _nxt, _dn = _episode_data_from_buffer(
             buffer, proxy_names=proxy_names, device=device
@@ -441,14 +450,63 @@ def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
     )
 
 
-def transform_offline_rewards(buffer, **options) -> GraceServing:
-    """The runner's entry point: fit, then substitute, then report.
+def transform_offline_rewards(
+    buffer, *, cache_dir=None, dataset_id: str = "", **options
+) -> GraceServing:
+    """The runner's entry point: fit (or load the cached fit), substitute,
+    report.
 
     Called once after the offline fill and BEFORE any gradient step, so the
     base algorithm trains on interventional rewards from its first step. The
     returned ``GraceServing`` carries the C3 label into the run artifacts.
+
+    ``cache_dir`` enables the transform cache (transform_cache.py): the fit is
+    a measured pure function of (data, options) — 10/10 bitwise-identical
+    production pairs, equal reward hashes under perturbed global RNG — so a
+    hit substitutes the cached reward column and skips the ~1h fit. The key is
+    content-addressed over the EXACT fit inputs; hit/store is recorded in
+    ``meta`` (S15: the artifact says what the run DID). Cached ABSTENTIONS are
+    honoured too, and stay visibly abstentions.
     """
+    key = None
+    if cache_dir:
+        from src.rl.offline.grace import transform_cache as tc
+
+        try:
+            data, nxt, dn = _episode_data_from_buffer(
+                buffer,
+                proxy_names=tuple(options.get("proxy_names", ()) or ()),
+                device=options.get("device"),
+            )
+        except Exception:
+            data = None
+        if data is not None:
+            key = tc.build_key(
+                dataset_id=dataset_id,
+                data_sha256=tc.data_fingerprint(data, nxt, dn),
+                proxy_names=tuple(options.get("proxy_names", ()) or ()),
+                alpha=options.get("alpha", DEFAULT_ALPHA),
+                b=options.get("b", DEFAULT_B),
+                fit_seed=options.get("fit_seed", DEFAULT_FIT_SEED),
+                init_seeds=options.get("init_seeds", DEFAULT_INIT_SEEDS),
+                fit_kwargs=dict(options.get("fit_kwargs") or DEFAULT_FIT_KWARGS),
+                device_kind=str(data.state.device.type),
+            )
+            hit = tc.load(cache_dir, key)
+            if hit is not None:
+                if not hit.abstained:
+                    apply_reward_transform(buffer, hit)
+                else:
+                    hit.meta["transform_applied"] = False
+                    hit.meta["n_rewards_written"] = 0
+                return hit
+
     serving = fit_reward_transform(buffer, **options)
+    if key is not None:
+        from src.rl.offline.grace import transform_cache as tc
+
+        entry = tc.store(cache_dir, key, serving)
+        serving.meta["transform_cache_stored"] = str(entry)
     if not serving.abstained:
         apply_reward_transform(buffer, serving)
     else:

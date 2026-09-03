@@ -22,6 +22,10 @@
 # contrast. c_r is DERIVED as M / d in arm_knobs (no confounder_c_r line here
 # BY DESIGN -- declaring both raises).
 regime: offline_mdp
+# The generation-report cell the certified ids resolve through
+# (read, never reconstructed) and the results-tree tag.
+source_cell: d_d_sweep_d025
+e1_cell: d025
 observability: mdp
 data_regime: offline
 discrete_only: true

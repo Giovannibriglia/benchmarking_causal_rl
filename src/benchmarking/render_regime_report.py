@@ -54,6 +54,19 @@ from src.benchmarking.regime_report import build_report  # noqa: E402
 _CRITIC_ORDER = ("observational", "proximal", "oracle_u", "sensitivity")
 
 
+def _critics_present(rows) -> List[str]:
+    """The critic axis as the AGGREGATE declares it, known names first.
+
+    The strategy triad is not the only shape this axis takes: the E1 deployment
+    tree puts ``base``/``grace`` arms in the critic slot, and iterating a
+    hardcoded list drew ZERO lines for them — the renderer reported "wrote 0
+    figure files" on a fully populated report. Presentation-only, still consumes
+    ``build_report`` alone."""
+    present = {r["critic"] for r in rows}
+    ordered = [c for c in _CRITIC_ORDER if c in present]
+    return ordered + sorted(present - set(_CRITIC_ORDER))
+
+
 def _num(x) -> float:
     if x is None or x == "":
         return float("nan")
@@ -140,7 +153,7 @@ def _fig_sigma_wedge(agg, nc, regime, out, formats) -> List[Path]:
             continue
         fig, ax = plt.subplots(figsize=(6.2, 4.2))
         drew = False
-        for critic in _CRITIC_ORDER:
+        for critic in _critics_present(rows):
             pts = sorted(
                 (r for r in rows if r["critic"] == critic),
                 key=lambda r: float(r["sigma"]),
@@ -297,7 +310,7 @@ def _fig_reward_sweep(agg, regime, out, formats):
             continue
         fig, ax = plt.subplots(figsize=(6.2, 4.2))
         drew = False
-        for critic in _CRITIC_ORDER:
+        for critic in _critics_present(rows):
             pts = sorted(
                 (r for r in rows if r["critic"] == critic),
                 key=lambda r: float(r["sigma"]),

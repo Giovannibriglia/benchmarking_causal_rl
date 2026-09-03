@@ -23,6 +23,10 @@
 # coin flip). The metadata records that it was skipped, so a later reader can
 # tell "not applicable" from "passed".
 regime: offline_mdp
+# The generation-report cell the certified ids resolve through
+# (read, never reconstructed) and the results-tree tag.
+source_cell: d_a_null
+e1_cell: danull
 observability: mdp
 data_regime: offline
 discrete_only: true

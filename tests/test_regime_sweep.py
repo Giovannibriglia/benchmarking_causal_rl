@@ -351,3 +351,92 @@ def test_m5_legacy_is_inert_no_live_cell_glob():
         txt = py.read_text()
         assert not re.search(r"glob\([^)]*cell_", txt), py
         assert "reproducibility/rl_regimes/cell_" not in txt, py
+
+
+def test_e1_yamls_resolve_from_declaration_alone():
+    """Every e1_*.yaml parses under STRICT mode and carries the facts the
+    driver's CELLS tuple used to encode — the two-construction-sites fix
+    (2026-09-03). A key the loader does not parse now RAISES instead of
+    silently documenting."""
+    from pathlib import Path
+
+    from src.benchmarking.regime_sweep import load_sweep_spec
+
+    d = Path("reproducibility/rl_regimes/diagrams")
+    pairs = 0
+    for f in sorted(d.glob("e1_*.yaml")):
+        spec = load_sweep_spec(f)
+        assert spec.source_cell, f"{f.name}: source_cell missing"
+        assert spec.e1_cell, f"{f.name}: e1_cell missing"
+        assert spec.eval_confounded_reward and spec.eval_confounded_mode == "analytic"
+        is_grace = f.name.endswith("_grace.yaml")
+        assert spec.grace_reward_transform is is_grace, f.name
+        if is_grace and spec.e1_cell != "danull":
+            assert spec.grace_proxy_names == ("Z", "W", "V"), f.name
+        pairs += 1
+    assert pairs == 10  # five cells x two arms, d100s0 included
+
+
+def test_e1_strict_mode_refuses_unknown_keys(tmp_path):
+    import pytest as _pytest
+    from src.benchmarking.regime_sweep import load_sweep_spec
+
+    bad = tmp_path / "e1_bogus.yaml"
+    bad.write_text("regime: offline_mdp\ndata_regime: offline\nnot_a_key: 1\n")
+    with _pytest.raises(ValueError, match="not_a_key"):
+        load_sweep_spec(bad)
+
+
+def test_d100s0_declares_the_substituted_seed():
+    from src.benchmarking.regime_sweep import load_sweep_spec
+
+    spec = load_sweep_spec("reproducibility/rl_regimes/diagrams/e1_d100s0.yaml")
+    assert spec.seeds == [0, 2, 3]  # s1's declared-in-advance substitution
+    # sigma=0 is declared through the BASIC origin (arm_behavior: basic IS
+    # the confounded mechanism at sigma=0), never a sigma=0 confounded entry.
+    assert spec.include_basic and spec.sigma_arm == ()
+
+
+def test_e1_yamls_resolve_to_certified_ids():
+    """THE closing test (required on review, 2026-09-03): every declared e1
+    cell resolves — from its YAML alone — to dataset ids that exist in a
+    generation report and carry their certification stamp; base and grace
+    pairs share ids (paired arms), distinct cells never do. This is the loop
+    between 'the YAML defines the campaign' and 'the campaign runs on
+    certified data' closed as one fact."""
+    from pathlib import Path
+
+    from src.benchmarking.regime_sweep import load_sweep_spec
+    from tools.run_e1 import resolve_certified_ids_for_spec
+
+    by_cell = {}
+    for f in sorted(Path("reproducibility/rl_regimes/diagrams").glob("e1_*.yaml")):
+        spec = load_sweep_spec(f)
+        ids = resolve_certified_ids_for_spec(spec)
+        assert ids, f.name
+        for (env, sd, sg), (did, stamp) in ids.items():
+            assert stamp and all(v is not False for v in stamp.values()), (
+                f.name,
+                did,
+                stamp,
+            )
+        got = tuple(sorted(d for d, _ in ids.values()))
+        prior = by_cell.setdefault(spec.e1_cell, (f.name, got))
+        assert (
+            prior[1] == got
+        ), f"paired arms of {spec.e1_cell} resolve differently: {prior[0]} vs {f.name}"
+    all_sets = {cell: set(v[1]) for cell, v in by_cell.items()}
+    for a in all_sets:
+        for b in all_sets:
+            if a < b:
+                assert not (all_sets[a] & all_sets[b]), (a, b)
+    # the reviewer's named case, verbatim: d100s0 == the sigma-0 report's ids
+    import json
+
+    report_ids = {
+        r["dataset_id"]
+        for r in json.loads(
+            Path("results/dd_sweep_sigma0_generation/report.json").read_text()
+        )
+    }
+    assert set(all_sets["d100s0"]) == report_ids

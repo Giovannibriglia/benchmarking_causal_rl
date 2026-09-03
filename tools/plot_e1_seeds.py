@@ -63,6 +63,11 @@ def series(runs, cell, algo, arm, frame, col):
         and r["algo"] == algo
         and r["arm"] == arm
         and r.get(frame) is not None
+        # An ABSTAINED grace run is a byte-copy of its base (the transform never
+        # fired), so pooling it into the grace aggregate double-counts base and
+        # biases every grace-vs-base contrast toward zero. The serving layer's
+        # own rule: abstentions are reported separately, never pooled.
+        and not (r.get("grace") or {}).get("abstained", False)
     ]
     if not rs:
         return None, None, None, 0
@@ -95,7 +100,16 @@ def panel_fig(runs, frame, col, ylabel, title, fname, hline=None):
                 x, m, s, k = series(runs, cell, algo, arm, frame, col)
                 if x is None:
                     continue
-                ax.plot(x, m, color=ARM_C[arm], lw=2, label=f"{arm} (n={k})")
+                n_abst = sum(
+                    1
+                    for r in runs
+                    if r["cell"] == cell
+                    and r["algo"] == algo
+                    and r["arm"] == arm
+                    and (r.get("grace") or {}).get("abstained", False)
+                )
+                lbl = f"{arm} (n={k}" + (f", {n_abst} abstained)" if n_abst else ")")
+                ax.plot(x, m, color=ARM_C[arm], lw=2, label=lbl)
                 ax.fill_between(x, m - s, m + s, color=ARM_C[arm], alpha=0.20, lw=0)
             if hline is not None:
                 t = (

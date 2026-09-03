@@ -114,6 +114,69 @@ def _scalar_meta(meta) -> dict:
     return out
 
 
+GENERATION_REPORTS = (
+    "results/vb_recertification/report.json",
+    "results/dd_sweep_generation/report.json",
+    "results/dd_asym_generation/report.json",
+    # the sigma = 0 no-harm point, generated separately so the existing
+    # sigma = 0.25 report stays the untouched record of what certified it
+    "results/dd_sweep_sigma0_generation/report.json",
+)
+
+
+def spec_points(spec) -> list:
+    """The (beta, sigma) points a spec declares: the basic origin plus the
+    confounded arm — the same L the sweep machinery derives."""
+    pts = []
+    if spec.include_basic:
+        pts.append((0.0, 0.0))
+    pts.extend((0.0, float(s)) for s in spec.sigma_arm)
+    pts.extend((float(b), 0.0) for b in spec.beta_arm)
+    return pts
+
+
+def resolve_certified_ids_for_spec(spec) -> dict:
+    """Certified ids for every (env, seed, point) a spec declares — READ from
+    the generation reports, never reconstructed. ONE construction site shared
+    by the driver and the declaration test, so 'the YAML defines the campaign'
+    and 'the campaign runs on certified data' are the same fact.
+
+    Returns {(env, seed, sigma): (dataset_id, stamp)}; raises when a declared
+    point has no certified dataset."""
+    srcs = []
+    for f in GENERATION_REPORTS:
+        p = Path(f)
+        if p.exists():
+            srcs.extend(json.loads(p.read_text()))
+    out = {}
+    for env in spec.envs:
+        for sd in spec.seeds:
+            for _b, sg in spec_points(spec):
+                hits = [
+                    r
+                    for r in srcs
+                    if r["cell"] == spec.source_cell
+                    and r["env"] == env
+                    and r["seed"] == sd
+                    and (r.get("sigma") in (None, sg) or spec.source_cell == "d_a_null")
+                ]
+                if not hits:
+                    raise SystemExit(
+                        f"no certified dataset for {spec.source_cell} {env} "
+                        f"s{sd} sigma={sg}"
+                    )
+                r = hits[0]
+                out[(env, sd, sg)] = (
+                    r["dataset_id"],
+                    {
+                        k: r.get(k)
+                        for k in ("preflight_passed", "gate_passed", "ok")
+                        if k in r
+                    },
+                )
+    return out
+
+
 def _resolve_ids() -> dict:
     """Read certified ids from the generation reports. Never reconstruct."""
     srcs = []
@@ -321,6 +384,36 @@ def main() -> int:
                             ),
                         )
                         runner.run()
+                        # The leaf MARKER the deployed report keys on:
+                        # regime_report.iter_leaves globs for config.yaml, which
+                        # only main.py's CLI path writes. A programmatic
+                        # BenchmarkRunner writes none, so the promote loop's
+                        # `if src.exists()` silently skipped it and the deployed
+                        # `regime_report`/`render_regime_report` saw an EMPTY
+                        # tree (S15: a component that can no-op silently).
+                        import dataclasses
+
+                        import yaml
+
+                        (staging / "config.yaml").write_text(
+                            yaml.safe_dump(
+                                json.loads(
+                                    json.dumps(
+                                        {
+                                            "env": dataclasses.asdict(env_cfg),
+                                            "training": dataclasses.asdict(train_cfg),
+                                            "e1": {
+                                                "cell": tag,
+                                                "source_cell": cell,
+                                                "arm": arm,
+                                                "dataset_id": did,
+                                            },
+                                        }
+                                    )
+                                ),
+                                default_flow_style=False,
+                            )
+                        )
                         leaf.mkdir(parents=True, exist_ok=True)
                         for f in (
                             "eval_metrics.csv",

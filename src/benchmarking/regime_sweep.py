@@ -320,6 +320,30 @@ class SweepSpec:
     instrument_strength: Optional[float] = None
     u_drift: Optional[float] = None
     gate_probs: Optional[Sequence[float]] = None
+    # --- E1 / observability-contract declarations (2026-09-03) -------------
+    # Previously these keys sat in e1_*.yaml and were SILENTLY DROPPED by the
+    # loader — the arm and eval semantics lived in the driver's constants, the
+    # two-construction-sites pattern behind the c_r and fingerprint bugs.
+    # Parsed here, they make the YAML the definition rather than the comment.
+    grace_reward_transform: bool = False
+    grace_proxy_names: Tuple[str, ...] = ()
+    eval_confounded_reward: bool = False
+    eval_confounded_mode: Optional[str] = None
+    eval_rollout_len: Optional[int] = None
+    n_eval_envs: Optional[int] = None
+    # The generation-report cell the certified dataset ids resolve through
+    # (read, never reconstructed) and the results-tree tag.
+    source_cell: Optional[str] = None
+    e1_cell: Optional[str] = None
+    # The contract's one knob + the POMDP-branch numbers (dr2_cut comes from
+    # the L5 calibration report; the branch refuses to run without it).
+    declared_observability: str = "mdp"
+    grace_k_max: int = 2
+    grace_dr2_cut: Optional[float] = None
+    # True-POMDP construction: the behavior policy's information set at
+    # GENERATION time (O->A, Finding 1) — None = full view (historical).
+    behavior_mask_indices: Optional[Tuple[int, ...]] = None
+
     # Compensated gated-reward sweep (D-D revision 2026-08-21): M = c_r * d
     # held fixed, c_r DERIVED as M / d in arm_knobs -- the single construction
     # site. A YAML that sets this must NOT also set confounder_c_r (arm_knobs
@@ -377,12 +401,66 @@ class SweepSpec:
         return critics_for_arm(arm, self.data_regime)
 
 
+_KNOWN_SPEC_KEYS = {
+    "regime",
+    "observability",
+    "data_regime",
+    "generator_algo",
+    "envs",
+    "algos",
+    "seeds",
+    "pi_basic_epsilon",
+    "confounder_c_r",
+    "budgets",
+    "discrete_only",
+    "mask_indices",
+    "max_workers",
+    "rollout_device",
+    "rollout_n_envs",
+    "legacy_rollout",
+    "reuse_datasets",
+    "simulation",
+    "critics",
+    "sweep",
+    "parallel",
+    "diagram",
+    "proxy_strength",
+    "instrument_strength",
+    "u_drift",
+    "gate_probs",
+    "gate_mean_effect",
+    "grace_reward_transform",
+    "grace_proxy_names",
+    "eval_confounded_reward",
+    "eval_confounded_mode",
+    "eval_rollout_len",
+    "n_eval_envs",
+    "source_cell",
+    "e1_cell",
+    "declared_observability",
+    "grace_k_max",
+    "grace_dr2_cut",
+    "behavior_mask_indices",
+}
+
+
 def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
     """Load a cell's ``sweep.yaml``, merging the shared ``_base/*.yaml`` fragments
     (envs/algos/seeds/budgets) that sit two levels up. Explicit keys in sweep.yaml
     win over the _base defaults."""
     p = Path(sweep_yaml)
     cfg = yaml.safe_load(p.read_text()) or {}
+    # STRICT MODE for the experiment-defining YAMLs (e1_*): an unknown key
+    # RAISES instead of being silently dropped — silence is exactly how the
+    # grace/eval keys sat unparsed while the driver's constants defined the
+    # run (found 2026-09-02). Historical cell YAMLs keep the tolerant loader.
+    if p.name.startswith("e1_"):
+        unknown = set(cfg) - _KNOWN_SPEC_KEYS
+        if unknown:
+            raise ValueError(
+                f"{p}: unknown key(s) {sorted(unknown)} — strict mode for "
+                "e1_*.yaml refuses silently-dropped configuration"
+            )
     base_dir = p.parent.parent / "_base"
     base: Dict = {}
     if base_dir.is_dir():
@@ -440,6 +518,30 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
             None
             if pick("gate_mean_effect", None) is None
             else float(pick("gate_mean_effect", None))
+        ),
+        grace_reward_transform=bool(pick("grace_reward_transform", False)),
+        grace_proxy_names=tuple(pick("grace_proxy_names", ()) or ()),
+        eval_confounded_reward=bool(pick("eval_confounded_reward", False)),
+        eval_confounded_mode=pick("eval_confounded_mode", None),
+        eval_rollout_len=(
+            None
+            if pick("eval_rollout_len", None) is None
+            else int(pick("eval_rollout_len", None))
+        ),
+        n_eval_envs=(
+            None
+            if pick("n_eval_envs", None) is None
+            else int(pick("n_eval_envs", None))
+        ),
+        source_cell=pick("source_cell", None),
+        e1_cell=pick("e1_cell", None),
+        declared_observability=str(pick("declared_observability", "mdp")),
+        grace_k_max=int(pick("grace_k_max", 2)),
+        grace_dr2_cut=_opt_float(pick("grace_dr2_cut", None)),
+        behavior_mask_indices=(
+            None
+            if pick("behavior_mask_indices", None) is None
+            else tuple(int(i) for i in pick("behavior_mask_indices"))
         ),
     )
 
@@ -528,6 +630,15 @@ def _parse_sweep_block(
         if _as_float_list(confounded.get("beta", 0.0)) != [0.0]:
             raise ValueError(f"{source}: sweep.confounded must hold beta at 0 (the L).")
         sigma_arm = tuple(_as_float_list(confounded.get("sigma", list(SIGMA_ARM))))
+    # Arm values must be > 0: the origin is declared by ``basic`` — and basic
+    # ALREADY IS the sigma = 0 confounded mechanism (``arm_behavior``: the
+    # (0,0) point collects with bias_confounded_action at sigma = 0, U
+    # recorded, gate live), so a sigma = 0 entry in the confounded list would
+    # be a SECOND construction site for the same arm. A relaxation permitting
+    # it was added and REVERTED on review 2026-09-03 — the d100s0 no-harm
+    # control is expressed as ``basic: {beta: 0, sigma: 0}``, and its resolved
+    # dataset ids are asserted identical to the certified generation-report
+    # ids by test_e1_yamls_resolve_to_certified_ids.
     if any(b <= 0.0 for b in beta_arm) or any(s <= 0.0 for s in sigma_arm):
         raise ValueError(
             f"{source}: arm values must be > 0 (the origin is declared by basic)."
