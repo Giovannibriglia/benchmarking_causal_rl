@@ -1335,6 +1335,15 @@ def build_generator_agent(
     probe_env = build_rollout_env(env_id, 1, dev, seed, "agent", None)
     obs_dim, obs_shape, action_type, action_dim, action_space = _env_dims(probe_env)
     probe_env.close()
+    if behavior_mask_indices:
+        # The generator was TRAINED on the masked view (``_train_generator``
+        # above), so the agent that loads its checkpoint must be masked-dim
+        # too — the same reduction ``generate_offline_dataset`` applies. First
+        # execution of this path (2026-09-03) failed here with a state-dict
+        # size mismatch ([64, 2] vs [64, 4]): the build read the canonical
+        # dims while the checkpoint carried the masked ones.
+        obs_dim = obs_dim - len(tuple(behavior_mask_indices))
+        obs_shape = (obs_dim,)
     _, agent = registry.get(generator_algo).builder(
         obs_dim=obs_dim,
         action_dim=action_dim,

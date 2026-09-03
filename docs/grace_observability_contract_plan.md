@@ -107,6 +107,22 @@ already-wired sup-change C3 gate as the fail-loud — a research work-package
 then D-G's q2 row serves bounds or abstains, which is what the catalogue's own
 verdict licenses.
 
+**The shape of that work, derived rather than guessed (ruled 2026-09-03,
+handoff S19 item).** The MDP branch and this POMDP branch serve
+`g(s,a) = E_{U~P(U)}[E[R|s,a,U]]` over the exogenous marginal, warranted by
+the catalogue's Q2 Step 1: under `do(π)` the trajectory is independent of
+`U` (no `U → S'`, `π` does not read `U`), so `P(U | s) = P(U)` at deployment.
+That warrant survives an `(A, S)`-augmented state and fails for any state
+that carries `U`-information at deployment — lagged `R` (since `U → R` is
+intact) or, more severely, any `U → S_next` edge (the occupancy itself
+becomes `U`-dependent). What those cases need is a **belief-state critic**:
+posterior-weighted serving `Σ_u P(u | s_aug) E[R | s, a, u]` with a
+DEPLOYMENT-regime posterior built from the prior and the reward channel only
+(the behaviour channel is the confounding and must not enter), and L4's
+contrast interval and the pessimism rule re-derived on that object. That is
+D-F/D-G's method, not a repair to this branch; it starts from this
+derivation.
+
 ---
 
 ## 2 — L5, promoted to headline
@@ -247,6 +263,68 @@ staged: CartPole (harvesting the pilot, below) → Acrobot → LunarLander, each
 gated by its calibration leaf and L5 positive control. At 3 ds × 2 ts the
 full set fits in ≈ 45–55 h. This replaces the previously proposed n=15 seed
 expansion of the old grid, which is **not launched**.
+
+**Projection with the MEASURED augmentation ratio (2026-09-03, before
+scheduling — the discipline that caught the 17 h → 36 h error).** The cost
+probe (d100 σ=0 seed 0, 49k rows, GPU, under sweep contention) measured
+selection 912 s, unaugmented fit 7709 s, augmented fit 13184 s at k = 1:
+**ratio 1.71**. The absolutes are contaminated by contention (the plan's
+uncontended CartPole fit is ~1 h); the ratio is the usable number. Fits are
+counted under the cache, one per `(cell, dataset seed, declared
+observability)` — with one correction to the "12 fits" above: the
+POMDP-declared arm at **k = 0 collapses to the MDP branch** on the SAME
+buffer, cache dir and dataset id, so it is a content-address HIT on the
+MDP-declared fit, not a second fit. Under the cut, k = 0 was selected on
+27/27 true-MDP calibration rows, so that is the expected case.
+
+| per environment | fits (fit-units) | selections | RL runs |
+|---|---|---|---|
+| MDP-declared, 6 datasets | 6 × 1.00 | — | — |
+| POMDP-declared on true-MDP (k = 0 expected) | 0 (cache hit) | 3 | — |
+| POMDP-declared on true-POMDP (k = 1 expected) | 3 × 1.71 = 5.13 | 3 | — |
+| training | — | — | 108 × ~500 s |
+| **expected** | **11.1 fit-units** | **6** | **15 h** |
+| worst case at k = 1 everywhere | 16.3 fit-units | 6 | 15 h |
+
+- **CartPole** (1 h/fit uncontended; 0.25 h/selection contended): fits
+  11.1 h (worst 16.3 h), selection 1.5 h, training 15 h → **≈ 27.6 h
+  expected, ≈ 32.8 h worst**. If the fits run under contention as the probe
+  did (2.14 h/fit) add ~12.7 h.
+- **Acrobot** (transform ≈ 23 fits × 43 s ≈ 0.3–0.6 h; take 0.5 h): fits
+  5.6 h (worst 8.1 h), selection ≤ 3 h (longer episodes, more rows;
+  unmeasured), training 15 h → **≈ 24 h expected, ≈ 26 h worst**.
+- **LunarLander**: fit cost unknown until its calibration leaf (the MDN-R
+  path); formula `6·F + 3·1.71·F + 6·S + 108·T`, with training alone ≥ 15 h.
+- **Three environments: ≥ 67 h expected, ≥ 74 h worst at k = 1**, plus
+  LunarLander's fits — consistent with the 60–80 h envelope above only if
+  LunarLander's fit is ≤ ~1 h. **k = 2** (state 4 + 5k = 14 dims, not 9) is
+  possible on some datasets and its ratio is NOT measured; the probe re-run
+  (peer session) is asked for a forced-k = 2 timing to bound the worst case.
+
+**Revised the same evening for the materiality selector (dr2_cut stripped,
+ruled 2026-09-03).** Selection now fits k and k+1 and stops when the served
+contrast moves by no more than L4's half-width; a supplied k (declared MDP
+included) buys the *sufficient?* fit at k+1 and, for k >= 1, the
+*necessary?* fit at k-1 (`grace_k_diagnostics`, a budget switch). Per
+environment, diagnostics ON:
+
+| arm | fits (fit-units) |
+|---|---|
+| MDP-declared, 6 datasets: k = 0 + sufficient? at k = 1 | 6 × (1 + 1.71) = 16.3 |
+| POMDP-declared on true-MDP (delegated): k = 0, k = 1 — both cache HITS | 0 |
+| POMDP-declared on true-POMDP (delegated): k = 0, k = 1 hits; k = 2 needed to close at k = 1 | 3 × r₂ |
+| **expected** | **16.3 + 3 r₂** (r₂ = the k = 2 ratio, being measured) |
+
+With r₂ ≈ 2.4 (state 14 vs 9 dims, linear guess pending the measurement):
+CartPole ≈ 23.5 h fits + 15 h training ≈ **38 h**; Acrobot ≈ 12 h fits +
+15 h ≈ **27 h**; LunarLander training ≥ 15 h + unknown fits. Diagnostics OFF
+on the MDP-declared arms returns to the earlier table (11.1 fit-units + 3
+(r₂ − 1.71) for the delegated close). The selection pass (912 s × 6) is gone.
+Assumptions: (i) the materiality criterion stops at k = 0 on true-MDP data
+(first empirical point: identical k = 0 / k = 1 intervals on d100s0 s0);
+(ii) both declared arms share one cache directory (the address is content);
+(iii) the ratio measured under contention transfers (both fits were
+contended alike).
 
 **Pilot harvest** (all CartPole, all (declared MDP, true MDP)): `danull`
 (unconfounded control), `d100` (confounded), `d100s0` (σ=0 no-harm control,

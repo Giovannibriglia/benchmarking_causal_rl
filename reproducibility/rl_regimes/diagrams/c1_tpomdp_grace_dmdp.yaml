@@ -1,0 +1,57 @@
+# C1 — the CartPole OBSERVABILITY-CONTRACT grid (2026-09-03, pre-authorised).
+# Cell: truth = tpomdp (masked-behaviour d100 data, behaviour O->A; the learner sees the masked view [1, 3]),
+# arm = grace, declared observability = mdp.
+# Analysis is WITHIN-COLUMN only (same truth, declarations differ); the two
+# truths are never lined up on a shared performance axis (contract plan §5).
+# Layout: 3 dataset seeds x 3 training seeds (ds{d}_ts{t}); both algorithms.
+# Source cell read via the generation reports (ids READ, never reconstructed).
+regime: offline_mdp
+source_cell: d_d_sweep_d100_om13
+e1_cell: c1_tpomdp_grace_dmdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.00, 1.00]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+# The true-POMDP construction: the dataset stores the FULL observation; the
+# LEARNER (and GRACE, which sees what the learner sees) gets the masked view.
+behavior_mask_indices: [1, 3]
+mask_indices:
+  CartPole-v1: [1, 3]
+
+sweep:
+  basic:      false
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25] }
+
+envs: [CartPole-v1]
+max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
+eval_rollout_len: 500
+n_eval_envs: 16
+eval_confounded_reward: true
+eval_confounded_mode: analytic
+
+algos:
+  - cql
+  - iql
+seeds: [0, 1, 2]        # dataset seeds
+train_seeds: [0, 1, 2]  # training seeds per dataset seed
+
+grace_reward_transform: true
+grace_proxy_names: ["Z", "W", "V"]
+# The declaration surface (observability, optionally k) — the ONE knob.
+declared_observability: mdp
+grace_window_k: null      # declared MDP is k = 0
+grace_k_max: 2            # budget, delegated selection only
+grace_k_diagnostics: true # budget: the sufficient?/necessary? fits
+grace_cache_dir: results/grace_cache
+
+critics:
+  basic:      [observational]
+  confounded: [observational]

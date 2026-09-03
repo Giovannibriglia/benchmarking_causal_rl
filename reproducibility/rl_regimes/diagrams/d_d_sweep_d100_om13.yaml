@@ -1,0 +1,41 @@
+# D-D at d = 1.00 — the TRUE-POMDP construction (contract column 2).
+#
+# Identical to d_d_sweep_d100.yaml in every declared channel; the ONE
+# difference is the behavior policy's INFORMATION SET: it is trained on and
+# acts through the masked view (velocities [1, 3] hidden), so the logged
+# actions realise O -> A (D-F/D-G's declared edge), not S -> A. The dataset
+# stores the FULL observation (ground truth + preflight); the mask is applied
+# to the LEARNER by the contract cell's own `mask_indices`. Stamped on every
+# dataset as `behavior_information_set: masked:1,3` and in the id as `-om13`
+# (S6). Generated 2026-09-03 via tools/generate_diagram_arms.py — the first
+# execution of the masked-behaviour path (it had never run: the undeclared
+# `behavior_mask_indices` near-miss, handoff 2026-09-03).
+regime: offline_mdp
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+max_workers: 4
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.00, 1.00]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+behavior_mask_indices: [1, 3]
+
+seeds: [0, 1, 2]
+algos:
+  - offline_dqn
+  - cql
+  - iql
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25] }
+
+critics:
+  basic:      [observational, proximal, oracle_u]
+  confounded: [observational, proximal, oracle_u]

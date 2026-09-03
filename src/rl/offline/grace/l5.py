@@ -6,10 +6,10 @@ shadow is Markovianity of the observed process:
 
     (O_{t+1}, R_t)  independent of  history_{<t}  given  (O_t, A_t)
 
-and, one level up, the same statistic at lag k is what the POMDP branch's
-window selector consumes: declared-MDP is declared-POMDP with k pinned to 0,
-so the falsifier and the selector are ONE construction site by design (the
-same move the catalogue prescribes for the rank constraint and ``u_card``).
+reported at the SERVED lag k (declared-MDP is k = 0) as a C3 record on the
+served value. It is a diagnostic, not a decision: the POMDP branch's window
+is chosen by MATERIALITY-BY-REFIT against L4's own interval
+(``pomdp_branch``), not by this statistic — ruled 2026-09-03, below.
 
 **Statistic.** Episode-blocked K-fold cross-validated one-step predictive
 improvement from adding the lag-(k+1) history block to the lag-k model, per
@@ -61,6 +61,25 @@ channel only — partial observability that manifests solely in the reward is
 not detected by this test (it surfaces in ``reward_channel`` as a diagnostic,
 entangled with declared confounding, and is not adjudicated).
 
+**The selector's features EQUAL the served state's features (ruled
+2026-09-03, standing rule S19).** The family's history blocks carry lagged
+(O, A) ONLY — column for column what ``pomdp_branch._augmented_cols`` hands
+the estimator — so the k the selector certifies is certified on exactly the
+feature set the estimator receives. Lagged R is NOT in those blocks: at
+deployment U -> R is intact, so an R-carrying state is U-informative and
+the served estimand's warrant (the exogenous-marginal reason, catalogue
+Q2 Step 1: under do(pi) the trajectory is independent of U because no
+U -> S' edge exists and pi does not read U) fails on it — R-in-state is a
+belief-state critic, a different served object (recorded as the D-F/D-G
+shape in the handoff). The reward-channel DIAGNOSTIC keeps an R-inclusive
+history block (a hidden state visible only through past rewards is
+otherwise invisible; found by the reward-relevant-hidden-state unit test):
+**the selector certifies observation-channel sufficiency for the exact
+features served; reward-channel dependence is reported, not selected on.**
+The blind spot this fixes in place: a reward-only-visible hidden state is
+a reward-channel phenomenon by construction and lands in
+``reward_channel`` / ``serving_material``, not in k.
+
 **Why not simpler statistics/nulls — five measured failures, the design record.**
 (a) Linear basis + parametric (iid-Gaussian target redraw) null: EVERY true-MDP
 CartPole chunk rejected (frac<=alpha = 1.00, KS = 0.99;
@@ -94,8 +113,8 @@ genuine signal (Delta-R^2 ~ 1e-2, ~1e6 x the H0 floor) stands clear. The
 statistic was the problem, not the null.
 
 **THE DECLARATION IS AN INPUT, NEVER A HYPOTHESIS GRACE MAY OVERRULE
-(ruled 2026-09-03).** When ``declaration_falsified`` fires, GRACE KEEPS
-SERVING under the declared branch and reports the contradiction — it never
+(ruled 2026-09-03).** When the falsifier's record contradicts the
+declaration, GRACE KEEPS SERVING under the declared branch and reports the contradiction — it never
 silently switches branches and never refuses to run. Three binding reasons:
 (a) the declaration must remain the interface — auto-switching makes the run
 irreproducible from the config; (b) the user may have reasons (deployment,
@@ -107,37 +126,43 @@ be OBSERVABLE alongside the warning. Two mechanisms, kept strictly separate:
     L4 abstention        the FIT is unhealthy          do not serve; base fallback, labelled
     L5 falsification     the DECLARATION is contradicted   SERVE AS DECLARED; warn; C3 condition
 
-``declaration_falsified`` travels as a reported condition on the served value
+``MarkovVerdict.record`` travels as a reported condition on the served value
 (C3), never as an abstention trigger; ``serving_material`` GRADES the warning
-("falsified and the correction moves" is louder than "falsified, correction
-unaffected"), never gates serving.
+("contradicted and the correction moves" is louder than "contradicted,
+correction unaffected"), never gates serving.
 
-**TWO VERDICTS, ruled 2026-09-02 — one tolerance was serving two decisions.**
+**FALSIFICATION IS REPORT-ONLY — NO THRESHOLD (ruled 2026-09-03, superseding
+the 2026-09-02 two-verdict design).** Since the verdict changes no behaviour,
+it needs no binary, and the Delta-R^2 cut it once carried (a "stated
+convention in the calibration-measured gap") was a PER-ENVIRONMENT CONSTANT
+— exactly what A2 forbids. What travels instead is the record: the effect
+size Delta-R^2 and its p (the statistical tier's read at the stated alpha —
+on deterministic systems a point null of exact Markovianity rejects at floor
+effect sizes, S18, reported once as a FINDING), the CAPACITY-SHRINK ratio
+(the mechanistic, dimensionless separator: approximation error shrinks with
+base capacity, measured ~56x on a true MDP; information does not, ~1x), base
+R^2 per dimension with ``scale_invalid`` where negative, and the
+reward-channel diagnostic. The user reads the magnitude and its evidence.
 
-* ``declaration_falsified`` — "is the user's declared observability wrong?"
-  The contract's row 3: a wrong declaration must never pass SILENTLY. Scale:
-  the EMPIRICAL separation of the two Delta-R^2 distributions measured by the
-  calibration sweep (true-MDP vs constructed-POMDP arms; spot checks put them
-  five orders apart, 1.6e-7 vs 1.0e-2). Any cut in that gap is a stated
-  convention that is immaterial to every conclusion; it is never derived and
-  never tuned — the SEPARATION is the result, and if the distributions
-  overlap, no tolerance would have saved us and we need to know.
-* ``serving_material`` (see the function of that name) — "does the violation
-  change what GRACE serves?" Scale: L4's own interval via the DERIVED
-  ``tau_R = (w / (2 sd(R)))^2`` (docs/l5_equivalence_tolerance.md). On masked
-  CartPole both verdicts can disagree and BOTH be right: declaration
-  falsified (velocity is hidden), serving unaffected (the reward channel
-  never depended on it) — the observation channel and the reward channel
-  fail independently, and GRACE can say which. The degradation under
-  (declared MDP, true POMDP) is then ATTRIBUTABLE: it belongs to the
-  memoryless learner, not to a mis-corrected reward.
+**SELECTION IS MATERIALITY-BY-REFIT, not this statistic.** The predictive
+test asks "is the process exactly Markov?", whose answer is always no (S18).
+The estimator's question is whether another lag changes WHAT GRACE SERVES by
+more than the uncertainty GRACE already reports:
+``k* = min { k : |contrast(k+1) - contrast(k)| <= w_k }``, contrast = the
+served action contrast on the lag-k augmented state, w_k = L4's half-width
+there — every term measured per fit, no constant, no environment dependence
+(the same family as the walk's derived stop, the bootstrap MC-error
+criterion and ``tau_R``). Lives in ``pomdp_branch``. ``serving_material``
+(below) stays as the DERIVED grading of the reward-channel diagnostic.
 
-**Warrant, stated plainly (approval condition 1).** A non-rejection here is a
-WEAKER warrant than a declared diagram: it licenses the POMDP branch's
-reduction only as far as the test has power. The calibration harness
-(`tools/calibrate_l5.py`) therefore reports POWER across effect size, horizon
-and sample size alongside the false-positive rate, and the calibration report
-gates any use of this statistic for selection.
+**What calibration is still for — and it is not per-environment.** (i) The
+POWER of the materiality criterion: how large a violation must be before it
+is caught — a property of the method, measured on SYNTHETIC fixtures where
+the truth is dialable, never on real environments. (ii) The S18 result,
+reported once from the rows already collected (`results/l5_calibration`).
+Nothing measured on one environment transfers to another, because nothing is
+measured to be transferred: the parameter taxonomy is declarations /
+budgets / derived / calibration constants = NONE (handoff, 2026-09-03).
 
 Procedural constants (disclosed, budget-class, not tuned thresholds): K=5
 episode folds, 99 placebo draws, 64 RFF features per block. Alpha is STATED
@@ -151,7 +176,7 @@ datasets, not RL runs).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence
 
 import numpy as np
 
@@ -241,21 +266,59 @@ class MarkovVerdict:
     def rejected(self, alpha: float) -> bool:
         return self.p_value <= alpha
 
-    def declaration_falsified(
-        self, alpha: float, dr2_cut: Optional[float] = None
-    ) -> bool:
-        """Verdict 1 — "is the declared observability wrong?" (contract row 3).
+    def record(self, alpha: float) -> dict:
+        """The verdict as a C3 RECORD on the served value — report-only, no
+        threshold, nothing branches on it (ruled 2026-09-03: a verdict that
+        changes no behaviour needs no binary, and the Delta-R^2 cut it once
+        carried was a per-environment constant, which A2 forbids). Flat
+        scalars/strings so the artifact writers keep every field:
 
-        Statistical rejection, optionally intersected with a Delta-R^2 cut.
-        The cut is a STATED CONVENTION placed inside the calibration-measured
-        gap between the true-MDP and constructed-POMDP distributions — pass it
-        from the calibration report; it is never derived and never tuned, and
-        if the measured distributions overlap, no cut is valid and the caller
-        must not supply one (see the module docstring's two-verdict ruling).
+        * the effect size and its p (``l5_dr2``, ``l5_p``, ``l5_rejected`` —
+          the statistical tier's read at the stated ``alpha``, reported as a
+          fact about a point null, see S18);
+        * the capacity-shrink ratio (``l5_shrink``): the mechanistic,
+          dimensionless separator — approximation error shrinks with base
+          capacity (measured ~56x on a true MDP), information does not (~1x);
+        * base R^2 per dimension and ``l5_scale_invalid`` where negative;
+        * the reward-channel diagnostic.
+
+        The reader takes the magnitude with its evidence; no constant is
+        required because no decision is made here.
         """
-        if not self.rejected(alpha):
-            return False
-        return dr2_cut is None or self.statistic > dr2_cut
+        cap = self.capacity or {}
+        rc = self.reward_channel
+        out = dict(
+            l5_lag=int(self.lag),
+            l5_alpha=float(alpha),
+            l5_p=float(self.p_value),
+            l5_dr2=float(self.statistic),
+            l5_rejected=bool(self.rejected(alpha)),
+            l5_n_episodes=int(self.n_episodes),
+            l5_n_rows=int(self.n_rows),
+            l5_b_draws=int(self.b_draws),
+            l5_shrink=(
+                float(cap["shrink"]) if cap.get("shrink") is not None else float("nan")
+            ),
+            l5_stat_hi=float(cap.get("stat_hi", float("nan"))),
+            l5_untestable=",".join(self.untestable),
+            l5_scale_invalid=",".join(self.scale_invalid),
+            l5_base_r2=(
+                " ".join(f"{n}={r:.4f}" for n, r in zip(self.dim_names, self.base_r2))
+                if self.base_r2 is not None
+                else ""
+            ),
+            l5_reward_improvement=(
+                float(rc["improvement"]) if rc is not None else float("nan")
+            ),
+            l5_reward_placebo_quantile=(
+                float(rc["placebo_quantile"]) if rc is not None else float("nan")
+            ),
+            l5_reward_draw_q95=(
+                float(rc["draw_q95"]) if rc is not None else float("nan")
+            ),
+            l5_label=self.label(alpha),
+        )
+        return out
 
     def label(self, alpha: float) -> str:
         state = "FALSIFIED" if self.rejected(alpha) else "not-rejected"
@@ -316,8 +379,18 @@ class _Design:
 
 
 def _build_design(
-    episodes: Sequence[Episode], lag: int, *, seed: int = 0, n_rff: int = _N_RFF
+    episodes: Sequence[Episode],
+    lag: int,
+    *,
+    seed: int = 0,
+    n_rff: int = _N_RFF,
+    history_reward: bool = False,
 ) -> Optional[_Design]:
+    """``history_reward=False`` (the FAMILY): history blocks carry lagged
+    (O, A) only — the served augmentation's columns (S19). ``True`` (the
+    reward-channel diagnostic): history blocks also carry lagged R. The j=0
+    conditioning block is (O_t, A_t) either way, so at lag 0 both designs
+    share ``x0`` exactly (the caller reuses the base fit)."""
     n_actions = int(max(int(e.act.max()) for e in episodes if e.act.size)) + 1
     raw0, raw1, ys, eps = [], [], [], []
     for ei, e in enumerate(episodes):
@@ -329,14 +402,16 @@ def _build_design(
         a_oh = _one_hot(e.act, n_actions)
 
         def lag_block(j):
-            # j = 0 conditions on (O_t, A_t); j >= 1 history blocks ALSO carry
-            # the lagged REWARD — a hidden state visible only through past
-            # rewards is otherwise invisible to the test (found by the
-            # reward-relevant-hidden-state unit test reading dr2_fast = 0).
-            # The shift placebo nets the episode-constant U that lagged
-            # rewards carry, by the same argument as lagged actions.
+            # j = 0 conditions on (O_t, A_t); j >= 1 history blocks carry
+            # lagged (O, A) — the served augmentation's columns (S19) — and,
+            # for the reward-channel diagnostic ONLY, the lagged REWARD (a
+            # hidden state visible only through past rewards is otherwise
+            # invisible; found by the reward-relevant-hidden-state unit test
+            # reading dr2_fast = 0). The shift placebo nets the
+            # episode-constant U that lagged rewards carry, by the same
+            # argument as lagged actions.
             cols = [e.obs[ts - j], a_oh[ts - j]]
-            if j >= 1:
+            if history_reward and j >= 1:
                 cols.append(e.rew[ts - j, None])
             return np.concatenate(cols, axis=1)
 
@@ -365,7 +440,20 @@ def _build_design(
     dim_h = block1.shape[1]
     w_c = rng.standard_normal((dim_c, n_rff)) * _RFF_SCALE
     b_c = rng.uniform(0, 2 * np.pi, n_rff)
-    w_h = rng.standard_normal((dim_h, n_rff)) * _RFF_SCALE
+    # ONE BASIS, SHARED BY CONSTRUCTION. The history weights are always drawn
+    # at the R-inclusive width and truncated to the block's width, so the
+    # family block (O, A) and the reward-channel block (O, A, R) use the same
+    # first dim_c weight rows. That is what makes the two expansions one
+    # coherent basis rather than two unrelated draws — and the reason they
+    # COINCIDE wherever R is constant (its standardised column is identically
+    # zero, so the extra row is multiplied by nothing). The check on that
+    # reason: constant-reward data reproduces the pre-S19 (O, A, R) family
+    # statistic to 1e-15 at lags 0 and 1, so calibration rows scored before
+    # S19 on constant-reward datasets are samples of the SAME procedure. An
+    # independent draw here would break both — measured before this was
+    # fixed: 26% statistic difference at identical p, draw noise not
+    # information. Do not replace with an independent draw.
+    w_h = (rng.standard_normal((dim_c + 1, n_rff)) * _RFF_SCALE)[:dim_h]
     b_h = rng.uniform(0, 2 * np.pi, n_rff)
 
     def standardise(blk: np.ndarray) -> np.ndarray:
@@ -376,17 +464,25 @@ def _build_design(
     z0 = [standardise(b_) for b_ in blocks0]
     z1 = standardise(block1)
 
-    def expand(z: np.ndarray) -> np.ndarray:
-        w, b_ph = (w_c, b_c) if z.shape[1] == dim_c else (w_h, b_h)
+    def expand(z: np.ndarray, hist: bool) -> np.ndarray:
+        # One (W, b) pair per block ROLE: the j=0 conditioning block uses
+        # (w_c, b_c); every history block (in x0 for j >= 1, the tested block,
+        # every placebo block) shares (w_h, b_h) — identical featurisation is
+        # what makes the placebo a placebo. Role, not width: with (O, A)-only
+        # history the two widths coincide.
+        w, b_ph = (w_h, b_h) if hist else (w_c, b_c)
         return np.concatenate([z, np.cos(z @ w + b_ph)], axis=1)
 
     n_rows = block1.shape[0]
-    x0 = np.concatenate([np.ones((n_rows, 1))] + [expand(z) for z in z0], axis=1)
+    x0 = np.concatenate(
+        [np.ones((n_rows, 1))] + [expand(z, j > 0) for j, z in enumerate(z0)],
+        axis=1,
+    )
 
     d_obs = episodes[0].obs.shape[1]
     return _Design(
         x0=x0,
-        hist=expand(z1),
+        hist=expand(z1, True),
         y=np.concatenate(ys),
         episode_of=np.concatenate(eps),
         dim_names=[f"O[{j}]" for j in range(d_obs)] + ["R"],
@@ -480,11 +576,19 @@ def markov_test(
     k_folds: int = _K_FOLDS,
     seed: int = 0,
     n_rff: int = _N_RFF,
+    reward_channel: bool = True,
 ) -> MarkovVerdict:
     """Test H0: lag-``lag`` features are sufficient (one more lag of history
     does not improve held-out one-step prediction beyond what a matched-
     capacity uninformative block buys). ``lag=0`` is the declared-MDP
     falsifier; ``lag=k`` is the window selector's stage-k test.
+
+    The FAMILY is scored on (O, A)-only history — the served features (S19).
+    ``reward_channel=True`` additionally scores the reward target against an
+    R-INCLUSIVE history block (the confounding / reward-visible-hidden-state
+    diagnostic); at lag 0 that costs one extra block per placebo draw (the
+    base fit is shared), at lag >= 1 a second base fit. The selector requests
+    it at stage 0 only, where ``serving_material`` reads it.
     """
     rng = np.random.default_rng(seed)
     design = _build_design(episodes, lag, seed=seed, n_rff=n_rff)
@@ -493,6 +597,11 @@ def markov_test(
             f"no episode long enough for lag {lag} (need length >= {lag + 2})"
         )
     folds = _fold_of_episode(design.episode_of, k_folds, rng)
+    design_r = (
+        _build_design(episodes, lag, seed=seed, n_rff=n_rff, history_reward=True)
+        if reward_channel
+        else None
+    )
 
     # Testable = target varies in the data. A zero-variance target returns the
     # most confident possible pass on no evidence — reported untestable (S8/S9).
@@ -510,6 +619,18 @@ def markov_test(
     sst = ((design.y - design.y.mean(axis=0)) ** 2).sum(axis=0)
     sse_hist = _cv_extra(caches, design.hist, design.y)
     per_dim, stat = _family_stat(sse0, sse_hist, sst, family)
+
+    # The reward-channel diagnostic's own base + tested block. At lag 0 the
+    # conditioning block is (O_t, A_t) in both designs, so the base fit is
+    # shared exactly; at lag >= 1 the R-inclusive history enters the base too.
+    if design_r is not None:
+        y_r = design_r.y  # same targets, same rows; only the history differs
+        if lag == 0:
+            assert design_r.x0.shape == design.x0.shape
+            sse0_r, caches_r = sse0, caches
+        else:
+            sse0_r, caches_r = _cv_base(design_r.x0, y_r, folds, k_folds)
+        sse_hist_r = _cv_extra(caches_r, design_r.hist, y_r)
 
     # Placebo draws: the SAME history block, rows circularly shifted by a
     # random nonzero per-episode offset — alignment destroyed, everything else
@@ -529,19 +650,22 @@ def markov_test(
                 idx[st:en] = st + (np.arange(length) + s_e) % length
         sse_shift = _cv_extra(caches, design.hist[idx], design.y)
         _, draws[i] = _family_stat(sse0, sse_shift, sst, family)
-        # The reward diagnostic reads against the same shift draws: a shifted
-        # lagged action carries the same episode-constant U, so this quantile
-        # isolates ALIGNED reward predictability (the confounding signal).
-        with np.errstate(divide="ignore", invalid="ignore"):
-            r_draws[i] = (sse0[r_idx] - sse_shift[r_idx]) / sst[r_idx]
+        # The reward diagnostic reads against the same shifts, on its own
+        # R-inclusive block: a shifted lagged action (and reward) carries the
+        # same episode-constant U, so this quantile isolates ALIGNED reward
+        # predictability (the confounding signal).
+        if design_r is not None:
+            sse_shift_r = _cv_extra(caches_r, design_r.hist[idx], y_r)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                r_draws[i] = (sse0_r[r_idx] - sse_shift_r[r_idx]) / sst[r_idx]
 
     # Quantile reading with the +1 correction; never a z-score.
     p = float((1 + np.sum(draws >= stat)) / (b + 1))
 
     reward_channel = None
-    if testable[r_idx]:
+    if design_r is not None and testable[r_idx]:
         with np.errstate(divide="ignore", invalid="ignore"):
-            r_imp = float((sse0[r_idx] - sse_hist[r_idx]) / sst[r_idx])
+            r_imp = float((sse0_r[r_idx] - sse_hist_r[r_idx]) / sst[r_idx])
         reward_channel = dict(
             improvement=r_imp,
             placebo_quantile=float((1 + np.sum(r_draws >= r_imp)) / (b + 1)),
@@ -592,47 +716,6 @@ def markov_test(
         capacity=capacity,
         scale_invalid=scale_invalid,
     )
-
-
-def select_window(
-    episodes: Sequence[Episode],
-    *,
-    alpha: float,
-    k_max: int,
-    dr2_cut: Optional[float] = None,
-    b: int = _B_DRAWS,
-    k_folds: int = _K_FOLDS,
-    seed: int = 0,
-) -> Tuple[Optional[int], List[MarkovVerdict]]:
-    """The POMDP branch's window selector: the smallest k that is NOT
-    falsified AT THE MATERIAL SCALE — ``declaration_falsified(alpha,
-    dr2_cut)`` at EVERY stage, never bare statistical rejection.
-
-    **Why the cut applies at every stage (ruled 2026-09-03, contract row 2's
-    mechanism):** on a true MDP the statistical tier rejects floor-level
-    effects at every lag (S18), so a cut-less selector chases them to k_max —
-    measured in calibration: null-row ``k_selected`` read 1/2/None where row 2
-    requires k = 0. "Over-assumption is cheap" is delivered by exactly this
-    line. The calibration report supplies ``dr2_cut`` (a stated convention in
-    the measured gap); ``dr2_cut=None`` is the statistical-only selector, kept
-    for calibration's as-deployed measurement.
-
-    ``k is None`` means no k <= k_max passes: the finite-memory MACHINERY
-    cannot honour the declaration within its budget. That is a fit-mechanism
-    condition in the L4-abstention family (do not serve the transform; base
-    fallback, labelled BUDGET-BOUND) — it is NOT a declaration override, and
-    it is distinct from L5 falsification, which never stops serving (module
-    docstring, the 2026-09-03 ruling). ``k_max`` is a COMPUTE BUDGET: whether
-    it binds is exactly ``k is None``, and every consumer must label the fit
-    when it does.
-    """
-    verdicts: List[MarkovVerdict] = []
-    for k in range(0, k_max + 1):
-        v = markov_test(episodes, lag=k, b=b, k_folds=k_folds, seed=seed + k)
-        verdicts.append(v)
-        if not v.declaration_falsified(alpha, dr2_cut):
-            return k, verdicts
-    return None, verdicts
 
 
 def serving_material(verdict: MarkovVerdict, *, w: float) -> dict:

@@ -1,0 +1,52 @@
+# C1 — the CartPole OBSERVABILITY-CONTRACT grid (2026-09-03, pre-authorised).
+# Cell: truth = tpomdp (masked-behaviour d100 data, behaviour O->A; the learner sees the masked view [1, 3]),
+# arm = base.
+# Analysis is WITHIN-COLUMN only (same truth, declarations differ); the two
+# truths are never lined up on a shared performance axis (contract plan §5).
+# Layout: 3 dataset seeds x 3 training seeds (ds{d}_ts{t}); both algorithms.
+# Source cell read via the generation reports (ids READ, never reconstructed).
+regime: offline_mdp
+source_cell: d_d_sweep_d100_om13
+e1_cell: c1_tpomdp_base
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.00, 1.00]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+# The true-POMDP construction: the dataset stores the FULL observation; the
+# LEARNER (and GRACE, which sees what the learner sees) gets the masked view.
+behavior_mask_indices: [1, 3]
+mask_indices:
+  CartPole-v1: [1, 3]
+
+sweep:
+  basic:      false
+  biased:     false
+  confounded: { beta: 0.0, sigma: [0.25] }
+
+envs: [CartPole-v1]
+max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
+eval_rollout_len: 500
+n_eval_envs: 16
+eval_confounded_reward: true
+eval_confounded_mode: analytic
+
+algos:
+  - cql
+  - iql
+seeds: [0, 1, 2]        # dataset seeds
+train_seeds: [0, 1, 2]  # training seeds per dataset seed
+
+# PHASE 6 — the critic axis rides on the base arm. On the masked construction
+# (POMDP + U, the D-G shape) L2's q1 verdict for proximal is BOUNDS-ONLY and
+# q2 non-ID, so proximal is EXCLUDED here (reported as excluded, with this
+# reason); observational (floor), oracle_u (ceiling) and sensitivity remain.
+critics:
+  basic:      [observational, oracle_u, sensitivity]
+  confounded: [observational, oracle_u, sensitivity]

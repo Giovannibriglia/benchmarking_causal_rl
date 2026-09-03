@@ -64,3 +64,41 @@ def test_dataset_name_carries_the_mask_identity():
     assert base != masked and masked.endswith("-om13-v0")
     # inert when off (S6: the historical ids are untouched)
     assert base == dataset_name("CartPole-v1", "medium", "bias_confounded_action", 0.25)
+
+
+def test_build_generator_agent_is_masked_dim_when_behaviour_is_masked(monkeypatch):
+    """The generator trained on the masked view must be REBUILT masked-dim,
+    or its checkpoint cannot load (first execution, 2026-09-03: state-dict
+    size mismatch [64, 2] vs [64, 4]). Pinned without training: the tier
+    'random' path skips training and returns the built agent."""
+    import src.benchmarking.registry as reg_mod
+    from src.benchmarking.registry import register_default_algorithms
+    from src.envs.offline import generate as g
+
+    register_default_algorithms()
+    seen = {}
+    real_get = reg_mod.registry.get
+
+    class _Entry:
+        def __init__(self, entry):
+            self._entry = entry
+
+        def __getattr__(self, name):
+            return getattr(self._entry, name)
+
+        def builder(self, **kw):
+            seen.update(kw)
+            return self._entry.builder(**kw)
+
+    monkeypatch.setattr(reg_mod.registry, "get", lambda algo: _Entry(real_get(algo)))
+    g.build_generator_agent("CartPole-v1", "dqn", "random", seed=0, device="cpu")
+    full = seen["obs_dim"]
+    g.build_generator_agent(
+        "CartPole-v1",
+        "dqn",
+        "random",
+        seed=0,
+        device="cpu",
+        behavior_mask_indices=(1, 3),
+    )
+    assert seen["obs_dim"] == full - 2 and seen["obs_shape"] == (full - 2,)

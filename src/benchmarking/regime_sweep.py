@@ -335,11 +335,20 @@ class SweepSpec:
     # (read, never reconstructed) and the results-tree tag.
     source_cell: Optional[str] = None
     e1_cell: Optional[str] = None
-    # The contract's one knob + the POMDP-branch numbers (dr2_cut comes from
-    # the L5 calibration report; the branch refuses to run without it).
+    # The declaration surface: (observability, optionally k). Declared MDP
+    # IS k = 0; POMDP with k uses it; POMDP without k selects by materiality.
+    # k_max / k_diagnostics are BUDGETS. No calibration constant (A2).
     declared_observability: str = "mdp"
+    grace_window_k: Optional[int] = None
     grace_k_max: int = 2
-    grace_dr2_cut: Optional[float] = None
+    grace_k_diagnostics: bool = True
+    # The transform cache root (content-addressed; one fit serves every
+    # algorithm and training seed on the same data). None = off.
+    grace_cache_dir: Optional[str] = None
+    # TRAINING seeds, separate from the DATASET seeds (`seeds`): the contract
+    # grid's ds{d}_ts{t} layout. None = one training seed per dataset seed
+    # (the pilot's layout, ts = ds).
+    train_seeds: Optional[List[int]] = None
     # True-POMDP construction: the behavior policy's information set at
     # GENERATION time (O->A, Finding 1) — None = full view (historical).
     behavior_mask_indices: Optional[Tuple[int, ...]] = None
@@ -438,8 +447,11 @@ _KNOWN_SPEC_KEYS = {
     "source_cell",
     "e1_cell",
     "declared_observability",
+    "grace_window_k",
     "grace_k_max",
-    "grace_dr2_cut",
+    "grace_k_diagnostics",
+    "grace_cache_dir",
+    "train_seeds",
     "behavior_mask_indices",
 }
 
@@ -536,8 +548,19 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         source_cell=pick("source_cell", None),
         e1_cell=pick("e1_cell", None),
         declared_observability=str(pick("declared_observability", "mdp")),
+        grace_window_k=(
+            None
+            if pick("grace_window_k", None) is None
+            else int(pick("grace_window_k"))
+        ),
         grace_k_max=int(pick("grace_k_max", 2)),
-        grace_dr2_cut=_opt_float(pick("grace_dr2_cut", None)),
+        grace_k_diagnostics=bool(pick("grace_k_diagnostics", True)),
+        grace_cache_dir=pick("grace_cache_dir", None),
+        train_seeds=(
+            None
+            if pick("train_seeds", None) is None
+            else [int(t) for t in pick("train_seeds")]
+        ),
         behavior_mask_indices=(
             None
             if pick("behavior_mask_indices", None) is None

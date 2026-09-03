@@ -119,19 +119,21 @@ headline "detection rate" should count statistical-tier detections rather
 than materiality-tier falsifications, that is a reporting choice for the
 grid design, and both rates will be in the calibration report.
 
-## Interaction with the window selector
+## Interaction with the window selector — SUPERSEDED 2026-09-03 (evening)
 
-The selector consumes the same equivalence semantics **at every stage**:
-stage k passes when `declaration_falsified(α, dr2_cut)` is False. Measured
-without the cut (calibration, as-deployed): null-row `k_selected` read
-1/2/None — the statistical tier rejects floor effects at every lag, so the
-cut-less selector chases them to `k_max` on exactly-Markov data, and contract
-row 2 ("over-assumption is cheap") fails for a reason unrelated to
-over-assumption. With any cut in the measured gap the selector returns k = 0
-on true MDPs, and the selected-k distribution on true-MDP arms is row 2's
-headline metric. Selector exhaustion (`k = None`) is a BUDGET-BOUND
-fit-mechanism condition in the L4-abstention family — not a declaration
-override.
+The selector no longer consumes this statistic at all. The Delta-R^2 cut
+(`dr2_cut`) was a per-environment constant, which A2 forbids, and it was
+stripped: falsification is REPORT-ONLY (`MarkovVerdict.record`, no
+threshold), and the window is chosen by MATERIALITY-BY-REFIT against L4's
+own interval — `k* = min { k : |contrast(k+1) - contrast(k)| <= w_k }` —
+in `pomdp_branch.transform_offline_rewards_declared`. What survives from
+this section: the measurement that the cut-less STATISTICAL selector chased
+floor rejections to `k_max` on exactly-Markov data (null-row `k_selected`
+1/2/None), which is why selection by a predictive test was abandoned rather
+than thresholded; and the BUDGET-BOUND reading of selector exhaustion (an
+L4-family fit-mechanism condition, not a declaration override), which the
+materiality selector keeps. `tau_R` above stays as the DERIVED grading of
+the reward-channel diagnostic (`serving_material`).
 
 ## What is deliberately NOT here
 

@@ -1,9 +1,15 @@
-"""The POMDP branch's wiring — selection, collapse, augmentation, exhaustion.
+"""The declared-observability path — one code path for (observability, k).
 
 The heavy fit is stubbed (it has its own tests); what these pin is the
-BRANCH: dr2_cut required, k=0 collapsing to the MDP branch, k>=1 fitting the
-augmented view and substituting into the REAL buffer with full coverage, and
-exhaustion abstaining as BUDGET-BOUND with the evidence attached.
+BRANCH: declared MDP is k=0 through the same path; a supplied k is used as
+given (not subject to k_max) with the two report-only diagnostics; a
+delegated selection picks the smallest k whose next lag does NOT move the
+served contrast beyond L4's half-width (materiality-by-refit, no constant);
+exhaustion abstains BUDGET-BOUND; an abstaining fit inside the selection
+abstains with its reason; the REAL buffer is written exactly once, by the
+served fit, with full coverage; the k=0 fit is requested on the REAL buffer
+unwritten (the cache collapse); the augmented view carries exact next_obs
+and dones.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ def _dict_buffer(n_ep=8, t_len=12, d=2, hidden_velocity=False, seed=0):
                 o[t + 1] = 0.8 * o[t] + 0.3 * a[t] + 0.1 * rng.standard_normal(d)
         obs.append(o[:-1])
         act.append(a)
-        rew.append(rng.rand(t_len) if hasattr(rng, "rand") else rng.random(t_len))
+        rew.append(rng.random(t_len))
         eps.append(np.full(t_len, e))
     return dict(
         obs=torch.tensor(np.concatenate(obs), dtype=torch.float32),
@@ -44,86 +50,193 @@ def _dict_buffer(n_ep=8, t_len=12, d=2, hidden_velocity=False, seed=0):
     )
 
 
-def _stub_select(k, n_verdicts=1):
-    class _V:
-        p_value, statistic = 0.5, 1e-9
-
-        def label(self, a):
-            return "stub"
-
-    def fake(episodes, **kw):
-        return k, [_V() for _ in range(max(n_verdicts, 1))]
-
-    return fake
+D = 2  # obs dim of the fixture
 
 
-def _stub_transform(monkeypatch, record):
-    def fake(buffer, **options):
-        record["buffer"] = buffer
-        record["options"] = options
-        n = int(buffer["rewards"].shape[0]) if isinstance(buffer, dict) else 96
+def _k_of(buffer) -> int:
+    """Recover the window from the view's width: d + k (1 + d)."""
+    return (int(buffer["obs"].shape[1]) - D) // (1 + D)
+
+
+def _stub_transform(monkeypatch, record, contrasts, widths=None, abstain=()):
+    """Per-k stub fits: ``contrasts[k]`` is the served contrast, ``widths[k]``
+    L4's half-width (default 0.05); ``abstain`` lists k that abstain."""
+    widths = widths or {}
+    record.setdefault("calls", [])
+
+    def fake(buffer, *, cache_dir=None, dataset_id="", apply=True, **options):
+        k = _k_of(buffer)
+        record["calls"].append((k, dataset_id, apply, buffer))
+        if k in abstain:
+            return GraceServing(reason=f"stub abstained at k={k}")
+        n = int(buffer["rewards"].shape[0])
+        w = widths.get(k, 0.05)
+        c = contrasts[k]
         return GraceServing(
             mode=SERVE_PESSIMISTIC,
-            fit_label="fit",
+            fit_label=f"fit{k}",
             l4_kind="interval",
-            lo=0.4,
-            hi=0.6,
-            rewards=torch.full((n,), 7.0),
+            lo=c - w,
+            hi=c + w,
+            rewards=torch.full((n,), 7.0 + k),
+            meta={"contrast_point": c},
         )
 
     monkeypatch.setattr(pb, "transform_offline_rewards", fake)
 
 
-def test_dr2_cut_is_required():
-    with pytest.raises(ValueError, match="calibration"):
-        pb.transform_offline_rewards_pomdp(_dict_buffer(), dr2_cut=None)
+def test_unknown_observability_raises():
+    with pytest.raises(ValueError, match="mdp|pomdp"):
+        pb.transform_offline_rewards_declared(_dict_buffer(), observability="hmm")
 
 
-def test_k0_collapses_to_the_mdp_branch(monkeypatch):
+def test_declared_mdp_with_k_raises():
+    with pytest.raises(ValueError, match="k = 0"):
+        pb.transform_offline_rewards_declared(_dict_buffer(), observability="mdp", k=1)
+
+
+def test_declared_mdp_is_k0_through_the_same_path(monkeypatch):
     rec = {}
-    _stub_transform(monkeypatch, rec)
-    monkeypatch.setattr(pb.l5, "select_window", _stub_select(0))
-    buf = _dict_buffer()
-    s = pb.transform_offline_rewards_pomdp(buf, dr2_cut=1e-3)
-    assert s.meta["window_k"] == 0 and not s.abstained
-    assert rec["buffer"] is buf  # the REAL buffer, no augmentation
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.51})
+    buf = pb._DictBuffer(_dict_buffer())
+    s = pb.transform_offline_rewards_declared(buf, observability="mdp", l5_report=False)
+    assert s.meta["window_k"] == 0 and s.meta["window_source"] == "declared-mdp"
+    # the k=0 fit is requested on the REAL buffer, UNWRITTEN (apply=False):
+    # its content address is the MDP-declared arm's -- the cache collapse
+    k0 = [c for c in rec["calls"] if c[0] == 0]
+    assert len(k0) == 1 and k0[0][3] is buf and k0[0][2] is False
+    # the ONE write, by the branch, with the served fit's rewards
+    assert torch.all(buf["rewards"] == 7.0)
+    # sufficient? diagnostic ran (fit at k=1) and passed: |0.51-0.50| <= 0.05
+    assert s.meta["window_sufficient"] is True
+    assert s.meta["window_necessary"] is None  # k=0 has no shorter window
+    assert not s.abstained and s.fit_label.startswith("window[k=0|declared-mdp]")
 
 
-def test_k1_fits_augmented_view_and_substitutes_full_coverage(monkeypatch):
+def test_declared_mdp_too_short_warns_and_serves_anyway(monkeypatch):
     rec = {}
-    _stub_transform(monkeypatch, rec)
-    monkeypatch.setattr(pb.l5, "select_window", _stub_select(1, 2))
-    # production buffers expose a write target (episodes or _data); the dict
-    # fixture gets the same via the shim
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.80})
+    buf = pb._DictBuffer(_dict_buffer())
+    s = pb.transform_offline_rewards_declared(buf, observability="mdp", l5_report=False)
+    assert s.meta["window_k"] == 0 and s.meta["window_sufficient"] is False
+    assert "WINDOW-TOO-SHORT" in s.fit_label
+    assert torch.all(buf["rewards"] == 7.0)  # served AS DECLARED
+
+
+def test_supplied_k_is_used_not_subject_to_k_max(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {1: 0.60, 2: 0.61, 3: 0.61})
     buf = pb._DictBuffer(_dict_buffer(hidden_velocity=True))
     n = int(buf["rewards"].shape[0])
-    s = pb.transform_offline_rewards_pomdp(buf, dr2_cut=1e-3, dataset_id="ds")
-    # the inner fit saw the AUGMENTED view: base d=2 obs + (action + d=2 obs) lag
-    assert rec["buffer"]["obs"].shape == (n, 2 + 1 + 2)
-    assert rec["options"]["dataset_id"] == "ds#k=1"
-    # and the REAL buffer's rewards were substituted, every row
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k=2, k_max=1, dataset_id="ds", l5_report=False
+    )
+    assert s.meta["window_k"] == 2 and s.meta["window_source"] == "declared"
+    # the served fit saw the lag-2 view under the '#k=2' audit id
+    served = [c for c in rec["calls"] if c[0] == 2][0]
+    assert served[1] == "ds#k=2" and served[3]["obs"].shape == (n, D + 2 * (1 + D))
+    assert torch.all(buf["rewards"] == 9.0)  # rewards of the k=2 fit
+    # diagnostics: sufficient (k=3 does not move it), NOT necessary (k=1 already suffices)
+    assert s.meta["window_sufficient"] is True
+    assert s.meta["window_necessary"] is False
+    assert "WINDOW-LONGER-THAN-NEEDED" in s.fit_label
+
+
+def test_diagnostics_are_a_budget_switch(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {1: 0.60})
+    buf = pb._DictBuffer(_dict_buffer(hidden_velocity=True))
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k=1, k_diagnostics=False, l5_report=False
+    )
+    assert [c[0] for c in rec["calls"]] == [1]  # exactly one fit
+    assert s.meta["window_k_diagnostics"] is False
+    assert "window_sufficient" not in s.meta
+
+
+def test_delegated_selection_picks_smallest_immaterial_k(monkeypatch):
+    rec = {}
+    # k=0 -> k=1 moves the contrast by 0.30 (> w=0.05): material;
+    # k=1 -> k=2 moves it by 0.01 (<= w): NOT material -> k* = 1
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.80, 2: 0.81})
+    buf = pb._DictBuffer(_dict_buffer(hidden_velocity=True))
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k_max=2, l5_report=False
+    )
+    assert s.meta["window_k"] == 1 and s.meta["window_source"] == "selected"
+    assert sorted({c[0] for c in rec["calls"]}) == [0, 1, 2]
+    assert torch.all(buf["rewards"] == 8.0)  # the k=1 fit's rewards, once
+    assert s.meta["window_stage0_delta"] == pytest.approx(0.30)
+    assert s.meta["window_stage1_delta"] == pytest.approx(0.01)
+    assert "k=0:" in s.meta["window_stages"] and "k=2:" in s.meta["window_stages"]
+
+
+def test_delegated_selection_stops_at_k0_on_markov_data(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.52})
+    buf = pb._DictBuffer(_dict_buffer())
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k_max=2, l5_report=False
+    )
+    assert s.meta["window_k"] == 0
+    assert sorted({c[0] for c in rec["calls"]}) == [0, 1]  # two fits, not three
     assert torch.all(buf["rewards"] == 7.0)
-    assert s.meta["window_k"] == 1 and s.fit_label.startswith("pomdp[window=1]")
 
 
-def test_augmentation_edge_pads_early_rows():
+def test_exhaustion_abstains_budget_bound(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {0: 0.0, 1: 0.3, 2: 0.6, 3: 0.9})
+    buf = pb._DictBuffer(_dict_buffer(hidden_velocity=True))
+    before = buf["rewards"].clone()
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k_max=2, l5_report=False
+    )
+    assert s.abstained and "BUDGET-BOUND" in s.reason
+    assert s.meta["window_k"] is None and s.meta["transform_applied"] is False
+    assert torch.equal(buf["rewards"], before)  # nothing written
+
+
+def test_abstaining_fit_inside_selection_abstains_with_reason(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {0: 0.5, 1: 0.5}, abstain=(1,))
+    buf = pb._DictBuffer(_dict_buffer())
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="pomdp", k_max=2, l5_report=False
+    )
+    assert s.abstained and "k=1 abstained" in s.reason
+    assert s.meta["window_k"] is None
+
+
+def test_l5_record_travels_on_the_served_value(monkeypatch):
+    rec = {}
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.51})
+    buf = pb._DictBuffer(_dict_buffer(n_ep=10, t_len=15))
+    s = pb.transform_offline_rewards_declared(
+        buf, observability="mdp", l5_b=9, l5_report=True
+    )
+    for key in ("l5_p", "l5_dr2", "l5_shrink", "l5_base_r2", "l5_label"):
+        assert key in s.meta, key
+    assert s.meta["l5_lag"] == 0
+    assert "l5_material_material" in s.meta  # serving_material's record, prefixed
+    # a record, never a gate: served regardless of what it says
+    assert not s.abstained and torch.all(buf["rewards"] == 7.0)
+
+
+def test_augmentation_edge_pads_and_carries_exact_next_obs_and_dones():
     from src.rl.offline.grace.serving import _episode_data_from_buffer
 
     buf = _dict_buffer(n_ep=2, t_len=5)
-    data, _, _ = _episode_data_from_buffer(buf)
-    cols = pb._augmented_cols(data, k=2)
+    data, nxt, dn = _episode_data_from_buffer(buf)
+    cols = pb._augmented_cols(data, 2, nxt, dn)
     n, d = data.state.shape
     assert cols["obs"].shape == (n, d + 2 * (1 + d))
+    assert cols["next_obs"].shape == (n, d + 2 * (1 + d))
+    assert torch.equal(cols["dones"], dn)
     # row 0 of each episode: lag features equal its OWN first row (edge pad)
     first = (data.episode_ids == 0).nonzero(as_tuple=True)[0][0]
     row = cols["obs"][first]
     assert torch.equal(row[d + 1 : d + 1 + d], data.state[first])  # lag-1 state
     assert torch.equal(row[2 * d + 2 :], data.state[first])  # lag-2 state
-
-
-def test_exhaustion_abstains_budget_bound(monkeypatch):
-    monkeypatch.setattr(pb.l5, "select_window", _stub_select(None, 3))
-    s = pb.transform_offline_rewards_pomdp(_dict_buffer(), dr2_cut=1e-3, k_max=2)
-    assert s.abstained and "BUDGET-BOUND" in s.reason
-    assert s.meta["window_k"] is None and s.meta["transform_applied"] is False
-    assert "l5_stage_p" in s.meta
+    # next_obs is EXACT: for a non-terminal row t, next_obs[t] == obs[t+1]
+    t = int(first) + 1
+    assert torch.allclose(cols["next_obs"][t], cols["obs"][t + 1])

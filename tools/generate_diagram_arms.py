@@ -30,7 +30,9 @@ from pathlib import Path
 CELLS = Path("reproducibility/rl_regimes/diagrams")
 
 
-def dataset_id_for(cell: str, k, env_id: str, seed: int, sigma: float) -> str:
+def dataset_id_for(
+    cell: str, k, env_id: str, seed: int, sigma: float, mask: tuple | None = None
+) -> str:
     """THE id for one grid point — the single place identity is constructed.
 
     Every field that distinguishes a grid point must appear here. ``dataset_name``
@@ -60,6 +62,12 @@ def dataset_id_for(cell: str, k, env_id: str, seed: int, sigma: float) -> str:
     if k.gate_probs is not None and declared_channels(k.diagram)["gated_reward_sweep"]:
         d = float(k.gate_probs[1]) - float(k.gate_probs[0])
         base = base.replace("-v0", f"-d{int(round(d * 100)):03d}-v0")
+    if mask:
+        # S6: a masked-BEHAVIOUR dataset (the true-POMDP construction, O->A)
+        # is a different identity from the full-view one — the marker is the
+        # same ``-om<idx>`` that ``dataset_name`` uses, so the id says which
+        # information set the logged actions realise.
+        base = base.replace("-v0", "-om" + "".join(str(i) for i in mask) + "-v0")
     return base
 
 
@@ -87,7 +95,11 @@ def grid_ids(cell: str, spec) -> list:
                     gate_probs=spec.gate_probs,
                     gate_mean_effect=getattr(spec, "gate_mean_effect", None),
                 )
-                out.append(dataset_id_for(cell, k, env_id, seed, sigma))
+                out.append(
+                    dataset_id_for(
+                        cell, k, env_id, seed, sigma, mask=spec.behavior_mask_indices
+                    )
+                )
     return out
 
 
@@ -108,6 +120,7 @@ def _row_from(ds, cell, spec, env_id, seed, sigma, did, ghash, seconds) -> dict:
         "gate_type": m.get("gate_type"),
         "preflight_passed": m.get("preflight_passed"),
         "preflight_reasons": m.get("preflight_reasons"),
+        "behavior_information_set": m.get("behavior_information_set"),
         "proxy_k_ranks": m.get("preflight_proxy_k_ranks"),
         "proxy_margins": m.get("preflight_proxy_margins"),
         "instrument_null_sds": m.get("preflight_instrument_null_sds"),
@@ -136,6 +149,13 @@ def main() -> int:
         "--resume",
         action="store_true",
         help="keep datasets whose generation_fingerprint already matches",
+    )
+    ap.add_argument(
+        "--device",
+        default=None,
+        help="generator TRAINING device (cuda|cpu; default: auto). The rollout "
+        "device is the cell's rollout_device. Pass cpu when the card is held "
+        "by a job whose footprint you have not measured (handoff GPU rule).",
     )
     ap.add_argument(
         "--sigmas",
@@ -189,6 +209,14 @@ def main() -> int:
         for env_id in envs:
             for seed in seeds:
                 # ONE pi_basic per (env, seed), shared across the cell's points.
+                # A masked-behaviour cell trains its generator ON THE MASKED
+                # VIEW (the O->A information set by training, not by
+                # projection), under its own generator dir so the full-view
+                # checkpoint is never mistaken for it.
+                mask = spec.behavior_mask_indices
+                gen_tag = f"{env_id}_s{seed}" + (
+                    "_om" + "".join(str(i) for i in mask) if mask else ""
+                )
                 agent, ghash = build_generator_agent(
                     env_id,
                     spec.generator_algo,
@@ -196,7 +224,9 @@ def main() -> int:
                     seed=seed,
                     train_episodes=spec.budget("n_episodes", 250),
                     n_checkpoints=spec.budget("n_checkpoints", 25),
-                    run_dir=str(out / "generator" / f"{env_id}_s{seed}"),
+                    run_dir=str(out / "generator" / gen_tag),
+                    device=args.device,
+                    behavior_mask_indices=mask,
                 )
                 for beta, sigma in spec.points():
                     if args.sigmas is not None and not any(
@@ -220,7 +250,7 @@ def main() -> int:
                         gate_probs=spec.gate_probs,
                         gate_mean_effect=getattr(spec, "gate_mean_effect", None),
                     )
-                    did = dataset_id_for(cell, k, env_id, seed, sigma)
+                    did = dataset_id_for(cell, k, env_id, seed, sigma, mask=mask)
                     # Idempotent: a partial or interrupted V-B run must be
                     # resumable, and Minari refuses to overwrite an existing id.
                     # --resume keeps a dataset whose generation_fingerprint
@@ -287,6 +317,7 @@ def main() -> int:
                         agent=agent,
                         rollout_device=spec.rollout_device,
                         rollout_n_envs=spec.rollout_n_envs,
+                        behavior_mask_indices=mask,
                         **{**{"confounder_c_r": k.confounder_c_r}, **kw},
                     )
                     row = _row_from(

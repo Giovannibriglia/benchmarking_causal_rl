@@ -86,12 +86,18 @@ class EnvConfig:
     # selection -> augmented state -> the MDP machinery). The declaration is
     # an INPUT — L5 may contradict it, never override it (ruled 2026-09-03).
     declared_observability: str = "mdp"
-    # POMDP-branch knobs. grace_dr2_cut is REQUIRED for the pomdp branch and
-    # comes from the L5 calibration report — the branch refuses to run
-    # without it rather than defaulting to the statistical-only selector.
+    # The declaration surface is (observability, optionally k): declared MDP
+    # IS k = 0; a POMDP declaration may supply k (used as given, with two
+    # report-only diagnostics) or leave it None (selected by materiality
+    # against L4's interval). No calibration constant anywhere (A2).
+    grace_window_k: int | None = None
+    # BUDGETS (disclosed when they bind): k_max applies only to delegated
+    # selection; k_diagnostics buys the sufficient?/necessary? fits.
     grace_k_max: int = 2
-    grace_dr2_cut: float | None = None
+    grace_k_diagnostics: bool = True
+    # L5's record at the served lag (report-only): stated alpha, draw budget.
     grace_l5_alpha: float = 0.05
+    grace_l5_b: int = 99
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

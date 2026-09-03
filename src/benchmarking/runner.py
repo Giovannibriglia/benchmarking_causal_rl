@@ -1522,23 +1522,21 @@ class BenchmarkRunner:
             cache_dir=getattr(self.env_cfg, "grace_cache_dir", None),
             dataset_id=str(getattr(self.env_cfg, "offline_dataset", "") or ""),
         )
-        declared = str(getattr(self.env_cfg, "declared_observability", "mdp"))
-        if declared == "pomdp":
-            from src.rl.offline.grace.pomdp_branch import (
-                transform_offline_rewards_pomdp,
-            )
+        # ONE path for every declaration (ruled 2026-09-03): declared MDP is
+        # k = 0 through the same code as a declared POMDP.
+        from src.rl.offline.grace.pomdp_branch import transform_offline_rewards_declared
 
-            serving = transform_offline_rewards_pomdp(
-                self.replay_buffer,
-                dr2_cut=getattr(self.env_cfg, "grace_dr2_cut", None),
-                alpha=float(getattr(self.env_cfg, "grace_l5_alpha", 0.05)),
-                k_max=int(getattr(self.env_cfg, "grace_k_max", 2)),
-                **common,
-            )
-        else:
-            from src.rl.offline.grace.serving import transform_offline_rewards
-
-            serving = transform_offline_rewards(self.replay_buffer, **common)
+        wk = getattr(self.env_cfg, "grace_window_k", None)
+        serving = transform_offline_rewards_declared(
+            self.replay_buffer,
+            observability=str(getattr(self.env_cfg, "declared_observability", "mdp")),
+            k=None if wk is None else int(wk),
+            k_max=int(getattr(self.env_cfg, "grace_k_max", 2)),
+            k_diagnostics=bool(getattr(self.env_cfg, "grace_k_diagnostics", True)),
+            l5_alpha=float(getattr(self.env_cfg, "grace_l5_alpha", 0.05)),
+            l5_b=int(getattr(self.env_cfg, "grace_l5_b", 99)),
+            **common,
+        )
         print(f"[grace] {serving.label()}", file=sys.stderr)
         return serving
 

@@ -451,10 +451,15 @@ def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
 
 
 def transform_offline_rewards(
-    buffer, *, cache_dir=None, dataset_id: str = "", **options
+    buffer, *, cache_dir=None, dataset_id: str = "", apply: bool = True, **options
 ) -> GraceServing:
     """The runner's entry point: fit (or load the cached fit), substitute,
     report.
+
+    ``apply=False`` fits (or loads) and RETURNS without writing the buffer —
+    the declared-observability path (pomdp_branch) compares fits at several
+    windows against each other before writing exactly one of them, so the
+    write is the caller's, once. Cache hit/store behaviour is unchanged.
 
     Called once after the offline fill and BEFORE any gradient step, so the
     base algorithm trains on interventional rewards from its first step. The
@@ -494,7 +499,7 @@ def transform_offline_rewards(
             )
             hit = tc.load(cache_dir, key)
             if hit is not None:
-                if not hit.abstained:
+                if not hit.abstained and apply:
                     apply_reward_transform(buffer, hit)
                 else:
                     hit.meta["transform_applied"] = False
@@ -507,7 +512,7 @@ def transform_offline_rewards(
 
         entry = tc.store(cache_dir, key, serving)
         serving.meta["transform_cache_stored"] = str(entry)
-    if not serving.abstained:
+    if not serving.abstained and apply:
         apply_reward_transform(buffer, serving)
     else:
         # EVERY run records what it did, abstentions included -- an absent key

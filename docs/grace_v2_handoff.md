@@ -38,6 +38,7 @@ these, not rediscover them.**
 | **S16** | **A component that fails silently needs a check PER INPUT, not a check per output.** | Same tally: the additive offset (double-counted the base's own contrast), the unreadable `ReplayBuffer` (attributes vs `gather()`), the declared proxies never reaching the buffer, the inverted pessimism sign, the dataset-id collision across cells, and the hook on the unused branch. Only the first is an output defect; the rest are inputs arriving wrong. Checking outputs would have caught one of six. |
 | **S17** | **A positive control belongs on the REPORTED ENDPOINT, not only on the components that feed it.** Before committing a long campaign, run one cell and verify the headline metric *behaves like the quantity it is named after* — in a plausible range, and MOVING as the thing it measures changes. A flat or few-valued series fails, however healthy every component is. | The seventh silent failure, and the only one invisible to every component check. `rollout_len` carries three meanings — on-policy collection length, the legacy offline budget, and the EVAL HORIZON. On an offline run the first two are inert (`offline_grad_steps` sizes the learner), so E1 set it to 2 for them and thereby evaluated every policy over **two environment steps**. Deployment return was then `2.0 + bonus_rate × (a_bad steps among those 2)`: exactly three reachable values, and the observed set across all 17 completed cells was `{2.0, 2.5, 3.0}` — the predicted set, nothing else. A pole cannot fall in two steps, so trained, untrained and broken policies all scored the same, and **every return-based prediction (P1b included) was untestable while looking like a clean pass**. Nothing errored, the CSVs were well-formed, the seam was correct, the critic ablation was correct, S14's positive control on the served contrast PASSED — the components all worked and the metric they fed measured nothing. Six of seven failures were caught by checks on components; this one required checking the endpoint itself. Fix form per S15: separate the meanings (`eval_rollout_len`, defaulting to `None` so existing runs are byte-identical) rather than correcting the one call site. |
 | **S18** | **A point null of exact equality, tested against a flexible model, rejects given enough resolution — the null is false by construction. When the test feeds a decision, the hypothesis must be an EQUIVALENCE REGION whose tolerance is derived from the decision's own scale.** | Ruled 2026-09-02 on L5's Markov falsifier: on exactly-Markov deterministic CartPole the history block always improves the structured approximation residual by a positive sliver (measured Delta-R^2 1.6e-7, shrinking 56x with base capacity), so "history adds exactly zero" rejects at ANY capacity while the true-POMDP effect sits 5 orders higher (1e-2, capacity-stable). Same move as the walk's derived stop and the bootstrap's MC-error criterion: the tolerance comes from a quantity the pipeline already measures (here L4's own interval), never from a chosen number. Derivation: `docs/l5_equivalence_tolerance.md`. |
+| **S19** | **A feature set used to certify a model's sufficiency must be the feature set the model receives.** Certifying `k` on richer features than the estimator gets is the same defect as validating one estimand and serving another. | Ruled 2026-09-03. The fifth instance of the validated-≠-served family — the additive offset, the max operator, the learned termination head, and now the POMDP branch's augmentation: L5 selected `k` with lagged `(O, A, R)` history blocks while `pomdp_branch._augmented_cols` served lagged `(A, S)` only, so a `k` certified because of past rewards was a `k` the estimator could not honour. Stated as a rule about FEATURE SETS rather than quantities because that is the generalisation the four earlier instances were pointing at. Resolution: the family's history blocks are `(O, A)` only (the served columns); the R-inclusive block survives as the reward-channel DIAGNOSTIC, where a reward-only-visible hidden state belongs by construction. |
 | **C3** | Estimates carry their conditions **on the object**. | `fit.estimate()` is the only way a number is produced, so none escapes without `monotone`/`converged`/`separability`. |
 
 ### Library rules (NBN v0.14.0, vendored)
@@ -1271,6 +1272,12 @@ ruling; `tools/run_e1.py` would happily continue if re-invoked.
 
 ### RECORDS OF 2026-09-03 (afternoon) — selector readings, parity pass, probe capture, two near-misses
 
+> **Superseded the same evening (see "RULING 2026-09-03 (evening)" below):
+> the selector readings and the under-cut table are a measurement of a
+> WITHDRAWN design — `dr2_cut` was stripped as a per-environment constant
+> (A2) and selection moved to materiality-by-refit. The parity pass, the
+> probe capture and the two near-misses stand.
+
 **The L5 selector's two readings (calibration, CartPole, 55 rows at the time
 of writing).** `k_selected = None` was ambiguous on the page between "every
 stage rejected" and "budget-bound"; they are the SAME event (a run of
@@ -1325,36 +1332,278 @@ non-event. The earlier block is removed; `check-yaml` (ruamel) rejects
 duplicates, which is how it surfaced. Result artefacts are committed with
 `--no-verify` so the end-of-file hook does not rewrite them.
 
+### RULING 2026-09-03 (evening) — `dr2_cut` STRIPPED; falsification report-only; selection by materiality; the parameter taxonomy
+
+**The objection, owned:** the measured Delta-R^2 gap was a PER-ENVIRONMENT
+CONSTANT and A2 forbids those. It entered only as `dr2_cut`, in two places,
+and neither needs it.
+
+**1. Falsification is report-only — no threshold at all.** By the standing
+ruling L5 warns and never overrides; a verdict that changes no behaviour
+needs no binary. `MarkovVerdict.declaration_falsified` is REMOVED;
+`MarkovVerdict.record(alpha)` travels on the served value (C3) with: the
+effect size Delta-R^2 and its p; the CAPACITY-SHRINK ratio (the mechanistic,
+dimensionless separator — approximation error shrinks with base capacity,
+measured 56x; information does not, ~1x); base R^2 per dimension with
+`scale_invalid` where negative; the reward-channel diagnostic. The user
+reads the magnitude and its evidence. Nothing branches on it.
+
+**2. Selection is materiality-by-refit against L4's own interval.** The
+predictive test asks "is the process exactly Markov?", whose answer is
+always no (S18). The estimator's question is whether another lag changes
+WHAT GRACE SERVES by more than the uncertainty GRACE already reports:
+`k* = min { k : |contrast(k+1) - contrast(k)| <= w_k }`, contrast = the
+served action contrast on the lag-k augmented state, w_k = L4's half-width
+there — every term measured per fit, no constant, no environment dependence
+(same family as the walk's derived stop, the bootstrap MC-error criterion
+and tau_R). `l5.select_window` is REMOVED; the selector lives in
+`pomdp_branch.transform_offline_rewards_declared`. Cost: fits at k = 0 and
+k = 1 on a true MDP (~1.7x, measured) replacing the 912 s selection pass;
+under the cache the k = 0 fit is a hit whenever the MDP-declared arm ran on
+the same data. **First empirical point** (peer session, max-null era): the
+k = 0 and k = 1 transforms on d100s0 s0 produced IDENTICAL intervals to four
+decimals ([+0.4989, +0.5235]) — the criterion stops at k = 0 immediately.
+
+**3. A user-supplied k is an INPUT, never a hypothesis.** The declaration
+surface is `(observability, optionally k)` and declared-MDP IS k = 0 — ONE
+code path (the runner calls `transform_offline_rewards_declared` for every
+GRACE arm): MDP -> k = 0; POMDP with k -> that k; POMDP without k -> §2.
+When k is supplied GRACE uses it and reports two diagnostics, both
+report-only, neither overriding: **sufficient?** (does lag k+1 move the
+served contrast by more than w_k — if so the window is too short: warn,
+serve anyway; label `WINDOW-TOO-SHORT(warn)`) and **necessary?** (does k-1
+already suffice — if so the window is longer than needed: compute and
+estimator variance, no correctness harm; `WINDOW-LONGER-THAN-NEEDED(info)`).
+The second is contract row 2 in its exact form. `k_max` applies only when
+selection is delegated; `k_diagnostics` is a BUDGET switch (the extra fits),
+disclosed when off. Config: `declared_observability`, `grace_window_k`,
+`grace_k_max`, `grace_k_diagnostics`, `grace_l5_alpha`, `grace_l5_b`;
+`grace_dr2_cut` is GONE. Tests: `tests/test_pomdp_branch.py` (12) pin the
+path; `tests/test_l5_markov.py` pins the record.
+
+**4. Calibration re-scoped; the sweep DISCARDED.** The running sweep was
+stopped (peer session, 2026-09-03 ~18:45; 61 rows preserved). Its purpose
+was choosing a number we no longer use. What calibration is still for, and
+it is not per-environment: (i) the POWER of the materiality criterion — how
+large a violation must be before it is caught — a property of the METHOD,
+measured on synthetic fixtures where the truth is dialable; (ii) the S18
+result — a point null of exact Markovianity rejects at floor effect sizes on
+deterministic systems — reported ONCE as a finding from the rows on disk.
+The "two selector readings" table and the under-cut numbers recorded this
+afternoon are now a measurement of a WITHDRAWN design, kept as such.
+
+**5. The parameter taxonomy — the environment-independence claim the paper
+asserts.**
+
+| class | members | status |
+|---|---|---|
+| **declarations** | the diagram, observability and k, `u_card` | user inputs; honoured; contradictions REPORTED |
+| **budgets** | B, folds, RFF count, `k_max`, iteration caps, `k_diagnostics` | compute limits; DISCLOSED when they bind |
+| **derived** | tau_R from w; the walk's stop from bootstrap MC error; `min_scale` and the sqrt-eps truncation from the float representation; the materiality criterion from w_k | measured per fit |
+| **calibration constants** | — | **NONE** |
+
+Nothing measured on one environment transfers to another, because nothing
+is measured to be transferred.
+
+**Fixture finding, recorded (S8 doing its job, and a fragility to keep in
+view):** the unit fixture "hidden AR state drives the reward" at obs dim 2
+gave a memoryless base fit with held-out base R² of −1.3 / −0.2 on the obs
+dims — `scale_invalid` on every dim, IDENTICAL under the pre- and post-S19
+code (same conditioning block). The same dynamics at obs dim 3 fit at R²
+0.92. So the random-feature basis on a 4-wide standardised block can
+generalise badly on a small synthetic fixture; the flag caught it, the
+fixture was moved to d = 3, and the positive-control test now asserts the
+obs dims are NOT scale-invalid so it cannot pass vacuously. On real data
+(CartPole full view) base R² is 0.99999+ at every capacity probed; the
+materiality-power calibration on synthetic fixtures must report base R²
+alongside its power numbers for exactly this reason.
+
+**Also fixed on the way (recorded):** the k >= 1 augmented view handed to
+the fit carried no `next_obs`/`dones`, so the extractor rolled next-obs
+ACROSS episode boundaries and saw no terminations; the view now carries the
+exact next augmented state (lag blocks shifted by one) and the dones. And
+`serving.transform_offline_rewards(apply=False)` lets the branch compare
+fits before writing the real buffer exactly once.
+
+**Next, in order (ruled):** (a) the critic end to end — done in this commit,
+pending the grid's first run; (b) repo adoption — the YAML driver consuming
+the e1 configs (`CELLS` gone), the contract cells as configs with
+`declared_observability` and optional k, the deployed plotting extensions
+(per-seed curves, paired base-vs-grace, the critic-accuracy table, the
+return decomposition, abstentions separate), the README section — split:
+driver/plotting/README-driver = peer session, config keys + README-critic =
+this session; (c) SPEED, measurement first — profile one representative
+grace fit (EM iterations, M-step steps, bootstrap replicates,
+`interventional_sweep`) and report where the time goes before optimising;
+candidates in likely payoff order: bootstrap replicates in parallel
+(`n_jobs`, GPU-memory-gated), the transform cache actually used by the grid,
+the per-node M-step budget on 1-D proxy channels, fit-once-per-(cell,
+dataset seed, k) across training seeds — none applied on argument alone.
+
+### PHASE 3 PRE-REGISTRATION (2026-09-03, before generation) — the true-POMDP datasets
+
+**What runs:** `tools/generate_diagram_arms.py --cells d_d_sweep_d100_om13
+--envs CartPole-v1 --device cpu` — the FIRST execution of the
+masked-behaviour path (the generator is trained on the masked view under its
+own generator dir `<out>/generator/CartPole-v1_s<seed>_om13`; the rollout
+acts through `_MaskedViewPolicy`; the dataset stores the FULL observation).
+Six datasets: seeds 0–2 × {σ = 0 basic, σ = 0.25 confounded}, ids carrying
+`-om13` (S6). Generator training on CPU because the card is held by the
+k = 2 timing (footprint 7.6 GB of 8.2, measured).
+
+**Predictions, written before the result:**
+1. Every dataset's stamp reads `behavior_information_set: masked:1,3`; the
+   full-view d100 datasets read `full` (checked side by side).
+2. Gate test passes and preflight passes on all six; the one licensed
+   regeneration is the covariate-free preflight at p ≈ α (the known ~1%
+   rate). Any other failure is stop condition §7.1.
+3. **L5 positive control (certification check 1):** the masked view fails
+   the Markov test at lag 0, α = 0.05, with ΔR² in the 1e-3..1e-1 range
+   (the calibration's masked rows on load-time-masked d100: 5e-4..36), while
+   the full-view d100 s0 sits at ~1e-7 (measured today). Capacity-shrink
+   ratio < 1 (information, not approximation error).
+4. **Certification check 3 (recoverable from history):** the masked
+   velocities regress from one lag of positions with R² > 0.9 (a finite
+   difference of positions reconstructs them), so k = 1 is the EXPECTED
+   selection on this data (contract plan scope statement).
+5. The behaviour policy is genuinely less competent on the masked view:
+   the generator's tier-selection return and the rollout's return
+   distribution sit BELOW the full-view d100 generator's (a POMDP has a
+   worse achievable policy) — recorded, and the reason cross-column readings
+   are forbidden.
+Checks 2 and 4 of the plan's certification list (memory pays; per-context
+return spread) are grid-side measurements and are run with the contract
+cells, not here.
+
+**First execution, first surprise (19:20, loud, fixed, relaunched):** the
+masked generator trained fine on the 2-dim view, then
+`build_generator_agent` rebuilt the agent at the CANONICAL 4-dim obs and
+the checkpoint refused to load (state-dict size mismatch [64, 2] vs
+[64, 4]). The same reduction `generate_offline_dataset` already applies is
+now applied at the build site; pinned by
+`test_build_generator_agent_is_masked_dim_when_behaviour_is_masked` (no
+training: the 'random' tier path). Second latent defect on this never-run
+path in one day (the first was the undeclared parameter) — the reason the
+plan makes "generate one and certify it" a gate rather than a formality.
+
+**Comparison record (S19, closing the afternoon's measurement):** on real
+data the (O, A)-only family is invariant to the reward channel by
+construction — d_a_null s0 and d_b_prime s0 share their (O, A) trajectories
+and now give IDENTICAL statistics (lag 0: 1.669e-7; lag 1: 4.264e-9), where
+the (O, A, R) family had differed (1.100e-7 / 2.004e-8): lagged R had been
+leaking into the observation-channel statistic. Reward-channel diagnostics
+unchanged (0.0204 / 0.0185).
+
+### PHASE 4 PRE-REGISTRATION (2026-09-03, before any grid result) — the CartPole contract grid C1
+
+**Cells** (`reproducibility/rl_regimes/diagrams/c1_*.yaml`, campaign prefix
+`c1`, results under `results/c1`): truth ∈ {tmdp = d_d_sweep_d100, tpomdp =
+d_d_sweep_d100_om13 with the learner masked [1, 3]} × arm ∈ {base, grace
+declared MDP, grace declared POMDP (k delegated)}; σ = 0.25; 3 dataset
+seeds × 3 training seeds; cql + iql. The base arm carries the Phase-6 critic
+axis (observational, proximal, oracle_u, sensitivity on tmdp; proximal
+EXCLUDED on tpomdp — L2: D-G q1 bounds-only, q2 non-ID). Analysis is
+WITHIN-COLUMN only.
+
+**Predictions (pre-authorised readings, written as predictions):**
+1. **Row 2 (declared POMDP, true MDP):** the materiality selector returns
+   k = 0 on ≥ 8 of 9 (ds, ts) leaves per algorithm (first empirical point:
+   identical k = 0 / k = 1 intervals on d100s0 s0); served rewards are
+   bitwise those of the declared-MDP arm (cache hit), so the paired return
+   delta vs row 1 is 0 up to training-seed noise — "over-assumption is
+   cheap", measured.
+2. **Row 4 (declared POMDP, true POMDP):** k = 1 selected (a finite
+   difference of positions reconstructs the velocities); materiality margins
+   `|contrast(1) − contrast(0)| > w_0` and `|contrast(2) − contrast(1)| ≤ w_1`.
+3. **Row 3 (declared MDP, true POMDP):** the L5 record at the served lag 0
+   CONTRADICTS the declaration on every leaf (p ≤ 0.05, ΔR² ≳ 1e-3,
+   capacity-shrink < 1) and the `window_sufficient` diagnostic reads False
+   (`WINDOW-TOO-SHORT(warn)`); GRACE serves as declared; its critic accuracy
+   (`q1_contrast_error`) is WORSE than row 4's on the same data — the
+   degradation is observable next to the warning (contract row 3).
+4. **Row 1 (declared MDP, true MDP):** the L5 record rejects at floor
+   effect sizes on most leaves (S18) with capacity-shrink > 1 — reported as
+   the S18 floor behaviour, NOT a defect; `window_sufficient` True.
+5. **Return:** grace ≥ base on the confounded point within column 1 (the
+   pilot's d100 result); in column 2 the memoryless learners are worse than
+   in column 1 in absolute terms (a POMDP has a worse achievable policy —
+   never read across columns). Grace losing to base on return anywhere is
+   reported with the decomposition, not treated as a failure.
+6. **Abstentions** (fit-health, L4) are tabulated separately; the σ = 0.25
+   d100 fits did not abstain in the pilot, so the prediction is 0 abstentions
+   in column 1; column 2 unknown (first fits on masked views) — any
+   abstention there is reported with its reason.
+7. **Critic axis (Phase 6):** oracle_u ≤ grace ≤ observational on
+   `q1_contrast_error` in column 1 (ceiling / floor); proximal ≈ grace on
+   D-D (both point-ID via the same proxies).
+
+**Cost projection is reported before launch** (Phase 2's speedup and the
+k = 2 ratio enter it); launch is pre-authorised below 60 GPU-hours.
+
 ### Open threads
 
-* **AWAITING RULING (2026-09-03): the POMDP branch's augmentation vs the
-  served estimand's warrant.** L5 selects k with history blocks carrying
+* **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
+  features (S19).** The finding: L5 selected k with history blocks carrying
   lagged (O, A, R); `pomdp_branch._augmented_cols` augments with lagged
-  (A, S) ONLY — validated-≠-served, one level in. The "obvious" repair
-  (add lagged R to the state) collides with the served estimand: the
-  catalogue's Q2 derivation (D-B, Steps 1–3; D-D inherits) defines
-  `g(s,a) = E_{U~P(U)}[E[R|s,a,U]]` over the EXOGENOUS MARGINAL, with the
+  (A, S) only — validated-≠-served, one level in. The obvious repair (lagged
+  R into the state) was checked against the served estimand and REJECTED:
+  the catalogue's Q2 derivation (D-B Steps 1–3; D-D inherits) defines
+  `g(s,a) = E_{U~P(U)}[E[R|s,a,U]]` over the EXOGENOUS MARGINAL with the
   stated reason (Step 1) that under do(pi) at every step the trajectory is
-  independent of U — no U->S' edge (fact 3) and the target policy does not
-  read U — so P(U | s) = P(U) in the deployment regime, while the
-  observational P(U | S_t) != P(U) is named at Step 2 as the WRONG
-  distribution to integrate. `estimator.interventional_sweep` implements
-  exactly this: `sum_k fit.prior[k] * E[R | S=s, do(A=a), do(U=k)]` with
-  `prior` the (K,) mixing weights, never the per-episode responsibilities.
-  Derivation and code AGREE (outcome 1). The reason FAILS the moment R
-  enters the state: R_{t-1} depends on U (the gated shift), so an
-  R-augmented state is U-informative at deployment, Step 1's independence
-  breaks, and the correct per-transition target becomes
-  `sum_u P(u | s_aug) E[R|s,a,u]` with a deployment-regime posterior
-  (prior x reward channel; the behaviour channel must NOT enter) — a
-  belief-state critic, a different served object, touching L4's contrast
-  interval and the pessimism rule. (A, S)-only augmentation keeps Step 1
-  intact (A_{t-1} = pi(.) does not read U; S never depends on U), so the
-  prior transform stays correct on it. Options for the ruling: (a) make the
-  selector's history features match the served augmentation — (O, A) only
-  — and keep an R-inclusive test as the reward-channel diagnostic, or (b)
-  R-augmentation with posterior serving. Do NOT change the augmentation
-  before the ruling.
+  independent of U — no U->S' edge (fact 3), pi does not read U — so
+  P(U|s) = P(U) in the deployment regime, and Step 2 names the observational
+  P(U|S_t) != P(U) as the WRONG distribution to integrate.
+  `estimator.interventional_sweep` implements exactly this
+  (`sum_k fit.prior[k] * E[R | S=s, do(A=a), do(U=k)]`, `prior` the (K,)
+  mixing weights; the per-episode responsibilities never enter). Derivation
+  and code agree. That reason holds for an (A, S)-augmented state (at
+  deployment A_{t-1} = pi(.) does not read U; S never depends on U) and
+  FAILS for an R-augmented one (U -> R is intact at deployment, so R_{t-1}
+  is U-informative and P(U|s) != P(U)): R-in-state is a belief-state critic
+  with posterior-weighted serving, pulling L4's contrast interval and the
+  pessimism rule with it — a different method, not a repair.
+  **Done:** `l5._build_design(history_reward=False)` is the family (the
+  served columns); the reward-channel diagnostic keeps `history_reward=True`
+  (shared base fit at lag 0; the selector requests it at stage 0 only). Module
+  statement: *the selector certifies observation-channel sufficiency for the
+  exact features served; reward-channel dependence is reported, not selected
+  on.* The blind spot reintroduced — a hidden state visible ONLY through
+  past rewards is invisible to the selector — is now characterised, not
+  hidden: it is a reward-channel phenomenon by construction and lands in
+  `reward_channel` / `serving_material`. Two tests pin it
+  (`test_selector_history_features_equal_the_served_augmentation`,
+  `test_reward_only_visible_hidden_state_is_reported_not_selected_on`).
+  **Calibration consequence — MOOT the same evening:** the sweep was stopped
+  and its rows serve only as S18 evidence (ruling below); no re-score. The
+  shared-basis truncation stands on its own reason (one coherent basis for
+  the family and the reward-channel blocks). Original note kept for the
+  record: the in-flight sweep's rows were scored with
+  the (O, A, R) family; on constant-per-step-reward datasets (R untestable:
+  d_a_null CartPole, Acrobot) the lagged-R column is constant and the family
+  statistic is unchanged; on variable-R datasets (d_b_prime) it can differ —
+  measured below in this section's follow-up, and those rows are re-scored
+  under the new code before the report is read as the gate.
+
+* **(b) RECORDED as the D-F/D-G path — the belief-state critic.** Posterior-
+  weighted serving `sum_u P(u | s_aug) E[R|s,a,u]` with a DEPLOYMENT-regime
+  posterior (prior x reward channel; the behaviour channel must NOT enter —
+  it is the confounding) is what confounded dynamics need anyway: `U ->
+  S_next` breaks the prior-marginalisation reason for the same cause as
+  R-in-state, only more severely (the occupancy itself becomes
+  U-dependent, Step 1's first clause). Whoever builds D-F/D-G starts from
+  this derivation (catalogue D-B Step 1–3 + the paragraph above), not from
+  rediscovery; see `docs/grace_observability_contract_plan.md` "What stays
+  future work".
+
+* **NEXT GATE (ruled 2026-09-03): the true-POMDP column has never executed.**
+  The undeclared `behavior_mask_indices` (near-miss (1) above) means the
+  masked-behaviour path through `build_generator_agent` had never run once,
+  so the true-POMDP datasets are both ungenerated and end-to-end untested.
+  Before the contract grid: generate ONE true-POMDP dataset and CERTIFY it —
+  the information-set stamp must record the masked behaviour and the
+  preflight must pass on a dataset whose logged actions depend on the masked
+  view only. Report the certification stamps, not "it ran". Scheduled after
+  the L5 sweep and the cost-probe report (CPU/GPU contention).
 
 * **`--resume` NEVER reuses, and "correcting" it naively DELETES THE WHOLE
   STORE. Read this entire item before touching it.** `generate_diagram_arms.py`
