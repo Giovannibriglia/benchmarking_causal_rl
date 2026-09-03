@@ -60,6 +60,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+import numpy as np
 import torch
 
 from src.rl.offline.grace import l5
@@ -158,6 +159,69 @@ def _contrast(s: GraceServing):
     return float(s.meta["contrast_point"]), 0.5 * (float(s.hi) - float(s.lo))
 
 
+class _verdict_stub:
+    """The two fields ``serving_material`` reads, rebuilt from a flat record
+    (so a cached record grades exactly like a fresh verdict)."""
+
+    def __init__(self, rec: dict):
+        imp = rec.get("l5_reward_improvement", float("nan"))
+        self.reward_channel = (
+            None
+            if imp != imp  # NaN: the reward channel was untestable
+            else dict(
+                improvement=float(imp),
+                draw_q95=float(rec.get("l5_reward_draw_q95", 0.0)),
+                sd_r=float(rec.get("l5_reward_sd_r", 0.0)),
+            )
+        )
+
+
+def _l5_record_cached(data, nxt, k, alpha, b, n_ep, cache_dir, dataset_id) -> dict:
+    """L5's flat record for lag ``k`` on (a budgeted prefix of) the buffer,
+    cached by CONTENT: sha256 over the exact episode arrays the statistic
+    reads plus (k, b, n_ep, seed). Never by dataset id alone (the fingerprint
+    lesson: id does not imply content)."""
+    import hashlib
+    import json
+    from pathlib import Path
+
+    eps = _episodes_from_data(data, nxt)
+    if n_ep is not None:
+        eps = eps[: int(n_ep)]
+    budget = dict(
+        l5_n_ep=(len(eps) if n_ep is None else int(n_ep)), l5_n_ep_used=len(eps)
+    )
+    h = hashlib.sha256()
+    for e in eps:
+        for arr in (e.obs, e.act, e.rew):
+            a = np.ascontiguousarray(arr)
+            h.update(str(a.shape).encode())
+            h.update(a.tobytes())
+    h.update(f"k={k} b={b} seed={k} alpha={alpha}".encode())
+    key = h.hexdigest()[:24]
+    path = Path(cache_dir) / "l5_records" / f"{key}.json" if cache_dir else None
+    if path is not None and path.exists():
+        rec = json.loads(path.read_text())
+        rec.update(budget, l5_record_cache="hit", l5_record_key=key)
+        return rec
+    try:
+        v = l5.markov_test(eps, lag=k, b=b, seed=k)
+    except ValueError as exc:  # episodes too short for this lag
+        return dict(l5_note=str(exc), **budget)
+    rec = v.record(alpha)
+    rc = v.reward_channel
+    rec["l5_reward_sd_r"] = float(rc["sd_r"]) if rc is not None else float("nan")
+    rec["l5_dataset_id"] = str(dataset_id)
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(rec))
+        rec["l5_record_cache"] = "stored"
+    else:
+        rec["l5_record_cache"] = "off"
+    rec.update(budget, l5_record_key=key)
+    return rec
+
+
 def transform_offline_rewards_declared(
     buffer,
     *,
@@ -168,6 +232,7 @@ def transform_offline_rewards_declared(
     l5_report: bool = True,
     l5_alpha: float = 0.05,
     l5_b: int = l5._B_DRAWS,
+    l5_n_ep: Optional[int] = 500,
     cache_dir=None,
     dataset_id: str = "",
     **options,
@@ -313,20 +378,23 @@ def transform_offline_rewards_declared(
         warn += " WINDOW-LONGER-THAN-NEEDED(info)"
 
     # ---- L5's record at the served lag: report-only ------------------------
+    # BUDGETS, disclosed on the record: ``l5_n_ep`` caps the episodes the
+    # statistic reads (the first n, in dataset order; None = all) and
+    # ``l5_b`` the placebo draws. The record is a pure function of (the
+    # buffer's content, k, b, n_ep, seed) and identical for every training
+    # seed on the same dataset, so it is cached next to the transform cache
+    # under the dataset's content address when ``cache_dir`` is set.
     if l5_report:
-        try:
-            v = l5.markov_test(
-                _episodes_from_data(data, nxt), lag=k_served, b=l5_b, seed=k_served
-            )
-            evidence.update(v.record(l5_alpha))
-            c = _contrast(serving)
-            if c is not None:
-                sm = l5.serving_material(v, w=c[1])
-                evidence.update({f"l5_material_{kk}": vv for kk, vv in sm.items()})
-            if v.rejected(l5_alpha):
-                warn += " L5-CONTRADICTS-DECLARATION(report)"
-        except ValueError as exc:  # episodes too short for this lag
-            evidence["l5_note"] = str(exc)
+        rec = _l5_record_cached(
+            data, nxt, k_served, l5_alpha, l5_b, l5_n_ep, cache_dir, dataset_id
+        )
+        evidence.update(rec)
+        c = _contrast(serving)
+        if c is not None and "l5_reward_improvement" in rec:
+            sm = l5.serving_material(_verdict_stub(rec), w=c[1])
+            evidence.update({f"l5_material_{kk}": vv for kk, vv in sm.items()})
+        if rec.get("l5_rejected"):
+            warn += " L5-CONTRADICTS-DECLARATION(report)"
 
     serving.meta.update(evidence)
     serving.fit_label = (

@@ -98,6 +98,9 @@ class EnvConfig:
     # L5's record at the served lag (report-only): stated alpha, draw budget.
     grace_l5_alpha: float = 0.05
     grace_l5_b: int = 99
+    # Episode budget for the L5 record (the first n episodes; None = all).
+    # Disclosed on the record (l5_n_ep / l5_n_ep_used); cached by content.
+    grace_l5_n_ep: int | None = 500
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their

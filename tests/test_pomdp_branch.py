@@ -240,3 +240,38 @@ def test_augmentation_edge_pads_and_carries_exact_next_obs_and_dones():
     # next_obs is EXACT: for a non-terminal row t, next_obs[t] == obs[t+1]
     t = int(first) + 1
     assert torch.allclose(cols["next_obs"][t], cols["obs"][t + 1])
+
+
+def test_l5_record_is_budgeted_and_content_cached(monkeypatch, tmp_path):
+    """The record reads the first ``l5_n_ep`` episodes (disclosed), and a
+    second call on the same content is a cache HIT keyed by content, never by
+    dataset id (the fingerprint lesson)."""
+    rec = {}
+    _stub_transform(monkeypatch, rec, {0: 0.50, 1: 0.51})
+    buf = pb._DictBuffer(_dict_buffer(n_ep=10, t_len=15))
+    s1 = pb.transform_offline_rewards_declared(
+        buf,
+        observability="mdp",
+        l5_b=9,
+        l5_n_ep=6,
+        cache_dir=str(tmp_path),
+        dataset_id="A",
+    )
+    assert s1.meta["l5_n_ep"] == 6 and s1.meta["l5_n_ep_used"] == 6
+    assert s1.meta["l5_record_cache"] == "stored" and s1.meta["l5_n_episodes"] == 6
+    buf2 = pb._DictBuffer(_dict_buffer(n_ep=10, t_len=15))  # same content, other id
+    s2 = pb.transform_offline_rewards_declared(
+        buf2,
+        observability="mdp",
+        l5_b=9,
+        l5_n_ep=6,
+        cache_dir=str(tmp_path),
+        dataset_id="B",
+    )
+    assert (
+        s2.meta["l5_record_cache"] == "hit"
+        and s2.meta["l5_record_key"] == s1.meta["l5_record_key"]
+    )
+    assert s2.meta["l5_dr2"] == s1.meta["l5_dr2"]
+    # serving_material grades the cached record exactly like the fresh one
+    assert s2.meta["l5_material_material"] == s1.meta["l5_material_material"]

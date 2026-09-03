@@ -1,0 +1,60 @@
+# C1 — the CartPole OBSERVABILITY-CONTRACT grid (2026-09-03, pre-authorised).
+# THE sigma = 0 COMPANION of c1_tmdp_base: the basic origin (beta 0, sigma 0)
+# under the SAME regime tag, so the strategy critics' null-calibration gate
+# has its anchor from the campaign's own data (option (a), ruled 2026-09-03:
+# a stored per-environment noise reference would be a calibration constant,
+# A2; declaring the grid un-calibrated would leave the critic axis ungated).
+# Base arm only — the sigma = 0 grace no-harm control is the pilot's d100s0
+# for the full view; the masked sigma = 0 datasets exist (certified) should
+# one be wanted later.
+# Cell: truth = tmdp (full-view d100 data, behaviour S->A),
+# arm = base.
+# Analysis is WITHIN-COLUMN only (same truth, declarations differ); the two
+# truths are never lined up on a shared performance axis (contract plan §5).
+# Layout: 3 dataset seeds x 3 training seeds (ds{d}_ts{t}); both algorithms.
+# Source cell read via the generation reports (ids READ, never reconstructed).
+regime: offline_mdp
+source_cell: d_d_sweep_d100
+e1_cell: c1_tmdp_base
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.00, 1.00]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+
+sweep:
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: false
+
+envs: [CartPole-v1]
+max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
+eval_rollout_len: 500
+n_eval_envs: 16
+eval_confounded_reward: true
+eval_confounded_mode: analytic
+
+algos:
+  - cql
+  - iql
+# Dataset seeds [0, 2, 3], NOT [0, 1, 2]: the full-view sigma = 0 s1 dataset
+# failed the covariate-free preflight at generation (p = 0.0100 at alpha
+# 0.01 — the known ~1% gate rate; handoff, e1_d100s0) and s3 is its certified
+# substitute. The null-calibration anchor is per (env, algo, critic), not per
+# dataset seed, so the companion need not share the confounded arm's seeds.
+seeds: [0, 2, 3]        # dataset seeds
+train_seeds: [0, 1, 2]  # training seeds per dataset seed
+
+# PHASE 6 — the critic axis rides on the base arm (one training run, the
+# ablation critics are exploded into per-critic leaves). On D-D L2 licenses
+# every comparator: observational (floor), proximal (point-ID q1/q2 via the
+# declared proxies), oracle_u (ceiling; reads the recorded U), sensitivity.
+critics:
+  basic:      [observational, proximal, oracle_u, sensitivity]
+  confounded: [observational, proximal, oracle_u, sensitivity]

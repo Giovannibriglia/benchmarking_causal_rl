@@ -1535,6 +1535,7 @@ class BenchmarkRunner:
             k_diagnostics=bool(getattr(self.env_cfg, "grace_k_diagnostics", True)),
             l5_alpha=float(getattr(self.env_cfg, "grace_l5_alpha", 0.05)),
             l5_b=int(getattr(self.env_cfg, "grace_l5_b", 99)),
+            l5_n_ep=getattr(self.env_cfg, "grace_l5_n_ep", 500),
             **common,
         )
         print(f"[grace] {serving.label()}", file=sys.stderr)

@@ -1608,6 +1608,19 @@ WITHIN-COLUMN only.
    `q1_contrast_error` in column 1 (ceiling / floor); proximal ≈ grace on
    D-D (both point-ID via the same proxies).
 
+**Null-calibration anchor (decided 2026-09-03 22:30, peer's flag):** every
+σ = 0.25 cell declares `basic: false`, so the strategy critics'
+null-calibration gate would have no anchor. Options were (a) σ = 0
+companion points per truth column, (b) the stored fixed-denominator
+reference (`null_cal_reference.yaml`, historical CartPole cql/iql
+`noise_refs`), (c) declare the grid un-calibrated. **(a), base arm only:**
+(b) is a stored per-environment constant (A2, stop-condition §7.5), (c)
+leaves the critic axis ungated on the headline grid. `c1_tmdp_base_s0.yaml`
+(seeds [0, 2, 3] — the full-view σ = 0 s1 failed the preflight at
+generation; s3 is its certified substitute) and `c1_tpomdp_base_s0.yaml`
+(seeds [0, 1, 2], certified today), same regime tags, so the leaves land at
+`beta_000_sigma_000` under the σ = 0.25 cells' tags. +36 runs → 144.
+
 **Cost projection is reported before launch** (Phase 2's speedup and the
 k = 2 ratio enter it); launch is pre-authorised below 60 GPU-hours.
 
