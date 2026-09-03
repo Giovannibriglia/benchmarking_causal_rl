@@ -1513,6 +1513,39 @@ Checks 2 and 4 of the plan's certification list (memory pays; per-context
 return spread) are grid-side measurements and are run with the contract
 cells, not here.
 
+**OUTCOME (2026-09-03 21:25) — PHASE 3 COMPLETE: 6/6 certified on the first
+pass, no regeneration.** `results/dd_sweep_om13_generation/report.json`
+(committed): every row gate True, preflight True, reasons empty, proxy
+margins ≈ 5 (as the full-view cell's), 57–136 s each after the generator.
+Against the predictions:
+1. ✓ every stamp reads `behavior_information_set: masked:1,3`; the full-view
+   d100 datasets read `None` — they predate the stamp (the field did not
+   exist), not `full`; the reader must treat None as full-view-historical.
+2. ✓ gate + preflight on all six; the licensed regeneration was never needed.
+3. ✓ **L5 positive control** on s0 σ = 0, masked view: p = 0.010 (the
+   floor at b = 99), ΔR² = 3.0e-2, capacity-shrink 0.001 (information);
+   the full view of the same data: ΔR² = 1.3e-7, shrink 577 (approximation
+   error). Base R² on the masked view 0.99/0.97 (clean fit). The
+   reward-channel diagnostic reads 0.22 / 0.24 on both views — lagged R
+   carries the episode-constant U (U → R survives at σ = 0), as the
+   catalogue says. σ = 0.25 s0 running as this is written.
+4. ✓ velocities from ONE lag of positions (+ action): R² 0.93 / 0.90 on the
+   masked data → k = 1 is the expected selection.
+5. ✗ **REVERSED, with a mechanism:** the masked behaviour policy is MORE
+   competent — rollout return 41.9 (mean; episode length 33.7) vs 19.2
+   (16.4) on the full-view d100 s0. Mechanism, measured in the generator
+   curves: `select_tier_episode("medium")` takes the FIRST checkpoint
+   reaching a third of each generator's OWN return range; the masked DQN's
+   first checkpoint (61.5, range 52–62.5, target 55.5) already qualifies,
+   while the full-view generator's medium checkpoint is a genuine 56 of
+   52–64. A tier-selection artefact of the D4RL-style rule, not a defect of
+   the masked path; every generation knob is identical between the two
+   datasets (metadata diffed field by field: only `p_hat` and the U-edge
+   statistics differ, which the behaviour difference explains). It is
+   exactly the cross-column competence confound the plan forbids reading,
+   and touches no within-column claim; recorded so nobody reads "the POMDP
+   column scores higher" as a GRACE effect.
+
 **First execution, first surprise (19:20, loud, fixed, relaunched):** the
 masked generator trained fine on the 2-dim view, then
 `build_generator_agent` rebuilt the agent at the CANONICAL 4-dim obs and
