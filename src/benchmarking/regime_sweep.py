@@ -345,6 +345,9 @@ class SweepSpec:
     # The transform cache root (content-addressed; one fit serves every
     # algorithm and training seed on the same data). None = off.
     grace_cache_dir: Optional[str] = None
+    # Speed budgets (wall time only, never a served number).
+    grace_n_jobs: int = 1
+    grace_sweep_chunk: int = 4096
     # TRAINING seeds, separate from the DATASET seeds (`seeds`): the contract
     # grid's ds{d}_ts{t} layout. None = one training seed per dataset seed
     # (the pilot's layout, ts = ds).
@@ -451,6 +454,8 @@ _KNOWN_SPEC_KEYS = {
     "grace_k_max",
     "grace_k_diagnostics",
     "grace_cache_dir",
+    "grace_n_jobs",
+    "grace_sweep_chunk",
     "train_seeds",
     "behavior_mask_indices",
 }
@@ -556,6 +561,8 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         grace_k_max=int(pick("grace_k_max", 2)),
         grace_k_diagnostics=bool(pick("grace_k_diagnostics", True)),
         grace_cache_dir=pick("grace_cache_dir", None),
+        grace_n_jobs=int(pick("grace_n_jobs", 1)),
+        grace_sweep_chunk=int(pick("grace_sweep_chunk", 4096)),
         train_seeds=(
             None
             if pick("train_seeds", None) is None

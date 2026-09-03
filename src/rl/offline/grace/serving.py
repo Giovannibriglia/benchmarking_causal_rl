@@ -114,8 +114,16 @@ def fit_reward_transform(
     init_seeds: tuple = DEFAULT_INIT_SEEDS,
     fit_kwargs: Optional[dict] = None,
     device=None,
+    n_jobs: int = 1,
+    sweep_chunk: int = 4096,
 ) -> GraceServing:
     """THE handoff: fit L3 + L4 once, then hand back the INTERVENTIONAL rewards.
+
+    ``n_jobs`` runs L4's bootstrap replicates concurrently (threads; each
+    replicate seeded from its index, results collected by index — bitwise
+    the same serving as ``n_jobs=1``, verified before use) and ``sweep_chunk``
+    is the interventional sweep's batch size. Both are BUDGETS: they change
+    wall time, never a served number, and neither enters the cache key.
 
     **Why a reward transform and not a served Q** (ruled 2026-08-31). Catalogue
     fact 3: no wired cell has a ``U -> S_next`` edge, so on these cells the
@@ -172,8 +180,8 @@ def fit_reward_transform(
 
     def _sweep(est, fit, action, states):
         parts = []
-        for k in range(0, states.shape[0], 4096):
-            chunk = states[k : k + 4096]
+        for k in range(0, states.shape[0], sweep_chunk):
+            chunk = states[k : k + sweep_chunk]
             v = est.interventional_sweep(
                 chunk, [action] * chunk.shape[0], fit
             ).value.reshape(-1)
@@ -199,6 +207,7 @@ def fit_reward_transform(
         b=b,
         fit_seed=fit_seed,
         init_seeds=init_seeds,
+        n_jobs=int(n_jobs),
     )
     if res.kind == "abstain":
         # An abstention carries diagnostics too, and an abstained run is

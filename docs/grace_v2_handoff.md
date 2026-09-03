@@ -1528,7 +1528,15 @@ Against the predictions:
    error). Base R² on the masked view 0.99/0.97 (clean fit). The
    reward-channel diagnostic reads 0.22 / 0.24 on both views — lagged R
    carries the episode-constant U (U → R survives at σ = 0), as the
-   catalogue says. σ = 0.25 s0 running as this is written.
+   catalogue says. **σ = 0.25 s0 (the grid's operating point):** masked view
+   p = 0.010, ΔR² = 3.4e-2, shrink 0.000; full view ΔR² = 1.3e-7, shrink
+   3702 — same picture. The reward-channel diagnostic reads −0.02 on the
+   masked view vs +0.20 on the full view there: under the masked view the
+   memoryless reward base is weaker (base R² 0.43 vs 0.47) and the lagged
+   block adds nothing beyond the placebo — reported, not decided on. Cost
+   datum: a 500-episode L5 record takes ~250 s on a quiet CPU (1930 s under
+   the earlier load), so the `l5_n_ep = 500` budget prices the record at
+   minutes per (dataset, k), cached by content across training seeds.
 4. ✓ velocities from ONE lag of positions (+ action): R² 0.93 / 0.90 on the
    masked data → k = 1 is the expected selection.
 5. ✗ **REVERSED, with a mechanism:** the masked behaviour policy is MORE
@@ -1623,6 +1631,51 @@ generation; s3 is its certified substitute) and `c1_tpomdp_base_s0.yaml`
 
 **Cost projection is reported before launch** (Phase 2's speedup and the
 k = 2 ratio enter it); launch is pre-authorised below 60 GPU-hours.
+
+### PHASE 2 — SPEED, MEASURED FIRST (2026-09-03 22:54 → 00:15, the profile)
+
+`tools/profile_grace_fit.py` on d100 σ = 0 s0 (49,125 rows, GPU, ALONE on
+the card — load 2; cProfile overhead included): **TOTAL 4832 s = 1.34 h**
+for one `fit_reward_transform` (23 fits: observed + 2 init seeds + 19
+bootstrap replicates + the served fit). Where the time goes:
+
+| phase | calls | total s | share |
+|---|---|---|---|
+| bootstrap replicates (19 refits) | 19 | 3974 | **82%** |
+| all fits (23) | 23 | 4169 | 86% |
+| M-step, total | 893 | 4152 | 86% |
+| M-step: proxy nodes Z, W, V (MDN `fit_local`) | 893 × 3 | 1016 + 1010 + 1006 | **63%** |
+| M-step: R, A (`neural_categorical`) | 893 × 2 | 555 + 554 | 23% |
+| `interventional_sweep` (L4's contrast targets) | 552 | 662 | 14% |
+| E-step | 1031 | 13 | 0.3% |
+| U, S nodes | 893 × 2 | 7 | 0.1% |
+
+Under the hood (cProfile): `run_backward` 1343 s, MDN `_log_prob` 941 s,
+nbn `likelihood_weighting` 660 s (= the sweep), ~39 M-steps per fit (30
+iterations + backtracks), 4.65 s per M-step. The ruling's tree, applied:
+
+1. **bootstrap dominates → `n_jobs > 1`, gated by the free-memory rule.**
+   Wired as a BUDGET (`grace_n_jobs`; threads, seeds by index, results by
+   index; not in the cache key). Gate: measure one replicate's peak GPU
+   memory (the reference run reports `max_memory_allocated`), divide the
+   free memory by it, cap there. Adopted ONLY if the served rewards, lo, hi
+   are BITWISE the reference's (`tools/phase2_speed.py parallel N`).
+2. **M-step: the proxy nodes are 63% of everything.** Their step budget is
+   the same 400 per node as R/A's (`_epochs` derives epochs from the fixed
+   step budget), on 3,000 episode-rows vs 49k transition-rows, with the
+   MDN's per-step cost ~1.8× the categorical's. Whether 400 steps over-spend
+   on a 1-D proxy channel is a FIT-QUALITY question: any budget change
+   alters the served numbers, so by the rule it is NOT a speed change and
+   is not applied here — recorded as the next candidate, to be measured on
+   its own (fit quality vs steps), never smuggled in.
+3. **`interventional_sweep` 14% → batch it**: `sweep_chunk` is now a budget
+   (default 4096, unchanged); `tools/phase2_speed.py sweep` measures the
+   full-buffer chunk against 4096 for bitwise identity and time — adopted
+   only if identical.
+4. **Cache**: the c1 grace cells share `results/grace_cache`; the Phase 2
+   reference run (`phase2_speed.py reference`, n_jobs = 1, d100 σ = 0.25
+   s0) is the grid's FIRST entry (tmdp ds0 declared-MDP) as well as the
+   bitwise reference.
 
 ### Open threads
 

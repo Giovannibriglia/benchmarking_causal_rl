@@ -169,6 +169,60 @@ Standalone (non-cell) experiments use `main.py` directly — see the
 [CLI reference](#cli-reference) — and the pinned one-shot configs in
 `reproducibility/` (see [Reproducibility](#reproducibility)).
 
+### GRACE — the declared-observability critic
+
+GRACE is a **reward transform**: it fits a latent-class model of the
+declared confounder on the offline buffer (L3), brackets the served action
+contrast with a bootstrap interval (L4), and substitutes **interventional
+rewards** `E[R | do(a), s]` into the buffer before the base algorithm's first
+gradient step. On the wired cells the dynamics are unconfounded (no
+`U → S'` edge), so the base algorithm trained on those rewards *is* the
+causal critic — nothing else about the algorithm changes.
+
+It takes **one declaration** and **no calibrated constants**:
+
+| config key | class | meaning |
+|---|---|---|
+| `declared_observability: mdp \| pomdp` | declaration | the user's information-set claim; honoured, never overridden |
+| `grace_window_k` | declaration (optional) | a POMDP window; `null` = selected by materiality |
+| `grace_proxy_names` | declaration | the cell's declared proxy channels (D-D: `Z, W, V`) |
+| `grace_k_max`, `grace_k_diagnostics`, `grace_l5_b`, `grace_l5_n_ep` | budgets | compute limits, disclosed on the record when they bind |
+| — | calibration constants | **none** |
+
+*Declared MDP* is the window `k = 0`. *Declared POMDP* augments the state
+with the last `k` `(observation, action)` pairs and runs the same machinery;
+when `k` is not supplied it is **selected by materiality-by-refit** — the
+smallest `k` whose next lag moves the served contrast by no more than L4's
+own half-width (`k* = min{k : |Δ̂(k+1) − Δ̂(k)| ≤ w_k}`), every term measured
+per fit. A supplied `k` is used as given and reported on with two
+diagnostics: *sufficient?* (does `k+1` move the contrast beyond `w_k` —
+warn, serve anyway) and *necessary?* (does `k−1` already suffice). The
+declared-MDP **falsifier** (L5, the Markov test on the served features) is
+**report-only**: its record — effect size, `p`, the capacity-shrink ratio,
+per-dimension base R², the reward-channel diagnostic — travels on the served
+value; nothing branches on it, so no threshold exists.
+
+Every served number carries its conditions (C3) in the run's `[grace]` label
+and leaf metadata: `window[k=K|declared-mdp|declared|selected]`, the L4
+interval, `WINDOW-TOO-SHORT(warn)` / `WINDOW-LONGER-THAN-NEEDED(info)` /
+`L5-CONTRADICTS-DECLARATION(report)` flags, and the `window_*` / `l5_*`
+fields. Abstention (fit health, L4 family — including a delegated selection
+that exhausts `k_max`, labelled `BUDGET-BOUND`) leaves the buffer untouched,
+so an abstained run is byte-identical to its base and is reported
+separately, never pooled.
+
+Fits are **content-addressed and cached** (`grace_cache_dir`): one fit
+serves every algorithm and training seed on the same data, and the
+declared-POMDP arm at `k = 0` is a cache hit on the declared-MDP fit. The
+observability-contract grid (`reproducibility/rl_regimes/diagrams/c1_*.yaml`,
+`tools/run_e1.py --campaign=c1`, report via `tools/report_c1.py`) runs the
+critic across {declared MDP, declared POMDP} × {true MDP, true POMDP} on
+CartPole, base and GRACE arms, with the repo's critic axis (`observational`,
+`proximal`, `oracle_u`, `sensitivity`) on the base arm; comparisons are
+within-column only. Design record and standing rules:
+`docs/grace_v2_handoff.md`; the contract plan:
+`docs/grace_observability_contract_plan.md`.
+
 ---
 
 ## Algorithms

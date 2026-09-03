@@ -1521,6 +1521,8 @@ class BenchmarkRunner:
             device=self.device,
             cache_dir=getattr(self.env_cfg, "grace_cache_dir", None),
             dataset_id=str(getattr(self.env_cfg, "offline_dataset", "") or ""),
+            n_jobs=int(getattr(self.env_cfg, "grace_n_jobs", 1)),
+            sweep_chunk=int(getattr(self.env_cfg, "grace_sweep_chunk", 4096)),
         )
         # ONE path for every declaration (ruled 2026-09-03): declared MDP is
         # k = 0 through the same code as a declared POMDP.

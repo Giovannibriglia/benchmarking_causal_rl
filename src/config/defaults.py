@@ -101,6 +101,11 @@ class EnvConfig:
     # Episode budget for the L5 record (the first n episodes; None = all).
     # Disclosed on the record (l5_n_ep / l5_n_ep_used); cached by content.
     grace_l5_n_ep: int | None = 500
+    # SPEED budgets (never a served number): concurrent bootstrap replicates
+    # (gated by the measured per-replicate GPU peak; 1 = serial) and the
+    # interventional sweep's batch size.
+    grace_n_jobs: int = 1
+    grace_sweep_chunk: int = 4096
     # FIXED exploration defining the SHARED base policy pi_basic (the common origin of
     # basic / biased / confounded). Read IDENTICALLY by behavior_policy="pi_basic" (the
     # basic arm) and "bias_confounded_action" (the confounded arm), so their
