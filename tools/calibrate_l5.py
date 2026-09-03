@@ -37,6 +37,12 @@ os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grac
 OUT = Path("results/l5_calibration")
 ALPHA = 0.05  # stated, not tuned
 K_MAX = 2
+# The stated Delta-R^2 convention for the under-the-cut selector reading. A
+# CONVENTION inside the measured gap, never derived from the rows: the report
+# recomputes the gap (null max vs masked min) and records whether the cut
+# lies inside it; if it does not, the under-cut reading is reported as
+# invalid rather than silently computed.
+DR2_CUT_CONVENTION = 1e-4
 
 # (env tag, id substring filters, mask sets by effect size, chunk sizes, chunk episode cap)
 PLANS = {
@@ -90,12 +96,91 @@ def _episodes_slice(all_eps, lo, hi, mask):
     return out
 
 
+def _stages(verdicts):
+    """Every stage's (lag, p, Delta-R^2): what the under-the-cut reading of
+    the selector needs post hoc for ANY cut, so a row never has to be
+    recomputed to be re-read."""
+    return [
+        dict(lag=int(v.lag), p=float(v.p_value), stat=float(v.statistic))
+        for v in verdicts
+    ]
+
+
+def _selector_readings(row, alpha, k_max, dr2_cut):
+    """The two readings of one selector row, both stated explicitly.
+
+    AS DEPLOYED (dr2_cut=None, what the sweep ran): ``k_selected`` is the
+    first non-rejected stage; ``None`` means every stage 0..k_max rejected and
+    the budget bound. ``k_tests`` = stages run, so stages_rejected =
+    k_selected (stages before the pass) or k_tests (all of them).
+
+    UNDER THE CUT: a stage is falsified iff p <= alpha AND stat > dr2_cut.
+    Fully derivable when the row stores ``stages``; rows written before that
+    field existed carry stage 0 only, so k = 0 is decidable (stage 0 passes)
+    and anything else is reported as undetermined, never guessed.
+    """
+    k_sel = row["k_selected"]
+    k_tests = int(row["k_tests"])
+    budget_bound = k_sel is None
+    stages_rejected = k_tests if budget_bound else int(k_sel)
+    stages = row.get("stages")
+    if stages is None:
+        stages = [dict(lag=0, p=row["p"], stat=row["stat"])]
+        complete = False
+    else:
+        complete = True
+    k_cut = None
+    undetermined = False
+    for st in stages:
+        falsified = st["p"] <= alpha and st["stat"] > dr2_cut
+        if not falsified:
+            k_cut = int(st["lag"])
+            break
+    else:
+        # every stored stage falsified under the cut
+        if complete and len(stages) == k_max + 1:
+            k_cut = None  # budget-bound under the cut too
+        elif complete:
+            # the deployed run stopped early (it passed statistically at a
+            # later stage than the cut would have needed) -- cannot happen:
+            # the cut only makes passing EASIER, so the cut's pass is at or
+            # before the deployed pass. Kept as a guard.
+            undetermined = True
+        else:
+            undetermined = True
+    return dict(
+        stages_rejected=stages_rejected,
+        budget_bound=budget_bound,
+        k_under_cut=k_cut,
+        k_under_cut_undetermined=undetermined,
+    )
+
+
+def _k_dist(values):
+    return {
+        str(k): int(sum(1 for v in values if v == k))
+        for k in sorted(set(values), key=lambda x: (x is None, x))
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="1 dataset/env, b=99")
     ap.add_argument("--envs", nargs="*", default=list(PLANS))
     ap.add_argument(
         "--b", type=int, default=None, help="draw-budget override (smoke only)"
+    )
+    ap.add_argument(
+        "--report-only",
+        action="store_true",
+        help="rebuild report.json from rows.jsonl without running any test",
+    )
+    ap.add_argument(
+        "--dr2-cut",
+        type=float,
+        default=DR2_CUT_CONVENTION,
+        help="the STATED cut for the under-the-cut selector reading; the "
+        "report checks it against the measured gap and says so",
     )
     args = ap.parse_args()
     b = args.b if args.b else (99 if args.quick else 199)
@@ -136,7 +221,8 @@ def main() -> int:
         with rows_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
 
-    for env, plan in ((e, PLANS[e]) for e in args.envs):
+    plans = [] if args.report_only else [(e, PLANS[e]) for e in args.envs]
+    for env, plan in plans:
         ids = [
             i
             for i in all_ids
@@ -188,6 +274,7 @@ def main() -> int:
                             capacity=v.capacity,
                             k_selected=k_sel,
                             k_tests=len(k_verdicts),
+                            stages=_stages(k_verdicts),
                         )
                     )
                 # --- power grid: mask x size, first chunk only (see _POWER_B)
@@ -223,6 +310,7 @@ def main() -> int:
                                 capacity=vm.capacity,
                                 k_selected=km,
                                 k_tests=len(kv),
+                                stages=_stages(kv),
                             )
                         )
             print(f"  {did.split('/')[1][:60]}: {time.time()-t0:.0f}s", flush=True)
@@ -243,6 +331,56 @@ def main() -> int:
             ks = None
         sel_fpr = (
             float(np.mean([r["k_selected"] != 0 for r in nulls])) if nulls else None
+        )
+        masked_all = [r for r in er if r["kind"].startswith("masked")]
+        cut = float(args.dr2_cut)
+        null_max = max((r["stat"] for r in nulls), default=None)
+        masked_min = min((r["stat"] for r in masked_all), default=None)
+        cut_in_gap = (
+            null_max is not None
+            and masked_min is not None
+            and null_max < cut < masked_min
+        )
+
+        def _selector_block(rr):
+            rd = [_selector_readings(r, ALPHA, K_MAX, cut) for r in rr]
+            under = [x["k_under_cut"] for x in rd if not x["k_under_cut_undetermined"]]
+            return dict(
+                n=len(rr),
+                # reading 1: the as-deployed statistical selector (dr2_cut=None)
+                as_deployed=dict(
+                    k_dist=_k_dist([r["k_selected"] for r in rr]),
+                    stages_rejected_dist=_k_dist([x["stages_rejected"] for x in rd]),
+                    budget_bound_frac=(
+                        float(np.mean([x["budget_bound"] for x in rd])) if rd else None
+                    ),
+                ),
+                # reading 2: the same rows re-read under the stated cut
+                under_cut=dict(
+                    dr2_cut=cut,
+                    cut_in_measured_gap=bool(cut_in_gap),
+                    k_dist=_k_dist(under),
+                    n_determined=len(under),
+                    n_undetermined=len(rd) - len(under),
+                    k0_frac=(
+                        float(np.mean([k == 0 for k in under])) if under else None
+                    ),
+                ),
+            )
+
+        selector = dict(
+            null=_selector_block(nulls),
+            masked=_selector_block(masked_all),
+            note=(
+                "as_deployed: k_selected is the first stage NOT rejected at "
+                "alpha (dr2_cut=None); None = every stage 0..k_max rejected = "
+                "BUDGET-BOUND (stages_rejected = k_tests). under_cut: falsified "
+                "iff p<=alpha AND stat>dr2_cut; rows without per-stage records "
+                "decide k=0 from stage 0 alone and are otherwise undetermined. "
+                "Contract row 2 (over-assumption is cheap) reads "
+                "null.under_cut.k0_frac; cut_in_measured_gap must be true for "
+                "the reading to be valid."
+            ),
         )
 
         def _dist(rr):
@@ -275,7 +413,8 @@ def main() -> int:
             null_p_min=float(ps.min()) if ps.size else None,
             null_frac_below_alpha=float(np.mean(ps <= ALPHA)) if ps.size else None,
             ks_stat=ks,
-            selection_fpr=sel_fpr,
+            selection_fpr=sel_fpr,  # as-deployed only; see selector below
+            selector=selector,
             # THE RESULT the ruling names: the two Delta-R^2 distributions and
             # their separation. A cut in the gap is a stated convention; if
             # these overlap, no tolerance would have saved us.
