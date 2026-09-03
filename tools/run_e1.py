@@ -295,6 +295,7 @@ def main() -> int:
     campaign = "e1"
     cache_dir = None
     campaign_plan_only = False
+    yaml_filter: set | None = None
     for a in list(argv):
         if a.startswith("--campaign="):
             campaign = a.split("=", 1)[1]
@@ -302,6 +303,9 @@ def main() -> int:
         elif a == "--plan-only":
             argv.remove(a)
             campaign_plan_only = True
+        elif a.startswith("--yamls="):
+            yaml_filter = set(a.split("=", 1)[1].split(","))
+            argv.remove(a)
         elif a.startswith("--cache-dir="):
             cache_dir = a.split("=", 1)[1] or None
             argv.remove(a)
@@ -313,7 +317,13 @@ def main() -> int:
     only = argv or None  # optional smoke filter: tag algo seed arm
 
     entries = enumerate_plan(campaign)
-    assert_plan_safe(entries)
+    assert_plan_safe(entries)  # ALWAYS on the full plan, never the filtered slice
+    if yaml_filter:
+        unknown = yaml_filter - {e["yaml"] for e in entries}
+        if unknown:
+            raise SystemExit(f"--yamls names unknown cells: {sorted(unknown)}")
+        entries = [e for e in entries if e["yaml"] in yaml_filter]
+        print(f"  [wave] {len(entries)} runs from {sorted(yaml_filter)}", flush=True)
     if campaign_plan_only:
         # The PRE-FLIGHT: the full plan with its assertions, zero training.
         for e in entries:
@@ -372,7 +382,18 @@ def main() -> int:
         # observability: mdp so cql/iql stay the memoryless learners; the
         # loader deletes the columns, so GRACE sees what the learner sees).
         _mask = tuple((spec.mask_indices or {}).get(env, ()) or ()) or None
+        # Budget passthrough for fields that may land after this driver
+        # (grace_n_jobs, grace_sweep_chunk, ...): forwarded only when BOTH the
+        # spec and EnvConfig know them, so neither side's schema gates the
+        # other's release. Budgets, not identity: none enters the cache key.
+        _budgets = {
+            k: getattr(spec, k)
+            for k in ("grace_n_jobs", "grace_sweep_chunk", "grace_l5_b")
+            if getattr(spec, k, None) is not None
+            and k in EnvConfig.__dataclass_fields__
+        }
         env_cfg = EnvConfig(
+            **_budgets,
             env_id=env,
             n_train_envs=2,
             n_eval_envs=int(spec.n_eval_envs or 16),
