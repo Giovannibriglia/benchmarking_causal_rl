@@ -1,0 +1,29 @@
+{
+ "cell": "d100s0",
+ "source_cell": "d_d_sweep_d100",
+ "arm": "grace",
+ "algo": "iql",
+ "env": "CartPole-v1",
+ "seed": 3,
+ "dataset_id": "grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma000-seed3-d100-v0",
+ "stamp": {
+  "preflight_passed": true,
+  "gate_passed": true,
+  "ok": true
+ },
+ "q1_truth": 0.5,
+ "grace": {
+  "abstained": true,
+  "label": "serving=GRACE-ABSTAINED reason='fit stuck: line search exhausted while still improving' R=categorical[2] sep/step=0.987 SATURATED-AT-INIT(1.00) NOT-CONVERGED BACKTRACK-EXHAUSTED backtracks=60 sep(telemetry)=0.72",
+  "lo": NaN,
+  "hi": NaN,
+  "meta": {
+   "optimiser_var": null,
+   "replicate_var": null,
+   "n_init_fits": 0,
+   "transform_applied": false,
+   "n_rewards_written": 0
+  }
+ },
+ "seconds": 949.3
+}

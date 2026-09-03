@@ -1,0 +1,17 @@
+{
+ "cell": "d100",
+ "source_cell": "d_d_sweep_d100",
+ "arm": "base",
+ "algo": "iql",
+ "env": "CartPole-v1",
+ "seed": 0,
+ "dataset_id": "grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma025-seed0-d100-v0",
+ "stamp": {
+  "preflight_passed": true,
+  "gate_passed": true,
+  "ok": true
+ },
+ "q1_truth": 0.5,
+ "grace": null,
+ "seconds": 627.6
+}
