@@ -40,57 +40,16 @@ os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grace-v2"))
 
 REGIME = "offline_mdp"
-BETA, SIGMA = 0.0, 0.25  # SIGMA is the campaign default; cells may override
-ENVS = ("CartPole-v1",)
-SEEDS = (0, 1, 2)  # campaign default; cells may override (see CELLS)
-ALGOS = ("cql", "iql")
-PROXIES = ("Z", "W", "V")
+# Campaign prefix selects BOTH the YAML glob and the results root: e1 = the
+# pilot cells (incl. incomplete-by-decision d025/d010asym — never re-entered
+# unless this campaign is chosen), c1 = the observability-contract grid.
+CAMPAIGN_ROOTS = {"e1": Path("results/e1"), "c1": Path("results/c1")}
 
-# (e1 tag, source cell in the generation reports, declared proxy channels, sigma)
-#
-# ``d100s0`` is the NO-HARM CONTROL and the reason sigma became per-cell.
-# d_a_null cannot serve that role: its reward is constant, so the do-contrast is
-# identically zero for the data AND every resample -- an untestable pass, not a
-# clean one (S9). At sigma = 0 on d100, U -> R survives so GRACE fits a real,
-# nonzero r_hat (truth M = 0.5, unchanged by sigma), while U -> A is severed so
-# the bias to remove is zero WITHOUT being zero by construction. That is what
-# "does GRACE invent a correction where there is nothing to correct" needs.
-# Same cell as d100, so the three proxy channels match by construction rather
-# than by convention -- a two-proxy control against a three-proxy treatment
-# would confound the very comparison P1 makes.
-#
-# d100s0 RUNS SEEDS (0, 2, 3), NOT (0, 1, 2). Its s1 dataset failed the
-# covariate-free preflight (proxy_vs_state_given_u p = 0.0100 against
-# _NULL_ALPHA = 0.01) and an uncertified dataset is unrepresentable here. The
-# substitute seed 3 was DECLARED BEFORE IT WAS GENERATED, and is a distinct seed
-# from the cell's grid rather than a re-roll of s1 -- re-rolling until a check
-# passes selects data for having passed, and leaves the old label on it.
-#
-# The exclusion is noise, not structure, and was checked rather than assumed.
-# The gate's alpha is 0.01, so across the campaign's ~90 preflight checks the
-# expected number of failures under a VALID null is ~0.9; two were observed
-# (P(>=2) ~ 0.23). Both landed on s1 at sigma = 0, but that pairing was picked
-# after seeing which two failed, and the structural argument runs the other way:
-# at sigma = 0 there is no U -> A edge, so proxy _||_ S | U reduces to
-# proxy _||_ S, true by construction -- a real violation would not fail where
-# covariate-freedom is most trivially true and pass at sigma = 0.25 on the SAME
-# seed, where a U -> A -> S path actually exists. The decisive check: the two
-# failures implicate DIFFERENT proxies (W x S2 at |r| = 0.134 here; Z x S2 at
-# |r| = 0.146 on d_d Acrobot), so there is no shared pair to be structural.
-#
-# P1a/P1b are WITHIN-cell comparisons of grace against base at sigma = 0, so
-# three seeds or two both answer them; only the secondary cross-cell sigma = 0
-# vs sigma = 0.25 reading carries the caveat.
-CELLS = (
-    ("danull", "d_a_null", (), SIGMA, SEEDS),
-    ("d100s0", "d_d_sweep_d100", PROXIES, 0.0, (0, 2, 3)),
-    ("d100", "d_d_sweep_d100", PROXIES, SIGMA, SEEDS),
-    ("d025", "d_d_sweep_d025", PROXIES, SIGMA, SEEDS),
-    ("d010asym", "d_d_sweep_d010_asym", PROXIES, SIGMA, SEEDS),
-)
-# The analytic q1 do-contrast truth per cell: M = c_r * P(U=1). Read from
-# arm_knobs at runtime rather than tabulated here.
-RESULTS_ROOT = Path("results/e1")
+# The campaign is DEFINED by reproducibility/rl_regimes/diagrams/e1_*.yaml
+# (strict-parsed: an unknown key raises). The CELLS/SEEDS/ALGOS/PROXIES
+# constants that used to live here were a second construction site for facts
+# the YAMLs now carry — deleted 2026-09-03; `enumerate_plan` below is the one
+# derivation, shared with the declaration tests.
 
 
 def _scalar_meta(meta) -> dict:
@@ -121,6 +80,11 @@ GENERATION_REPORTS = (
     # the sigma = 0 no-harm point, generated separately so the existing
     # sigma = 0.25 report stays the untouched record of what certified it
     "results/dd_sweep_sigma0_generation/report.json",
+    # the TRUE-POMDP column (Phase 3): masked-behaviour generation (O->A, the
+    # edge D-F declares), ids carrying -om13, report rows carrying the
+    # behavior_information_set stamp — the contract grid's
+    # source_cell: d_d_sweep_d100_om13 resolves through this.
+    "results/dd_sweep_om13_generation/report.json",
 )
 
 
@@ -177,66 +141,100 @@ def resolve_certified_ids_for_spec(spec) -> dict:
     return out
 
 
-def _resolve_ids() -> dict:
-    """Read certified ids from the generation reports. Never reconstruct."""
-    srcs = []
-    for f in (
-        "results/vb_recertification/report.json",
-        "results/dd_sweep_generation/report.json",
-        "results/dd_asym_generation/report.json",
-        # the sigma = 0 no-harm point, generated separately so the existing
-        # sigma = 0.25 report stays the untouched record of what certified it
-        "results/dd_sweep_sigma0_generation/report.json",
+def enumerate_plan(campaign: str = "e1") -> list:
+    """One entry per (yaml arm) x env x dataset seed x TRAINING seed x algo —
+    the whole campaign, derived from the {campaign}_*.yaml declarations alone
+    through the SAME resolver the declaration tests pin (one construction
+    site).
+
+    ``train_seeds`` (contract cells) splits the two seed axes: the dataset
+    seed selects the certified data (and the one GRACE fit, shared via the
+    cache); the training seed is the RL run's initialisation. Cells without
+    ``train_seeds`` keep the pilot's single-axis layout (ts == ds, plain seed
+    segment) so the 42 pilot leaves stay addressable."""
+    from src.benchmarking.regime_sweep import load_sweep_spec
+
+    entries = []
+    for f in sorted(
+        Path("reproducibility/rl_regimes/diagrams").glob(f"{campaign}_*.yaml")
     ):
-        p = Path(f)
-        if p.exists():
-            srcs.extend(json.loads(p.read_text()))
-    out, stamps = {}, {}
-    for tag, cell, _pn, sg, seeds in CELLS:
-        for env in ENVS:
-            for sd in seeds:
-                hits = [
-                    r
-                    for r in srcs
-                    if r["cell"] == cell
-                    and r["env"] == env
-                    and r["seed"] == sd
-                    and (r.get("sigma") in (None, sg) or cell == "d_a_null")
-                ]
-                if not hits:
-                    raise SystemExit(f"no certified dataset for {cell} {env} s{sd}")
-                r = hits[0]
-                out[(tag, env, sd)] = r["dataset_id"]
-                stamps[(tag, env, sd)] = {
-                    k: r.get(k)
-                    for k in ("preflight_passed", "gate_passed", "ok")
-                    if k in r
-                }
-    return out, stamps
+        spec = load_sweep_spec(f)
+        ids = resolve_certified_ids_for_spec(spec)
+        arm = "grace" if spec.grace_reward_transform else "base"
+        pts = spec_points(spec)
+        if len(pts) != 1:
+            raise SystemExit(
+                f"{f.name}: campaign cells declare exactly one point, got {pts}"
+            )
+        _b, sg = pts[0]
+        train_seeds = getattr(spec, "train_seeds", None)
+        for env in spec.envs:
+            for sd in spec.seeds:
+                did, stamp = ids[(env, sd, sg)]
+                for ts in train_seeds or [sd]:
+                    seg = f"ds{sd}_ts{ts}" if train_seeds else str(sd)
+                    for algo in spec.algos:
+                        entries.append(
+                            dict(
+                                spec=spec,
+                                yaml=f.name,
+                                tag=spec.e1_cell,
+                                arm=arm,
+                                env=env,
+                                seed=sd,
+                                train_seed=ts,
+                                seed_segment=seg,
+                                sigma=sg,
+                                algo=algo,
+                                dataset_id=did,
+                                stamp=stamp,
+                            )
+                        )
+    return entries
 
 
-def _assert_safe(ids: dict, stamps: dict) -> None:
+def assert_plan_safe(entries) -> None:
+    """The two pre-flight assertions, now on the YAML-derived plan: (1) pairs
+    share ids, distinct cells never do (the collision that would have made
+    every comparison vacuous); (2) every id exists in the store and carries
+    its certification stamp (a regenerated dataset is unrepresentable)."""
     import minari
 
-    # (1) DISTINCTNESS -- the collision that would have made every cell equal.
-    seen = {}
-    for key, did in ids.items():
-        if did in seen:
+    by_key: dict = {}
+    for e in entries:
+        k = (e["tag"], e["env"], e["seed"])  # dataset seed: pairing is per-ds
+        if k in by_key and by_key[k] != e["dataset_id"]:
             raise SystemExit(
-                f"DATASET COLLISION: {key} and {seen[did]} both resolve to {did!r}. "
-                "Two cells sharing data would make their comparison vacuous."
+                f"paired arms of {k} resolve to different ids: "
+                f"{by_key[k]!r} vs {e['dataset_id']!r}"
             )
-        seen[did] = key
-    # (2) EXISTENCE + CERTIFICATION -- a regenerated dataset is unrepresentable.
+        by_key[k] = e["dataset_id"]
+    seen: dict = {}
+    for (tag, env, sd), did in by_key.items():
+        if did in seen and seen[did][0] != tag:
+            raise SystemExit(
+                f"DATASET COLLISION: {(tag, env, sd)} and {seen[did]} both "
+                f"resolve to {did!r}."
+            )
+        seen[did] = (tag, env, sd)
     available = set(minari.list_local_datasets())
-    for key, did in ids.items():
-        if did not in available:
-            raise SystemExit(f"{key}: dataset {did!r} is not in the Minari store")
-        st = stamps.get(key) or {}
-        bad = [k for k, v in st.items() if v is False]
+    for e in entries:
+        if e["dataset_id"] not in available:
+            raise SystemExit(
+                f"{e['tag']} s{e['seed']}: dataset {e['dataset_id']!r} is not "
+                "in the Minari store"
+            )
+        bad = [k for k, v in (e["stamp"] or {}).items() if v is False]
         if bad:
-            raise SystemExit(f"{key}: dataset {did!r} fails its stamp {bad}")
-    print(f"  [assert] {len(ids)} ids, all distinct, present and stamped", flush=True)
+            raise SystemExit(
+                f"{e['tag']} s{e['seed']}: dataset {e['dataset_id']!r} fails "
+                f"its stamp {bad}"
+            )
+    print(
+        f"  [assert] {len(by_key)} ids over {len(entries)} runs: pairs share, "
+        "cells distinct, all present and stamped",
+        flush=True,
+    )
 
 
 def _q1_truth(cell: str, sigma: float) -> float | None:
@@ -268,201 +266,245 @@ def _q1_truth(cell: str, sigma: float) -> float | None:
 def main() -> int:
     import torch
     from src.benchmarking.critic_ablation import CriticAblationConfig
-    from src.benchmarking.regime_sweep import load_sweep_spec, results_leaf
+    from src.benchmarking.regime_sweep import (
+        _slice_critic_csv,
+        arm_label,
+        load_sweep_spec,
+        results_leaf,
+    )
     from src.benchmarking.registry import register_default_algorithms, registry
     from src.benchmarking.runner import BenchmarkRunner
     from src.config.defaults import EnvConfig, RunConfig, TrainingConfig
+    from src.envs.offline.diagram_arms import arm_knobs
     from src.envs.registry import register_default_env_wrappers
 
     register_default_algorithms()
     register_default_env_wrappers()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    ids, stamps = _resolve_ids()
-    _assert_safe(ids, stamps)
+    argv = sys.argv[1:]
+    campaign = "e1"
+    cache_dir = None
+    for a in list(argv):
+        if a.startswith("--campaign="):
+            campaign = a.split("=", 1)[1]
+            argv.remove(a)
+        elif a.startswith("--cache-dir="):
+            cache_dir = a.split("=", 1)[1] or None
+            argv.remove(a)
+    if campaign not in CAMPAIGN_ROOTS:
+        raise SystemExit(f"--campaign must be one of {sorted(CAMPAIGN_ROOTS)}")
+    results_root = CAMPAIGN_ROOTS[campaign]
+    if cache_dir is None:
+        cache_dir = str(results_root / "_transform_cache")
+    only = argv or None  # optional smoke filter: tag algo seed arm
 
-    only = sys.argv[1:] or None  # optional smoke filter: tag algo seed arm
-    spec0 = load_sweep_spec(Path("reproducibility/rl_regimes/diagrams/e1_d100.yaml"))
-    n_steps = spec0.budgets.get("offline_grad_steps")
+    entries = enumerate_plan(campaign)
+    assert_plan_safe(entries)
 
-    for tag, cell, proxies, sg, seeds in CELLS:
-        truth = _q1_truth(cell, sg)
-        for env in ENVS:
-            for sd in seeds:
-                did = ids[(tag, env, sd)]
-                for algo in ALGOS:
-                    for arm in ("base", "grace"):
-                        key = f"{tag}/{algo}/{arm}/s{sd}"
-                        if only and not all(t in key for t in only):
-                            continue
-                        leaf = results_leaf(
-                            RESULTS_ROOT,
-                            f"{REGIME}_{tag}",
-                            BETA,
-                            sg,
-                            env,
-                            algo,
-                            arm,
-                            sd,
-                        )
-                        if (leaf / "eval_metrics.csv").exists():
-                            print(f"  skip (done) {key}", flush=True)
-                            continue
-                        staging = Path("results/e1/_staging") / key.replace("/", "_")
-                        if staging.exists():
-                            shutil.rmtree(staging)
-                        staging.mkdir(parents=True, exist_ok=True)
-                        env_cfg = EnvConfig(
-                            env_id=env,
-                            n_train_envs=2,
-                            # 16, the default: two rollouts per checkpoint cannot
-                            # produce the MC band "parity within seed noise" is
-                            # judged against. The analytic return removes U-draw
-                            # variance, NOT initial-state variance.
-                            n_eval_envs=16,
-                            rollout_len=2,
-                            # THE EVAL HORIZON, separate from rollout_len above.
-                            # rollout_len=2 is right for the inert on-policy
-                            # params on an offline run and was catastrophic for
-                            # evaluation: 2 environment steps, so every policy
-                            # scored 2.0-3.0 and no return prediction could fail.
-                            # 500 = CartPole-v1's episode cap.
-                            eval_rollout_len=500,
-                            seed=sd,
-                            offline_dataset=did,  # PINNED, read not derived
-                            behavior_policy="bias_confounded_action",
-                            behavior_strength=sg,
-                            eval_confounded_reward=True,
-                            eval_confounded_mode="analytic",
-                            grace_reward_transform=(arm == "grace"),
-                            grace_proxy_names=(proxies if arm == "grace" else ()),
-                        )
-                        # the deployment reward's gate, from arm_knobs
-                        if cell != "d_a_null":
-                            from src.envs.offline.diagram_arms import arm_knobs
+    truths: dict = {}
+    for e in entries:
+        spec, tag, arm = e["spec"], e["tag"], e["arm"]
+        env, sd, sg, algo, did = (
+            e["env"],
+            e["seed"],
+            e["sigma"],
+            e["algo"],
+            e["dataset_id"],
+        )
+        ts, seg = e["train_seed"], e["seed_segment"]
+        if tag not in truths:
+            truths[tag] = _q1_truth(spec.source_cell, sg)
+        truth = truths[tag]
+        key = f"{tag}/{algo}/{arm}/{seg}"
+        if only and not all(t in key for t in only):
+            continue
+        # e1 keeps the pilot's layout: the ARM occupies the critic slot, one
+        # leaf per run, observational scoring only. c1 (Phase 6) runs the
+        # cell's DECLARED critic set on the shared stream and explodes into
+        # per-critic leaves the way run_cell does — the base algorithm's own
+        # numbers are the observational leaf, and tpomdp excludes proximal
+        # (L2: D-G q1 bounds-only), which the YAML declares, not the driver.
+        if campaign == "e1":
+            critics = ["observational"]
+            slots = [(arm, None)]
+        else:
+            critics = list(spec.critics_for(arm_label(0.0, sg)))
+            slots = [(c, c) for c in critics]
+        leaves = {
+            slot: results_leaf(
+                results_root, f"{REGIME}_{tag}", 0.0, sg, env, algo, slot, seg
+            )
+            for slot, _ in slots
+        }
+        if all((lf / "eval_metrics.csv").exists() for lf in leaves.values()):
+            print(f"  skip (done) {key}", flush=True)
+            continue
+        staging = results_root / "_staging" / key.replace("/", "_")
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, exist_ok=True)
+        # The learner's INFORMATION SET: the mask applies whenever the CELL
+        # declares it — for base and grace alike, and regardless of the
+        # DECLARED observability (the contract's true-POMDP cells keep
+        # observability: mdp so cql/iql stay the memoryless learners; the
+        # loader deletes the columns, so GRACE sees what the learner sees).
+        _mask = tuple((spec.mask_indices or {}).get(env, ()) or ()) or None
+        env_cfg = EnvConfig(
+            env_id=env,
+            n_train_envs=2,
+            n_eval_envs=int(spec.n_eval_envs or 16),
+            rollout_len=2,
+            eval_rollout_len=int(spec.eval_rollout_len or 500),
+            seed=ts,  # the TRAINING seed; the dataset seed rides in the id
+            offline_dataset=did,  # PINNED, read not derived
+            mask_indices=_mask,
+            behavior_policy="bias_confounded_action",
+            behavior_strength=sg,
+            eval_confounded_reward=bool(spec.eval_confounded_reward),
+            eval_confounded_mode=spec.eval_confounded_mode or "analytic",
+            grace_reward_transform=(arm == "grace"),
+            grace_proxy_names=(spec.grace_proxy_names if arm == "grace" else ()),
+            grace_cache_dir=(getattr(spec, "grace_cache_dir", None) or cache_dir),
+            declared_observability=spec.declared_observability,
+            grace_k_max=spec.grace_k_max,
+            grace_window_k=getattr(spec, "grace_window_k", None),
+            grace_k_diagnostics=getattr(spec, "grace_k_diagnostics", True),
+        )
+        # the deployment reward's gate, from arm_knobs via the SOURCE cell
+        if spec.source_cell != "d_a_null":
+            sp = load_sweep_spec(
+                Path(f"reproducibility/rl_regimes/diagrams/{spec.source_cell}.yaml")
+            )
+            k = arm_knobs(
+                sp.diagram,
+                sigma=sg,
+                confounder_c_r=(
+                    None
+                    if getattr(sp, "gate_mean_effect", None) is not None
+                    else sp.confounder_c_r
+                ),
+                proxy_strength=sp.proxy_strength,
+                instrument_strength=sp.instrument_strength,
+                u_drift=sp.u_drift,
+                gate_probs=sp.gate_probs,
+                gate_mean_effect=getattr(sp, "gate_mean_effect", None),
+            )
+            env_cfg.confounder_c_r = float(k.confounder_c_r or 0.0)
+            env_cfg.gate_probs = k.gate_probs
+        train_cfg = TrainingConfig(
+            n_episodes=1,
+            n_checkpoints=int(spec.budget("n_checkpoints", 25)),
+            deterministic=True,
+            device=device,
+            algorithm=algo,
+            aggregation="iqm",
+            offline_grad_steps=(
+                int(spec.budgets["offline_grad_steps"])
+                if spec.budgets.get("offline_grad_steps")
+                else None
+            ),
+            record_eval_video=False,
+        )
+        t0 = time.time()
+        print(f"\n=== {key} | {did}", flush=True)
+        runner = BenchmarkRunner(
+            env_cfg,
+            train_cfg,
+            RunConfig(run_dir=str(staging), timestamp="e1"),
+            registry.get(algo),
+            critic_ablation_cfg=CriticAblationConfig(
+                critics=critics,
+                q1_truth=truth,
+                a_bad=1,
+            ),
+        )
+        runner.run()
+        # The leaf MARKER the deployed report keys on (regime_report globs
+        # for config.yaml; only main.py's CLI path writes one otherwise).
+        import dataclasses
 
-                            sp = load_sweep_spec(
-                                Path(f"reproducibility/rl_regimes/diagrams/{cell}.yaml")
-                            )
-                            k = arm_knobs(
-                                sp.diagram,
-                                sigma=sg,
-                                confounder_c_r=(
-                                    None
-                                    if getattr(sp, "gate_mean_effect", None) is not None
-                                    else sp.confounder_c_r
-                                ),
-                                proxy_strength=sp.proxy_strength,
-                                instrument_strength=sp.instrument_strength,
-                                u_drift=sp.u_drift,
-                                gate_probs=sp.gate_probs,
-                                gate_mean_effect=getattr(sp, "gate_mean_effect", None),
-                            )
-                            env_cfg.confounder_c_r = float(k.confounder_c_r or 0.0)
-                            env_cfg.gate_probs = k.gate_probs
-                        train_cfg = TrainingConfig(
-                            n_episodes=1,
-                            n_checkpoints=25,
-                            deterministic=True,
-                            device=device,
-                            algorithm=algo,
-                            aggregation="iqm",
-                            offline_grad_steps=(int(n_steps) if n_steps else None),
-                            record_eval_video=False,
-                        )
-                        t0 = time.time()
-                        print(f"\n=== {key} | {did}", flush=True)
-                        runner = BenchmarkRunner(
-                            env_cfg,
-                            train_cfg,
-                            RunConfig(run_dir=str(staging), timestamp="e1"),
-                            registry.get(algo),
-                            critic_ablation_cfg=CriticAblationConfig(
-                                critics=["observational"],
-                                q1_truth=truth,
-                                a_bad=1,
-                            ),
-                        )
-                        runner.run()
-                        # The leaf MARKER the deployed report keys on:
-                        # regime_report.iter_leaves globs for config.yaml, which
-                        # only main.py's CLI path writes. A programmatic
-                        # BenchmarkRunner writes none, so the promote loop's
-                        # `if src.exists()` silently skipped it and the deployed
-                        # `regime_report`/`render_regime_report` saw an EMPTY
-                        # tree (S15: a component that can no-op silently).
-                        import dataclasses
+        import yaml
 
-                        import yaml
-
-                        (staging / "config.yaml").write_text(
-                            yaml.safe_dump(
-                                json.loads(
-                                    json.dumps(
-                                        {
-                                            "env": dataclasses.asdict(env_cfg),
-                                            "training": dataclasses.asdict(train_cfg),
-                                            "e1": {
-                                                "cell": tag,
-                                                "source_cell": cell,
-                                                "arm": arm,
-                                                "dataset_id": did,
-                                            },
-                                        }
-                                    )
-                                ),
-                                default_flow_style=False,
-                            )
-                        )
-                        leaf.mkdir(parents=True, exist_ok=True)
-                        for f in (
-                            "eval_metrics.csv",
-                            # The analytic return's decomposition. Written by the
-                            # runner into staging; if it is not promoted here it
-                            # is rmtree'd with the staging dir and the run has no
-                            # record of whether the base component saturated --
-                            # a diagnostic that does not survive is not a record.
-                            "eval_deployment.csv",
-                            "train_metrics.csv",
-                            "critic_ablation_metrics.csv",
-                            "arm_diagnostics.csv",
-                            "config.yaml",
-                        ):
-                            src = staging / f
-                            if src.exists():
-                                shutil.copy2(src, leaf / f)
-                        # THE PROVENANCE THE READER NEEDS, in the leaf itself.
-                        sv = getattr(runner, "grace_serving", None)
-                        (leaf / "e1_provenance.json").write_text(
-                            json.dumps(
-                                {
-                                    "cell": tag,
-                                    "source_cell": cell,
-                                    "arm": arm,
-                                    "algo": algo,
-                                    "env": env,
-                                    "seed": sd,
-                                    "dataset_id": did,
-                                    "stamp": stamps[(tag, env, sd)],
-                                    "q1_truth": truth,
-                                    "grace": (
-                                        None
-                                        if sv is None
-                                        else {
-                                            "abstained": sv.abstained,
-                                            "label": sv.label(),
-                                            "lo": sv.lo,
-                                            "hi": sv.hi,
-                                            "meta": _scalar_meta(sv.meta),
-                                        }
-                                    ),
-                                    "seconds": round(time.time() - t0, 1),
-                                },
-                                indent=1,
-                            )
-                        )
-                        shutil.rmtree(staging, ignore_errors=True)
-                        print(f"  -> {leaf}  ({time.time()-t0:.0f}s)", flush=True)
+        (staging / "config.yaml").write_text(
+            yaml.safe_dump(
+                json.loads(
+                    json.dumps(
+                        {
+                            "env": dataclasses.asdict(env_cfg),
+                            "training": dataclasses.asdict(train_cfg),
+                            "e1": {
+                                "cell": tag,
+                                "source_cell": spec.source_cell,
+                                "arm": arm,
+                                "dataset_id": did,
+                                "declared_yaml": e["yaml"],
+                            },
+                        }
+                    )
+                ),
+                default_flow_style=False,
+            )
+        )
+        sv = getattr(runner, "grace_serving", None)
+        for slot, critic_slice in slots:
+            leaf = leaves[slot]
+            leaf.mkdir(parents=True, exist_ok=True)
+            for f in (
+                "eval_metrics.csv",
+                "eval_deployment.csv",
+                "train_metrics.csv",
+                "arm_diagnostics.csv",
+                "config.yaml",
+            ):
+                src = staging / f
+                if src.exists():
+                    shutil.copy2(src, leaf / f)
+            cam = staging / "critic_ablation_metrics.csv"
+            if critic_slice is None:
+                if cam.exists():
+                    shutil.copy2(cam, leaf / "critic_ablation_metrics.csv")
+            else:
+                _slice_critic_csv(
+                    cam, leaf / "critic_ablation_metrics.csv", critic_slice
+                )
+            (leaf / "e1_provenance.json").write_text(
+                json.dumps(
+                    {
+                        "cell": tag,
+                        "source_cell": spec.source_cell,
+                        "declared_yaml": e["yaml"],
+                        "arm": arm,
+                        "critic": slot,
+                        "algo": algo,
+                        "env": env,
+                        "seed": sd,
+                        "dataset_seed": sd,
+                        "train_seed": ts,
+                        "dataset_id": did,
+                        "stamp": e["stamp"],
+                        "q1_truth": truth,
+                        "grace": (
+                            None
+                            if sv is None
+                            else {
+                                "abstained": sv.abstained,
+                                "label": sv.label(),
+                                "lo": sv.lo,
+                                "hi": sv.hi,
+                                "meta": _scalar_meta(sv.meta),
+                            }
+                        ),
+                        "seconds": round(time.time() - t0, 1),
+                    },
+                    indent=1,
+                )
+            )
+        shutil.rmtree(staging, ignore_errors=True)
+        print(
+            f"  -> {len(slots)} leaf/leaves for {key}  ({time.time()-t0:.0f}s)",
+            flush=True,
+        )
     print("\nE1 COMPLETE")
     return 0
 

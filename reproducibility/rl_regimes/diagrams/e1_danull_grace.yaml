@@ -39,6 +39,14 @@ confounder_c_r: 0.0        # NO U->R edge: this is the whole point of the arm
 
 # One point. The L's severity axes do not apply: there is nothing to make severe.
 sweep:
+  # sigma = 0 (basic): D-A-null HAS NO LATENT, so a sigma > 0 declaration is
+  # rejected by the diagram-arm validator — correctly. The pilot's tree sat at
+  # sigma_025 only because the driver's campaign default leaked into a cell
+  # where sigma is meaningless (inert at run time: c_r = 0, sigma-free id);
+  # the 12 pilot leaves were MOVED to beta_000_sigma_000 on 2026-09-03 so the
+  # tree, this declaration and the validator agree. An interim fix here
+  # declared sigma [0.25] to match the old tree and broke
+  # test_diagram_arms — resolved in favour of the validator.
   basic:      { beta: 0.0, sigma: 0.0 }
   biased:     false
   confounded: false
@@ -51,6 +59,13 @@ max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
 # Deployment evaluation: U -> R intact, U -> A severed (the learned policy
 # acts). ANALYTIC takes E_U[return] in closed form on a clean env, removing
 # U-draw variance that would otherwise sit inside the seed-noise band.
+# THE EVAL HORIZON, separate from rollout_len (S17: rollout_len=2 is right
+# for the inert on-policy params on an offline run and was catastrophic as an
+# eval horizon — every policy scored 2.0-3.0). 500 = CartPole-v1's episode
+# cap. n_eval_envs=16: two rollouts per checkpoint cannot produce the MC band
+# "parity within seed noise" is judged against.
+eval_rollout_len: 500
+n_eval_envs: 16
 eval_confounded_reward: true
 eval_confounded_mode: analytic
 

@@ -1440,6 +1440,44 @@ candidates in likely payoff order: bootstrap replicates in parallel
 the per-node M-step budget on 1-D proxy channels, fit-once-per-(cell,
 dataset seed, k) across training seeds — none applied on argument alone.
 
+### THE S18 EVIDENCE REPORT + THE WINDOW-COST TABLE (2026-09-03, sweep-holder session)
+
+**S18, measured and filed:** `results/l5_calibration/s18_report.json`
+(rendered by `tools/report_s18.py` from the 61 preserved sweep rows — the
+rows' ONE remaining purpose under the dr2-cut ruling). Headlines: 29 true-MDP
+null replicates, **97% rejected at α = 0.05, median p = 0.005** — the point
+null of exact Markovianity is false by construction on deterministic systems;
+ΔR² separation **925×** between the largest null effect (5.8e-7) and the
+smallest constructed-POMDP effect (5.4e-4); capacity-shrink median **6.9 on
+nulls vs 0.0007 on masked** (approximation error dies with capacity;
+information does not). Cite the JSON, not this paragraph.
+
+**The window branch's measured costs** (d100s0 s0, 49k rows, GPU,
+production budgets; `fit_unaug = 7709 s` is the denominator):
+
+| fit | state dims | seconds | ratio |
+|---|---|---|---|
+| k = 0 (unaugmented) | 4 | 7,709 | 1.00 |
+| k = 1 | 9 | 13,184 | **1.71** |
+| k = 2 | 14 | 14,159 | **1.84** |
+
+Window cost grows GENTLY with k (the fixed-step M-step decouples
+per-iteration cost from dimension). With the transform cache, the materiality
+selector's k=0 fit is a HIT on any campaign where the base arm ran first, so
+its marginal cost is the k+1 fit alone. Third stability datum for the
+materiality criterion on true-MDP data: intervals at k = 0/1/2 are
+[+0.4989,+0.5235] / [+0.4989,+0.5235] / [+0.4989,+0.5237] —
+|Δcontrast| ≈ 2e-4 against w ≈ 1.2e-2, a ~60× margin, so the selector stops
+at k = 0 immediately. (The probe's earlier SELECTION timing, 912 s, was the
+pre-S19 statistical selector and is VOID — recorded, not quotable.)
+
+**danull leaf paths moved (2026-09-03):** the pilot's 12 `offline_mdp_danull`
+leaves now live under `beta_000_sigma_000` (was `sigma_025` — the driver's
+campaign default leaking into a cell where σ is meaningless; the diagram-arm
+validator correctly rejects σ > 0 on a no-latent cell, and the tree now
+agrees with the declaration `e1_danull*.yaml: basic {β=0, σ=0}`). Anything
+hardcoding the old path must update.
+
 ### PHASE 3 PRE-REGISTRATION (2026-09-03, before generation) — the true-POMDP datasets
 
 **What runs:** `tools/generate_diagram_arms.py --cells d_d_sweep_d100_om13

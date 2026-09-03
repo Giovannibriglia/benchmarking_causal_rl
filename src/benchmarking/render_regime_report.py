@@ -433,6 +433,56 @@ def _fig_biased_coverage(agg, regime, out, formats, *, critic="observational"):
     return written
 
 
+# --------------------------------------------------------------------------- #
+# Figure D — per-seed learning curves, arms overlaid (never pooled)            #
+# --------------------------------------------------------------------------- #
+def _fig_learning_curves(results_root, regime, out, formats) -> List[Path]:
+    """One panel per (env, algo): every leaf's checkpoint series as its own
+    line — base vs grace overlaid, ABSTAINED grace dashed grey (a passthrough
+    must be visibly a passthrough). Consumes ``series_per_leaf`` (the
+    aggregator-side accessor), so the no-tree-walk contract holds. Seeds are
+    deliberately NOT pooled: the per-seed transients are the point — pooling
+    at n=3 is what buried the d100s0 CQL dip diagnosis behind an IQM of the
+    two lowest seeds."""
+    from src.benchmarking.regime_report import series_per_leaf
+
+    written: List[Path] = []
+    for column, ylabel, stem in (
+        ("eval_return_mean", "deployment return", "learning_curves"),
+        ("eval_return_base_mean", "base return (steps)", "learning_curves_base"),
+    ):
+        rows = series_per_leaf(results_root, regime, column)
+        if not rows:
+            continue
+        for env, algo in sorted({(r["env"], r["algo"]) for r in rows}):
+            sel = [r for r in rows if r["env"] == env and r["algo"] == algo]
+            fig, ax = plt.subplots(figsize=(6.8, 4.4))
+            seen = set()
+            for r in sorted(sel, key=lambda r: (r["critic"], r["seed"])):
+                xs = [e for e, _ in r["series"]]
+                ys = [v for _, v in r["series"]]
+                if r["critic"] == "grace" and r.get("grace_abstained"):
+                    style = dict(color="#8a8a8a", ls="--", lw=1.2)
+                    label = "grace (abstained)"
+                elif r["critic"] == "grace":
+                    style = dict(color="#eb6834", lw=1.5)
+                    label = "grace"
+                else:
+                    style = dict(color="#2a78d6", lw=1.5)
+                    label = r["critic"]
+                ax.plot(xs, ys, label=(label if label not in seen else None), **style)
+                seen.add(label)
+            ax.set_xlabel("gradient steps")
+            ax.set_ylabel(f"{ylabel} (per seed)")
+            ax.set_title(f"Learning curves — {regime} / {env} / {algo}")
+            ax.grid(True, lw=0.5, alpha=0.4)
+            ax.legend(fontsize=8)
+            written += _save(
+                fig, out, f"{regime}_{stem}_{_safe(env)}_{_safe(algo)}", formats
+            )
+    return written
+
+
 def render(
     results_root: str | Path, regime: str, *, formats=("png", "pdf")
 ) -> List[Path]:
@@ -446,6 +496,7 @@ def render(
     written += _fig_fix_critic_vary_algo(agg, regime, out, formats)  # Fig A
     written += _fig_reward_sweep(agg, regime, out, formats)  # Fig B
     written += _fig_biased_coverage(agg, regime, out, formats)  # Fig C
+    written += _fig_learning_curves(results_root, regime, out, formats)  # Fig D
     return written
 
 
