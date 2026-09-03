@@ -194,29 +194,38 @@ def enumerate_plan(campaign: str = "e1") -> list:
 
 
 def assert_plan_safe(entries) -> None:
-    """The two pre-flight assertions, now on the YAML-derived plan: (1) pairs
-    share ids, distinct cells never do (the collision that would have made
-    every comparison vacuous); (2) every id exists in the store and carries
-    its certification stamp (a regenerated dataset is unrepresentable)."""
+    """The two pre-flight assertions, now on the YAML-derived plan:
+
+    (1) the dataset id is a FUNCTION of the resolution key
+        ``(source_cell, env, dataset seed, sigma)`` — same key must give the
+        same id (arms of one comparison are PAIRED on identical data: e1's
+        base/grace pairs within a tag, c1's base/grace_d* cells across tags),
+        and different keys must never share an id (the collision that would
+        have made every comparison vacuous). The first c1 pre-flight caught
+        the previous tag-based rule mis-firing on exactly the intended
+        pairing — c1 encodes the ARM in the tag, so id-sharing across tags
+        within one truth column is the design, not the defect.
+    (2) every id exists in the store and carries its certification stamp
+        (a regenerated dataset is unrepresentable)."""
     import minari
 
     by_key: dict = {}
     for e in entries:
-        k = (e["tag"], e["env"], e["seed"])  # dataset seed: pairing is per-ds
+        k = (e["spec"].source_cell, e["env"], e["seed"], e["sigma"])
         if k in by_key and by_key[k] != e["dataset_id"]:
             raise SystemExit(
-                f"paired arms of {k} resolve to different ids: "
+                f"resolution key {k} maps to two ids: "
                 f"{by_key[k]!r} vs {e['dataset_id']!r}"
             )
         by_key[k] = e["dataset_id"]
     seen: dict = {}
-    for (tag, env, sd), did in by_key.items():
-        if did in seen and seen[did][0] != tag:
+    for k, did in by_key.items():
+        if did in seen:
             raise SystemExit(
-                f"DATASET COLLISION: {(tag, env, sd)} and {seen[did]} both "
-                f"resolve to {did!r}."
+                f"DATASET COLLISION: keys {k} and {seen[did]} both resolve "
+                f"to {did!r} — distinct resolution keys must never share data."
             )
-        seen[did] = (tag, env, sd)
+        seen[did] = k
     available = set(minari.list_local_datasets())
     for e in entries:
         if e["dataset_id"] not in available:
@@ -285,10 +294,14 @@ def main() -> int:
     argv = sys.argv[1:]
     campaign = "e1"
     cache_dir = None
+    campaign_plan_only = False
     for a in list(argv):
         if a.startswith("--campaign="):
             campaign = a.split("=", 1)[1]
             argv.remove(a)
+        elif a == "--plan-only":
+            argv.remove(a)
+            campaign_plan_only = True
         elif a.startswith("--cache-dir="):
             cache_dir = a.split("=", 1)[1] or None
             argv.remove(a)
@@ -301,6 +314,15 @@ def main() -> int:
 
     entries = enumerate_plan(campaign)
     assert_plan_safe(entries)
+    if campaign_plan_only:
+        # The PRE-FLIGHT: the full plan with its assertions, zero training.
+        for e in entries:
+            print(
+                f"  plan {e['tag']}/{e['algo']}/{e['arm']}/{e['seed_segment']}"
+                f" sigma={e['sigma']} -> {e['dataset_id']}"
+            )
+        print(f"[plan-only] {len(entries)} runs pass all pre-flight assertions")
+        return 0
 
     truths: dict = {}
     for e in entries:
