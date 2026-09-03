@@ -1269,7 +1269,92 @@ completed d025 leaves are kept as-is; the cell is marked incomplete-by-
 decision with this paragraph as the reason. Do not resume them without a new
 ruling; `tools/run_e1.py` would happily continue if re-invoked.
 
+### RECORDS OF 2026-09-03 (afternoon) — selector readings, parity pass, probe capture, two near-misses
+
+**The L5 selector's two readings (calibration, CartPole, 55 rows at the time
+of writing).** `k_selected = None` was ambiguous on the page between "every
+stage rejected" and "budget-bound"; they are the SAME event (a run of
+`k_max + 1` tests with no pass), and `tools/calibrate_l5.py` now states both
+readings per env (`summary.<env>.selector`): the as-deployed statistical
+selector (`dr2_cut=None`, what the sweep ran) and the same rows re-read
+under the stated cut (`--dr2-cut`, default 1e-4), with the cut CHECKED
+against the measured gap (`cut_in_measured_gap`). Null rows (n = 27):
+
+| reading | k = 0 | k = 1 | k = 2 | budget-bound |
+|---|---|---|---|---|
+| as deployed (statistical only) | 1 | 6 | 4 | 16 |
+| under the cut 1e-4 | 27 | 0 | 0 | 0 |
+
+Gap: null max 5.8e-7, masked min 5.4e-4 (separation 925x), so the cut is
+inside it. This pair IS contract row 2's headline ("over-assumption is
+cheap" holds only if k = 0 is selected on true-MDP data): the cut-less
+selector chases floor rejections to `k_max` on 16/27 nulls; under the cut
+k = 0 on 27/27. Rows now store every stage's (lag, p, stat) so any cut can
+be re-read post hoc; rows written before that field existed decide k = 0
+from stage 0 alone and are otherwise reported "undetermined" (so the masked
+rows' under-cut k is undetermined for the early rows, never guessed).
+**Rule:** the in-flight sweep process holds the OLD code and writes its own
+`report.json` at exit — run `uv run python tools/calibrate_l5.py
+--report-only` afterwards to rebuild the two-reading report from
+`rows.jsonl`.
+
+**Parity re-run RECORDED.** The chain `pilot-exit -> GPU preflight -> parity
+tests -> cost probe` ran as a background task whose output file survived:
+`tests/test_proximal_vectorized_parity.py` — 4 passed, 60 s, 2026-09-03
+11:09, GPU 12 MiB used at preflight. That is the clean-tree check for
+everything built during the CUDA-OOM window, on record. The POMDP cost probe
+(d100 sigma=0 seed 0, GPU) is the tail of the same chain, so its output
+lands in that task file at exit; a watcher copies it to
+`results/pomdp_cost_probe.log` the moment the probe exits (it was NOT
+dead-piped, and was not killed — 5 h in, progressing). Augmented state dim
+is analytic, not measured: obs + k(obs + 1) — CartPole 9 at k = 1, 14 at
+k = 2.
+
+**Two near-misses pre-commit surfaced on the first commit of the L5 build
+(recorded because each resolved to the intended value by luck, not design).**
+(1) `build_generator_agent` passed `mask_indices=behavior_mask_indices` to
+`_train_generator` without DECLARING the parameter (flake8 F821): every
+caller so far took the default path, so the masked-behavior generation
+through that entry point had never executed — it would have raised
+`NameError` on first use. Declared with default `None`. (2)
+`e1_d100s0_grace.yaml` carried TWO identical `critics:` blocks (a copy-edit
+artefact); PyYAML keeps the LAST mapping for a duplicate key and both read
+`basic: [observational]`, so the finished `d100s0` runs are unaffected — a
+duplicate that resolved to the intended value is a near-miss, not a
+non-event. The earlier block is removed; `check-yaml` (ruamel) rejects
+duplicates, which is how it surfaced. Result artefacts are committed with
+`--no-verify` so the end-of-file hook does not rewrite them.
+
 ### Open threads
+
+* **AWAITING RULING (2026-09-03): the POMDP branch's augmentation vs the
+  served estimand's warrant.** L5 selects k with history blocks carrying
+  lagged (O, A, R); `pomdp_branch._augmented_cols` augments with lagged
+  (A, S) ONLY — validated-≠-served, one level in. The "obvious" repair
+  (add lagged R to the state) collides with the served estimand: the
+  catalogue's Q2 derivation (D-B, Steps 1–3; D-D inherits) defines
+  `g(s,a) = E_{U~P(U)}[E[R|s,a,U]]` over the EXOGENOUS MARGINAL, with the
+  stated reason (Step 1) that under do(pi) at every step the trajectory is
+  independent of U — no U->S' edge (fact 3) and the target policy does not
+  read U — so P(U | s) = P(U) in the deployment regime, while the
+  observational P(U | S_t) != P(U) is named at Step 2 as the WRONG
+  distribution to integrate. `estimator.interventional_sweep` implements
+  exactly this: `sum_k fit.prior[k] * E[R | S=s, do(A=a), do(U=k)]` with
+  `prior` the (K,) mixing weights, never the per-episode responsibilities.
+  Derivation and code AGREE (outcome 1). The reason FAILS the moment R
+  enters the state: R_{t-1} depends on U (the gated shift), so an
+  R-augmented state is U-informative at deployment, Step 1's independence
+  breaks, and the correct per-transition target becomes
+  `sum_u P(u | s_aug) E[R|s,a,u]` with a deployment-regime posterior
+  (prior x reward channel; the behaviour channel must NOT enter) — a
+  belief-state critic, a different served object, touching L4's contrast
+  interval and the pessimism rule. (A, S)-only augmentation keeps Step 1
+  intact (A_{t-1} = pi(.) does not read U; S never depends on U), so the
+  prior transform stays correct on it. Options for the ruling: (a) make the
+  selector's history features match the served augmentation — (O, A) only
+  — and keep an R-inclusive test as the reward-channel diagnostic, or (b)
+  R-augmentation with posterior serving. Do NOT change the augmentation
+  before the ruling.
 
 * **`--resume` NEVER reuses, and "correcting" it naively DELETES THE WHOLE
   STORE. Read this entire item before touching it.** `generate_diagram_arms.py`
