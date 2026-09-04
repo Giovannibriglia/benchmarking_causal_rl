@@ -1919,6 +1919,21 @@ caching allocator measures the cache, not the headroom; and every
 "speed" measurement here ran one fit per process, which is exactly the
 condition under which this cannot appear.
 
+**Decision 19:00 — KILL NOW rather than at 19:30** (mine, recorded): the
+mechanism is explained from the code plus measured evidence, so the live
+stack would confirm a frame, not discriminate; holding spends ~66 min of a
+§7.4-tight budget on a leaf that self-resolves on relaunch (its k = 0
+entry is stored; both algos hit it). The peer captures the GPU error
+state, PID-kills the chain, validates the env var on the freed card (fall
+back: `PYTORCH_NO_CUDA_MEMORY_CACHING=1`), relaunches the four grace waves
+mitigated; the base waves inherit the export. Confirmation on ds2's fresh
+k = 0 → k = 1 pair: `memory.used` drops after the k = 0 entry appears and
+GPU utilisation stays > 0 through the k = 1 fit. If the idle-GPU signature
+recurs there, the chain stops at that leaf and the no-caching variable is
+used instead. The ~9.5 h the stalled leaf occupied the card are lost wall
+time, not useful GPU-hours; the projection's 64 GPU-h of useful work is
+unchanged.
+
 **Replicate health on the grid fits so far (for the report):** ds0 k = 0:
 3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
 reasons "a mechanism's fitted scale is on its min_scale floor" and
