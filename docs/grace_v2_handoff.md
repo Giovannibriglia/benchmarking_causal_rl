@@ -2004,6 +2004,20 @@ reads `free + (reserved − allocated)`. Filed with the honest note that
 the campaign signature was the allocator storm on the LW path, not this
 guard.
 
+### POST-FREEZE LIST — ONE commit after the last C1 wave (every edit under `src/rl/offline/grace/` or `nbn/` flips `code_version` and invalidates every cache entry)
+
+| item | owner | why |
+|---|---|---|
+| `transform_cache.build_key` gains `sweep_chunk` | peer | the sweep is a Monte-Carlo estimate whose draws depend on batch composition (measured: distinct hashes at chunk 4096 / 128 / 8); today safe only because 4096 is fixed everywhere |
+| `pomdp_branch._lag_blocks` vectorised (one gather from episode starts) | peer | O(episodes × rows) per-episode loop with device syncs; not the stall, but the scaling is real |
+| `torch.cuda.empty_cache()` between the fits in `transform_offline_rewards_declared` | this session | the k = 0 → k = 1 pair in one process is the allocator-storm condition; the env-var mitigation stays as belt and braces |
+| nbn guard reads `free + (reserved − allocated)` (NBN#264), arrives by vendored sync | upstream | latent for this model (LW path), real for VE users |
+| the loader's `basic: false` null-calibration warning silenced for cells with a same-tag σ = 0 companion | this session | `regime_sweep.py`, not the package; cosmetic |
+
+After that commit the C1 cache entries become the campaign's frozen
+record under their `code_version`; a future run refits under the new
+version, which is the correct behaviour, not a loss.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
