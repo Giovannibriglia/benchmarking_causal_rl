@@ -1885,6 +1885,40 @@ device-side stall) or a host loop that never yields. Only a stack on the
 live process (sudo py-spy) can name it; the iql ds1_ts0 re-entry after the
 deadline is the reproduction.
 
+**MECHANISM (18:45, found from the code + one live number; a stack would
+confirm the frames):** `nbn/inference/tensor_ve.py`'s pre-allocation
+memory guard sizes `query_batch` chunks from `torch.cuda.mem_get_info()`
+— CUDA's view of FREE memory — and PyTorch's caching allocator holds the
+previous fit's blocks as RESERVED, which CUDA reports as not free. After
+the fresh k = 0 fit on 326k rows the worker's cache holds ~7.5 GB; the card
+reports ~151 MiB free (a fresh process saw 18 MiB and could not allocate
+256 longs). The guard then splits every 4096-row sweep call into chunks of
+8–135 rows (`_max_chunk_rows` at 0.9 × 151 MiB, per-row peak 1–16 MiB):
+30–500 exact-VE passes per call instead of one, each paying full
+per-pass overhead → microscopic kernels (GPU 0%, 12 W), the main thread
+pinned, no OOM raised (the guard keeps it under budget), hours of "work".
+Why ds0's k = 1 was fine: its k = 0 fit at 49k rows reserved less, leaving
+sane chunk sizes. The trap re-arms on every FRESH k = 0 → k = 1 pair (ds2,
+every tpomdp leaf), so it is a campaign defect, not a ds1 accident. The
+CPU reproduction could not show it (no CUDA allocator); the cost probe and
+the profile ran ONE fit per process and never saw a hoarded card.
+
+**Mitigation for the relaunch, no code change (the package stays frozen,
+the cache stays valid):** `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.6`
+in the launcher's environment — the allocator returns cached blocks to the
+driver when reserved memory exceeds 60% of the card, so `mem_get_info`
+stays truthful. Memory management only; VE is exact and per-row results do
+not depend on chunking, so served numbers are unaffected and the existing
+entries stay valid. Confirmation: ds2's fresh k = 0 → k = 1 pair must keep
+GPU utilisation > 0 through its k = 1 fit, with `memory.used` dropping
+after the k = 0 fit. **Proper fix, post-waves:** `torch.cuda.empty_cache()`
+between the fits in `transform_offline_rewards_declared` (mine) and/or the
+nbn guard reading `free + (reserved − allocated)` (upstream). Lesson for
+the record: a memory guard that reads the DRIVER's free memory under a
+caching allocator measures the cache, not the headroom; and every
+"speed" measurement here ran one fit per process, which is exactly the
+condition under which this cannot appear.
+
 **Replicate health on the grid fits so far (for the report):** ds0 k = 0:
 3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
 reasons "a mechanism's fitted scale is on its min_scale floor" and
