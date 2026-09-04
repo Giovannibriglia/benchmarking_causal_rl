@@ -1782,6 +1782,20 @@ alone — five orders below any masked value — is the evidence. The record
 carries both; the report reads them together. `l5_stat_hi` = 8.2e-8 is on
 the record for exactly this reason.
 
+**Cross-algorithm cache reuse CONFIRMED on the grid (06:40):** the peer
+read `iql/grace/ds0_ts0` as a fresh fit from a 7.6 GB GPU footprint; the
+footprint was the in-process driver's caching allocator holding cql's
+reserved memory. Measured instead: the runner's fill reproduced outside the
+runner gives exactly the cql entry's `data_sha256` (dd772333…, next_obs and
+dones included) and the fill has no algorithm input — prediction written
+before the read: iql hits both entries. It did: 891 s (training only),
+`transform_cache_hit True`, no fourth entry, served numbers identical to
+cql's (ΔR² 6.68e-9, interval [+0.4803, +0.5080], k = 0, sufficient True,
+49,762 rewards). The fit count is per (dataset, k), algorithm-independent,
+as the 21.8 fit-units assumed; the one-time reference miss is the only
+cache cost. Lesson for the record: reserved GPU memory in a persistent
+process is not evidence of work — measure the artifact, not the footprint.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
