@@ -1864,7 +1864,21 @@ from an ancestor shell. Deadline 19:30: no entry and no stack → stop the
 leaf, record as an unexplained stall (§7.3 class: reported, not worked
 around), and let iql ds1_ts0 re-enter the same fit — a reproduction if it
 stalls again. Suspects, none confirmed: something O(rows × episodes) on the
-CPU in the k ≥ 1 path at 326k rows.
+CPU in the k ≥ 1 path at 326k rows. **Excluded by measurement (17:40):**
+the whole k = 1 PRE-fit path reproduced on s1's data on the CPU — fill
+10 s, episode_data 1 s, `_augmented_cols` 0 s, view fingerprint 0 s,
+`_episodes_from_data` 2 s — so the stall is INSIDE `fit_reward_transform`
+for the k = 1 view. At 49k rows the fit's non-M-step/non-E-step work was
+~4 s (profile), so this is a regime change on this dataset, not a scaling
+of a known phase. Still unexplained at 18:00 (8.5 h).
+
+**Replicate health on the grid fits so far (for the report):** ds0 k = 0:
+3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
+reasons "a mechanism's fitted scale is on its min_scale floor" and
+"backtrack budget exhausted while still improving"; ds1 k = 0: 0/19
+failed. The augmented (k = 1) fit is the less stable one on the small
+dataset; L4 served (its failure rule is `finished`, with reasons carried),
+and the report tabulates these rates per fit.
 
 ### Open threads
 
