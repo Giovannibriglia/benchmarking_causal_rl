@@ -1870,7 +1870,20 @@ the whole k = 1 PRE-fit path reproduced on s1's data on the CPU — fill
 `_episodes_from_data` 2 s — so the stall is INSIDE `fit_reward_transform`
 for the k = 1 view. At 49k rows the fit's non-M-step/non-E-step work was
 ~4 s (profile), so this is a regime change on this dataset, not a scaling
-of a known phase. Still unexplained at 18:00 (8.5 h).
+of a known phase. Still unexplained at 18:00 (8.5 h). **18:15 — the k = 1 fit itself
+reproduced on the CPU under py-spy** (as py-spy's own child, the only
+ptrace shape Yama scope 1 allows here; 8401 samples, 7 min): a NORMAL fit
+profile — node fits 51% (MDN `_params_from_parents` 22%, categorical
+12%), `interventional_sweep` 35% (it scales with rows: 80 chunks at 326k),
+E-step 9%, `_lag_blocks` 0.2%. No CPU-only phase of hours exists in this
+code path. Meanwhile the live worker: GPU 0%, 12 W, P-state P3, SM clock
+idle — NO kernel executing — while its main thread spins at 100% with zero
+voluntary context switches. A fit cannot be in progress with the GPU idle
+for hours (every phase of it is GPU work), so the worker is spinning
+host-side: the shape of a CUDA synchronisation that never returns (a
+device-side stall) or a host loop that never yields. Only a stack on the
+live process (sudo py-spy) can name it; the iql ds1_ts0 re-entry after the
+deadline is the reproduction.
 
 **Replicate health on the grid fits so far (for the report):** ds0 k = 0:
 3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
