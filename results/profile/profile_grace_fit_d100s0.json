@@ -1,0 +1,77 @@
+{
+ "dataset": "grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma000-seed0-d100-v0",
+ "rows": 49125,
+ "device": "cuda",
+ "total_s": 4832.350269174,
+ "label": "serving=Q-minus l4=interval[+0.4989,+0.5235] R=categorical[2] sep/step=8.892 SATURATED-AT-INIT(0.96) backtracks=11 sep(telemetry)=1.00",
+ "phases": {
+  "fit_total": {
+   "calls": 23,
+   "total_s": 4168.644993023016,
+   "mean_s": 181.24543447926155
+  },
+  "m_step": {
+   "calls": 893,
+   "total_s": 4152.086829521068,
+   "mean_s": 4.649593314133335
+  },
+  "bootstrap_replicate": {
+   "calls": 19,
+   "total_s": 3973.556592260982,
+   "mean_s": 209.13455748742012
+  },
+  "m_step/fit_local[Z]": {
+   "calls": 893,
+   "total_s": 1015.8922931131092,
+   "mean_s": 1.1376173495107607
+  },
+  "m_step/fit_local[W]": {
+   "calls": 893,
+   "total_s": 1010.1012535808986,
+   "mean_s": 1.131132422822955
+  },
+  "m_step/fit_local[V]": {
+   "calls": 893,
+   "total_s": 1005.9238049697597,
+   "mean_s": 1.1264544288575136
+  },
+  "interventional_sweep": {
+   "calls": 552,
+   "total_s": 661.8959394489939,
+   "mean_s": 1.1990868468278875
+  },
+  "m_step/fit_local[R]": {
+   "calls": 893,
+   "total_s": 555.4142258200445,
+   "mean_s": 0.621964418611472
+  },
+  "m_step/fit_local[A]": {
+   "calls": 893,
+   "total_s": 553.7503404149902,
+   "mean_s": 0.6201011650783765
+  },
+  "e_step": {
+   "calls": 1031,
+   "total_s": 13.28244971401,
+   "mean_s": 0.012883074407381182
+  },
+  "m_step/fit_local[U]": {
+   "calls": 893,
+   "total_s": 6.230428604671033,
+   "mean_s": 0.006976963723035872
+  },
+  "m_step/fit_local[S]": {
+   "calls": 893,
+   "total_s": 0.9013183059578296,
+   "mean_s": 0.001009315012270806
+  }
+ },
+ "options": {
+  "proxy_names": [
+   "Z",
+   "W",
+   "V"
+  ],
+  "device": "cuda"
+ }
+}

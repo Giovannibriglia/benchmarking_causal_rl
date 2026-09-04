@@ -1,0 +1,14 @@
+{
+ "mode": "n_jobs=1 sweep_chunk=4096",
+ "wall_s": 4123.189523696899,
+ "peak_alloc_mib": 4776.38037109375,
+ "peak_reserved_mib": 7416.0,
+ "gpu_total_mib": 7807.8125,
+ "cache": "results/grace_cache/2abafc2ad4a30825",
+ "rewards_sha256": "a66476ed7ae84b02dd80c7d04385791c3b9dd0cb1b6d2807fcb452f346376e73",
+ "lo": 0.4802500009536743,
+ "hi": 0.5079997479915619,
+ "contrast_point": 0.49433374404907227,
+ "label": "serving=Q-minus l4=interval[+0.4803,+0.5080] R=categorical[2] sep/step=8.674 SATURATED-AT-INIT(0.96) backtracks=7 sep(telemetry)=1.00",
+ "abstained": false
+}

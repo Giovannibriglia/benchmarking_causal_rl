@@ -1677,6 +1677,40 @@ iterations + backtracks), 4.65 s per M-step. The ruling's tree, applied:
    s0) is the grid's FIRST entry (tmdp ds0 declared-MDP) as well as the
    bitwise reference.
 
+**OUTCOME (2026-09-04 01:35).** The reference fit (d100 σ = 0.25 s0, alone
+on the card, no profiler): **wall 4123 s = 1.15 h**; peak GPU memory
+ALLOCATED **4776 MiB**, reserved 7416 MiB, of 8188 MiB. Stored at
+`results/grace_cache/2abafc2ad4a30825` with `code_version 0cbf18a5…` ==
+the launch tree's (verified; the package is FROZEN until the waves finish —
+any edit under `src/rl/offline/grace/` or `nbn/` invalidates every entry by
+design). Interval [+0.4803, +0.5080], rewards sha256 `a66476ed…` — the
+bitwise reference for any later budget change.
+
+* **n_jobs gate → 1.** One replicate's measured peak is 4.8 GB; with a
+  512 MiB headroom, floor((8188 − 512) / 4776) = 1. Two concurrent
+  replicates would need 9.6 GB on an 8.2 GB card. The lever is wired
+  (`grace_n_jobs`) and stays at 1 on this hardware; said so, moved on. (On
+  a 24 GB card the same gate gives 4 and the bitwise test would run then.)
+* **Sweep chunk → stays 4096; it IS the memory budget.** The full buffer
+  (49k rows) needed 7.5 GB and OOM'd; 12,288 rows tried to allocate 6 GB
+  and OOM'd (≈ 0.5 MB per row inside nbn's likelihood weighting); 4096
+  rows ≈ 2 GB and took 14.6 s per action-sweep (matches the profile's 1.2 s
+  per chunk × 12). A larger chunk cannot be bitwise-tested because it
+  cannot run; the lever is rejected on this card.
+* **Achieved speedup for the grid: ×1.0 on the fit** (no lever passed the
+  gate at this memory) — reported as the factor it is. The material saving
+  is the CACHE (already built): 21.8 fit-units for 144 runs instead of 72
+  fits, and the k = 0 collapse making every declared-POMDP-on-true-MDP fit
+  a hit.
+
+**PROJECTION, reported before launch** (`tools/project_c1_cost.py
+--fit-hours 1.145`): fits 21.8 × 1.15 h = **24.9 GPU-h**; training 144
+runs from the pilot's quiet medians (cql 391 s, iql 625 s; base cells
+× 1.3 for the critic heads — a GUESS, the one unmeasured input) =
+**23.4 GPU-h**; **TOTAL ≈ 48 GPU-h < 60 → GO**, on the condition that the
+grid runs ALONE on the card (the contended numbers give 78). L5 records
+(~4 min per (dataset, k), content-cached) run on the CPU alongside.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's

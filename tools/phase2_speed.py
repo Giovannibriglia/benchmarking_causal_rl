@@ -152,7 +152,8 @@ def main() -> int:
         )
         fit = est.fit(data, **dict(DEFAULT_FIT_KWARGS, init="proxy"))
         res = {}
-        for chunk in (4096, int(data.state.shape[0])):
+        chunks = [int(c) for c in sys.argv[2:]] or [4096, int(data.state.shape[0])]
+        for chunk in chunks:
             t0 = time.time()
             vals = []
             for k in range(0, data.state.shape[0], chunk):
@@ -171,12 +172,17 @@ def main() -> int:
                 mean=float(v.mean()),
             )
             print(chunk, res[chunk], flush=True)
-        same = res[4096]["sha256"] == res[int(data.state.shape[0])]["sha256"]
-        print(
-            f"SWEEP chunk full vs 4096: {'BITWISE IDENTICAL' if same else 'DIFFERENT'}; speedup x{res[4096]['wall_s'] / res[int(data.state.shape[0])]['wall_s']:.2f}"
-        )
+        base = res[chunks[0]]
+        for c in chunks[1:]:
+            same = res[c]["sha256"] == base["sha256"]
+            print(
+                f"SWEEP chunk {c} vs {chunks[0]}: {'BITWISE IDENTICAL' if same else 'DIFFERENT'}; "
+                f"speedup x{base['wall_s'] / res[c]['wall_s']:.2f}",
+                flush=True,
+            )
+            res[c]["bitwise_identical_to_first"] = bool(same)
         json.dump(
-            {str(k): v for k, v in res.items()} | {"bitwise_identical": bool(same)},
+            {str(k_): v for k_, v in res.items()},
             open(f"{OUT}/phase2_sweep_chunk.json", "w"),
             indent=1,
         )
