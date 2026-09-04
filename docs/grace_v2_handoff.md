@@ -1933,6 +1933,16 @@ recurs there, the chain stops at that leaf and the no-caching variable is
 used instead. The ~9.5 h the stalled leaf occupied the card are lost wall
 time, not useful GPU-hours; the projection's 64 GPU-h of useful work is
 unchanged.
+**Executed 18:26–18:27:** killed (GPU state captured to
+`results/c1/stall_20260904T182551.nvidia-smi`: no Xid, no ECC — a healthy
+context starved of free memory, as the mechanism says); the variable
+accepted by torch 2.10.0+cu130 on the freed card; the grace chain
+relaunched mitigated at 18:27:09 and the base waves inherit the export.
+Verified on the artifact: the Python worker's `/proc/<pid>/environ`
+carries `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.6` (the
+launcher shell's initial environment cannot show an export made inside
+its script — read the worker, not the shell). Two independent watches
+read ds2's k = 0 → k = 1 transition.
 
 **Replicate health on the grid fits so far (for the report):** ds0 k = 0:
 3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
