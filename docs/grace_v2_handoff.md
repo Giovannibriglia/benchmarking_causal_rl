@@ -1418,6 +1418,15 @@ obs dims are NOT scale-invalid so it cannot pass vacuously. On real data
 materiality-power calibration on synthetic fixtures must report base R²
 alongside its power numbers for exactly this reason.
 
+**The reference priming MISSED (found by the peer on the first grid leaf):**
+my `phase2_speed.py` built its buffer straight from the Minari episodes
+(49,125 rows, no `next_obs`/`dones`) while the runner's fill writes
+49,762 rows with both — different content, a different `data_sha256`,
+correctly a MISS (the cache did its job; the priming used the wrong
+construction site). One-time cost 1.15 h; the grid's own first k = 0 fit
+(`d2961b84`) and k = 1 fit (`59883afe`) are the entries the later cells
+reuse. Lesson: prime a cache only through the consumer's own fill.
+
 **Also fixed on the way (recorded):** the k >= 1 augmented view handed to
 the fit carried no `next_obs`/`dones`, so the extractor rolled next-obs
 ACROSS episode boundaries and saw no terminations; the view now carries the
