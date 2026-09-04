@@ -1952,6 +1952,58 @@ failed. The augmented (k = 1) fit is the less stable one on the small
 dataset; L4 served (its failure rule is `finished`, with reasons carried),
 and the report tabulates these rates per fit.
 
+### CORRECTION (2026-09-04 19:20) — the stall's mechanism, re-attributed; and the sweep is NOT chunk-invariant
+
+**Ruling received (Giovanni):** continue; no fit-episode budget; re-measure
+the projection on ds2's clean k = 0 (the ds1 k = 0 time of 2.4 h was
+itself taken in a process already holding ds0's blocks, so the affine
+slope is contaminated); settle chunk invariance by measurement; record the
+guard as an upstream NBN bug.
+
+**Mechanism corrected.** The VE memory-guard story above is WITHDRAWN:
+`HybridRouter._select` picks likelihood weighting whenever any mechanism
+is continuous, and this model's proxies and reward are MDN / categorical
+neural mechanisms, so the elimination engine (and its `mem_get_info`
+guard) is never in the path — verified on the estimator (engine: LW,
+always). What fits every observation is the peer's original hypothesis,
+now with the concrete allocator behaviour: with ~7.5 GB reserved after the
+fresh k = 0 fit and the k = 1 fit at 326k rows needing more than the
+leftover, PyTorch's caching allocator hits allocation failure on many
+calls and runs its expensive `release_cached_blocks` (free all cached
+blocks + device synchronize) and retry — a storm of native-code stalls
+between microscopic kernels: GPU 0%, one core pinned (spin-wait syncs, no
+voluntary context switches), memory pinned at the card, no
+`OutOfMemoryError` because each retry succeeds. That is exactly what
+`garbage_collection_threshold` is documented to prevent, so the mitigation
+stands for the right reason; the leaf cost nothing but wall time. The
+ds1 k = 1 fit relaunched under the mitigation is running on the GPU
+(utilisation > 0, 19:15). Lesson: I reached a plausible mechanism by
+reading the vendored source and stopped one check short — the engine
+selection; the chunk test caught it. Recorded as such.
+
+**Chunk invariance — MEASURED, and it does NOT hold:** the interventional
+sweep on one small fit (CPU, deterministic algorithms, 4096 rows) at
+chunk 4096 / 128 / 8 gives means 1.42529559 / 1.42529023 / 1.42530394 —
+distinct sha256, differences at the sixth significant digit: likelihood
+weighting is a Monte-Carlo estimate and the batch composition changes each
+row's random draws. Consequences: (i) `sweep_chunk` is NOT a free budget —
+it is part of the procedure, fixed at 4096, and must enter the cache key
+post-freeze (today it does not; it has never been changed, so every entry
+is comparable); the Phase 2 "budget" note is corrected here. (ii) The
+allocator setting does not touch chunking (the seam chunks at 4096
+regardless of memory), so cached entries fitted before the mitigation
+remain valid and comparable to those after it. (iii) A served contrast
+carries MC noise of order 1e-5 relative from the sweep — far below L4's
+half-width (~1e-2) and the materiality margins; noted for the report.
+
+**Upstream NBN finding filed** (`Giovannibriglia/NeuralBayesianNetworks#264`):
+the VE guard's `mem_get_info` read excludes PyTorch's cached blocks
+(reads the driver's free memory, not the process's headroom) — a latent
+bug for VE users whose workload reserves memory before a query; the fix
+reads `free + (reserved − allocated)`. Filed with the honest note that
+the campaign signature was the allocator storm on the LW path, not this
+guard.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
