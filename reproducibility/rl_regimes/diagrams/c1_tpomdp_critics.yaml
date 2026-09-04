@@ -52,12 +52,12 @@ algos:
   - cql
   - iql
 seeds: [0, 1, 2]        # dataset seeds
-train_seeds: [1, 2]     # ts0's observational leaf comes from the critics cell (iv')
+train_seeds: [0]        # the critic axis at ts0 only (iv')
 
 # PHASE 6 — the critic axis rides on the base arm. On the masked construction
 # (POMDP + U, the D-G shape) L2's q1 verdict for proximal is BOUNDS-ONLY and
 # q2 non-ID, so proximal is EXCLUDED here (reported as excluded, with this
 # reason); observational (floor), oracle_u (ceiling) and sensitivity remain.
 critics:
-  basic:      [observational]
-  confounded: [observational]
+  basic:      [observational, oracle_u, sensitivity]
+  confounded: [observational, oracle_u, sensitivity]

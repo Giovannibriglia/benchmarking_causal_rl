@@ -49,7 +49,7 @@ algos:
   - cql
   - iql
 seeds: [0, 1, 2]        # dataset seeds
-train_seeds: [0, 1, 2]  # training seeds per dataset seed
+train_seeds: [0]        # the anchors are per (env, algo, critic): one ts suffices (iv')
 
 # PHASE 6 — the critic axis rides on the base arm. On the masked construction
 # (POMDP + U, the D-G shape) L2's q1 verdict for proximal is BOUNDS-ONLY and

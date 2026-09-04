@@ -1,4 +1,15 @@
 # C1 — the CartPole OBSERVABILITY-CONTRACT grid (2026-09-03, pre-authorised).
+# RULED 2026-09-04 (option iv', §7.4): the critic axis at ONE training seed
+# per dataset seed; base observational-only at three seeds for the paired
+# base-vs-grace comparison. Under each truth's tag: this base cell = the
+# observational critic at ts [1, 2]; c1_<truth>_critics = the full critic
+# set at ts [0] (the sensitivity critic needs the observational one in the
+# same run, so ts0's observational leaf comes from the critics cell); the
+# sigma = 0 anchors keep their critic set at ts [0] (per (env, algo, critic)).
+# The eight per-critic ds0_ts0 leaves already finished are exactly the
+# critics cell's ds0 output and are skipped. Two sample sizes result, stated
+# ON the report tables: return n = 3 ds x 3 ts; critic axis n = 3 ds x 1 ts.
+
 # Cell: truth = tmdp (full-view d100 data, behaviour S->A),
 # arm = base.
 # Analysis is WITHIN-COLUMN only (same truth, declarations differ); the two
@@ -36,12 +47,12 @@ algos:
   - cql
   - iql
 seeds: [0, 1, 2]        # dataset seeds
-train_seeds: [0, 1, 2]  # training seeds per dataset seed
+train_seeds: [1, 2]     # ts0's observational leaf comes from the critics cell (iv')
 
 # PHASE 6 — the critic axis rides on the base arm (one training run, the
 # ablation critics are exploded into per-critic leaves). On D-D L2 licenses
 # every comparator: observational (floor), proximal (point-ID q1/q2 via the
 # declared proxies), oracle_u (ceiling; reads the recorded U), sensitivity.
 critics:
-  basic:      [observational, proximal, oracle_u, sensitivity]
-  confounded: [observational, proximal, oracle_u, sensitivity]
+  basic:      [observational]
+  confounded: [observational]

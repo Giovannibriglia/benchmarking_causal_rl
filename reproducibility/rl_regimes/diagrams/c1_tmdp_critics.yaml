@@ -1,12 +1,15 @@
 # C1 — the CartPole OBSERVABILITY-CONTRACT grid (2026-09-03, pre-authorised).
-# THE sigma = 0 COMPANION of c1_tmdp_base: the basic origin (beta 0, sigma 0)
-# under the SAME regime tag, so the strategy critics' null-calibration gate
-# has its anchor from the campaign's own data (option (a), ruled 2026-09-03:
-# a stored per-environment noise reference would be a calibration constant,
-# A2; declaring the grid un-calibrated would leave the critic axis ungated).
-# Base arm only — the sigma = 0 grace no-harm control is the pilot's d100s0
-# for the full view; the masked sigma = 0 datasets exist (certified) should
-# one be wanted later.
+# RULED 2026-09-04 (option iv', §7.4): the critic axis at ONE training seed
+# per dataset seed; base observational-only at three seeds for the paired
+# base-vs-grace comparison. Under each truth's tag: this base cell = the
+# observational critic at ts [1, 2]; c1_<truth>_critics = the full critic
+# set at ts [0] (the sensitivity critic needs the observational one in the
+# same run, so ts0's observational leaf comes from the critics cell); the
+# sigma = 0 anchors keep their critic set at ts [0] (per (env, algo, critic)).
+# The eight per-critic ds0_ts0 leaves already finished are exactly the
+# critics cell's ds0 output and are skipped. Two sample sizes result, stated
+# ON the report tables: return n = 3 ds x 3 ts; critic axis n = 3 ds x 1 ts.
+
 # Cell: truth = tmdp (full-view d100 data, behaviour S->A),
 # arm = base.
 # Analysis is WITHIN-COLUMN only (same truth, declarations differ); the two
@@ -29,9 +32,9 @@ gate_mean_effect: 1.0
 proxy_strength: 1.5
 
 sweep:
-  basic:      { beta: 0.0, sigma: 0.0 }
+  basic:      false
   biased:     false
-  confounded: false
+  confounded: { beta: 0.0, sigma: [0.25] }
 
 envs: [CartPole-v1]
 max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
@@ -43,13 +46,8 @@ eval_confounded_mode: analytic
 algos:
   - cql
   - iql
-# Dataset seeds [0, 2, 3], NOT [0, 1, 2]: the full-view sigma = 0 s1 dataset
-# failed the covariate-free preflight at generation (p = 0.0100 at alpha
-# 0.01 — the known ~1% gate rate; handoff, e1_d100s0) and s3 is its certified
-# substitute. The null-calibration anchor is per (env, algo, critic), not per
-# dataset seed, so the companion need not share the confounded arm's seeds.
-seeds: [0, 2, 3]        # dataset seeds
-train_seeds: [0]        # the anchors are per (env, algo, critic): one ts suffices (iv')
+seeds: [0, 1, 2]        # dataset seeds
+train_seeds: [0]        # the critic axis at ts0 only (iv')
 
 # PHASE 6 — the critic axis rides on the base arm (one training run, the
 # ablation critics are exploded into per-critic leaves). On D-D L2 licenses
