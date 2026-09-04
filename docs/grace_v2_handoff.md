@@ -1711,6 +1711,40 @@ runs from the pilot's quiet medians (cql 391 s, iql 625 s; base cells
 grid runs ALONE on the card (the contended numbers give 78). L5 records
 (~4 min per (dataset, k), content-cached) run on the CPU alongside.
 
+### C1 LAUNCHED 2026-09-04 01:35:44 — EARLY COST SIGNAL (02:20), the projection's guessed input was wrong ×5
+
+First base leaf group (c1_tmdp_base/cql/base/ds0_ts0 → 4 per-critic
+leaves, explosion correct): **2620 s** for the four-critic base run vs the
+pilot's ~370 s single-critic median — ×7.1 against the projection's ×1.3
+GUESS for the critic heads. Mechanism (presumed, to be confirmed on the
+next two base leaves): proximal / oracle_u / sensitivity are FITTED
+estimators on the shared stream, evaluated per checkpoint, not cheap
+heads. Corrected projection if the slope holds (72 base runs across the 4
+base cells incl. the σ = 0 companions × 2620 s + 72 grace × 500 s + 25.0
+GPU-h of fits): **87 GPU-h — above the 60 GPU-h stop line (§7.4).**
+Options costed (fits unchanged at 25.0):
+
+| option | shape | GPU-h |
+|---|---|---|
+| as launched | 4 base cells × 18 four-critic runs | 87.4 |
+| iv | critic axis at ts0 only (12 runs × 2620) + base observational-only at 3 ts (72 × 400) + grace | 51.7 |
+| iv′ | critic axis at ts0 only, on the σ = 0.25 cells (6 × 2620) AND the σ = 0 companions (6 × 2620, the anchors keep their critic set; 1 ts suffices per (env, algo, critic)); base observational-only at 3 ts (36 × 400) | 47.7 |
+| iii | base cells at 1 ts (breaks base-vs-grace pairing at ts1/ts2) | 52.4 |
+| i | observational only everywhere (no Phase 6) | 43.0 |
+
+**Measured (03:20): cql 2620 s, iql 3609 s for the four-critic base run
+(mean 3114 s vs the single-critic mean 508 s: ×6.1).** Mechanism confirmed
+in `critic_ablation.py`: proximal / oracle_u / sensitivity are FULL
+LEARNERS (`build_<critic>_<base>`), so a four-critic run trains four
+learners. Re-costed with the measured means (fits 25.0 unchanged): as
+launched **97 GPU-h**; iv′ **51**; iv 56; iii 56; i 45.
+The chain was stopped by the peer at the iql ds0_ts0 boundary and
+restarted GRACE-ONLY at 03:20:50 (tmdp_grace_dmdp → tmdp_grace_dpomdp →
+tpomdp_grace_dmdp → tpomdp_grace_dpomdp; every option keeps all 72), the
+four base cells wait for Giovanni's ruling on their shape (§7.4) — a
+projection-input correction, not a scope change by us. Option iv′ drafts
+are in the session scratchpad, not in the tree.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
