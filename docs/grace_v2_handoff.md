@@ -1745,6 +1745,34 @@ four base cells wait for Giovanni's ruling on their shape (§7.4) — a
 projection-input correction, not a scope change by us. Option iv′ drafts
 are in the session scratchpad, not in the tree.
 
+### C1 — FIRST ROW-1 LEAF READ AGAINST THE PRE-REGISTRATION (2026-09-04 ~06:10)
+
+`c1_tmdp_grace_dmdp/cql/grace/ds0_ts0` (declared MDP, true MDP; 9971 s =
+the fresh k = 1 sufficient? fit ~2 h + training): `transform_applied True`,
+coverage 1.0 (no silent no-op); `window[k=0|declared-mdp]`;
+**`window_sufficient True` with delta 0.0000 vs w = 0.0139** — the k = 1
+refit returned the IDENTICAL contrast (+0.4943 at k = 0 and k = 1, half
+widths 0.0139 / 0.0145): "over-assumption is cheap" at its sharpest, and
+the k = 1 entry now serves row 2's ds0 selection as a cache hit. Interval
+[+0.4803, +0.5080] straddles the M = 0.5 truth; pessimism 0.014. Return
+623.7 vs 499.0 (paired base column). L5 record: p = 0.010, ΔR² = 6.7e-9,
+`rejected True` — **S18's floor behaviour, as predicted; reported, nothing
+branched.** Reward-channel improvement 0.025, `serving_material False`.
+
+**Prediction 4 over-stated one thing — characterised, not a defect:** the
+capacity-shrink ratio on this leaf is **0.08**, not > 1. On the S18 null
+rows shrink is < 1 in 3 of 25, and those are exactly the rows with the
+SMALLEST effect sizes (5.3e-9 → 0.018, 2.1e-8 → 0.074, 7.5e-8 → 0.29):
+below ~1e-7 both the 64-RFF and the 256-RFF statistics sit at the
+numerical floor (base R² = 1.0000 on every obs dim here) and their ratio is
+noise. Above the floor the nulls shrink (median 6.9, up to 665) and the
+masked rows never do (max 0.62, always with ΔR² ≥ 5e-4). **So the
+separator is the PAIR (effect size, shrink):** shrink is the mechanistic
+read when the effect size is above the floor; at the floor the effect size
+alone — five orders below any masked value — is the evidence. The record
+carries both; the report reads them together. `l5_stat_hi` = 8.2e-8 is on
+the record for exactly this reason.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
