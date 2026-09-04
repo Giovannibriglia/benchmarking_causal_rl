@@ -193,8 +193,17 @@ def render(leaves: list, out: Path) -> dict:
             rep["columns"][truth][f"return/{cell}/{algo}/{comp}"] = dict(
                 n=len(xs), iqm=_iqm(rets), leaves=rets
             )
+        n_ret = sorted(
+            {
+                (x["ds"], x["ts"])
+                for x in col
+                if x["comparator"] in ("observational", "grace_dmdp", "grace_dpomdp")
+            }
+        )
         md.append(
-            "### Return (deployment, analytic E_U) — IQM over served leaves, every leaf listed\n"
+            f"### Return (deployment, analytic E_U) — **n = {len({d for d, _ in n_ret})} dataset seeds × "
+            f"{len({t for _, t in n_ret})} training seeds, PAIRED base vs grace on identical data** — "
+            "IQM over served leaves, every leaf listed\n"
         )
         md.append(
             _md_table(
@@ -229,8 +238,18 @@ def render(leaves: list, out: Path) -> dict:
                 rep["columns"][truth][f"q1_err/{algo}/{comp}"] = dict(
                     n=len(xs), iqm=_iqm(errs), leaves=errs
                 )
+        n_crit = sorted(
+            {
+                (x["ds"], x["ts"])
+                for x in col
+                if x["comparator"] in ("proximal", "oracle_u", "sensitivity")
+            }
+        )
         md.append(
-            "\n### Critic accuracy — q1_contrast_error (oracle_u = ceiling, observational = floor)\n"
+            f"\n### Critic accuracy — q1_contrast_error (oracle_u = ceiling, observational = floor) — "
+            f"**n = {len({d for d, _ in n_crit})} dataset seeds × {len({t for _, t in n_crit})} training seed(s) "
+            f"(ts = {sorted({t for _, t in n_crit})}), PAIRED on identical data; the critic axis runs at ONE "
+            "training seed per dataset seed (ruled 2026-09-04, option iv′) — NOT the return table's n**\n"
         )
         md.append(
             _md_table(
@@ -318,7 +337,11 @@ def render(leaves: list, out: Path) -> dict:
                 )
             )
         md.append(
-            "\n### L5 record at the served lag (report-only; on true-MDP data rejection at floor dR2 with shrink > 1 is S18, not a defect)\n"
+            "\n### L5 record at the served lag (report-only). Reading rule: the capacity-shrink ratio is "
+            "informative ONLY when dR2 is above the noise floor (~1e-7 on CartPole) — below it both statistics "
+            "are floor quantities and their ratio is noise (3 of 25 S18 null rows read < 1 there); at the floor "
+            "the effect size alone is the evidence, and rejection at floor dR2 on true-MDP data is S18 "
+            "behaviour, not a defect\n"
         )
         md.append(
             _md_table(

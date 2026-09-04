@@ -1796,6 +1796,41 @@ as the 21.8 fit-units assumed; the one-time reference miss is the only
 cache cost. Lesson for the record: reserved GPU memory in a persistent
 process is not evidence of work — measure the artifact, not the footprint.
 
+### RULING 2026-09-04 (Giovanni) — option iv′; two sample sizes stated ON the tables
+
+**iv′ taken:** the critic axis at ONE training seed per dataset seed on
+both the σ = 0.25 cells and the σ = 0 anchors; base observational-only at
+three training seeds for the paired base-vs-grace comparison. Reasoning
+(his): iv′ cuts a STATISTICAL dimension where every alternative at similar
+cost cuts a SCIENTIFIC one — iii breaks the pairing that makes a return
+difference attributable to the critic; i removes Phase 6, the deliverable;
+dropping a comparator costs the positioning claim, while the critic-axis
+comparison is paired on identical data so its variance is dominated by the
+dataset seed, not the training seed. The anchor is per (env, algo, critic),
+so one training seed suffices. **iv′ is the floor, not a ceiling:** budget
+to spare goes first to more training seeds on the critic axis.
+
+**Implemented, YAML-only, under each truth's tag** (commit f7f5579; the
+sensitivity critic needs the observational one in the same run, so ts0's
+observational leaf comes from the critics cell; the eight finished
+per-critic ds0_ts0 leaves are exactly that cell's ds0 output and skip):
+`c1_<t>_base.yaml` = observational at ts [1, 2]; `c1_<t>_critics.yaml` =
+the full critic set at ts [0]; `c1_<t>_base_s0.yaml` = the anchors' critic
+set at ts [0]. Plan: **120 runs.** Corrected cost (the earlier iv′ figure
+had missed the second truth's anchors): critic runs 12 × 3114 s (tmdp) +
+12 × ~2335 s (tpomdp, three critics) = 18.2 GPU-h; base observational
+24 × 508 s = 3.4; grace 72 × 508 s = 10.2; fits 25.0 → **≈ 57 GPU-h**, of
+which ~4 already spent; under 60, grid alone on the card.
+
+**Report requirement (his):** two sample sizes, stated ON the tables, never
+in a footnote — base-vs-grace return n = 3 ds × 3 ts paired; GRACE vs the
+other critics n = 3 ds × 1 ts paired at ts = 0. `tools/report_c1.py` prints
+both in the table headers (computed from the leaves present, so the numbers
+are what was actually run) and carries the shrink-ratio reading rule on the
+L5 table. On the record at his request: the shrink reading (informative
+only above the noise floor) and the cache verdict (an iql leaf at 891 s,
+bitwise identical to cql's, settled by reproducing the fingerprint).
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
