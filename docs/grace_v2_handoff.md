@@ -1831,6 +1831,41 @@ L5 table. On the record at his request: the shrink reading (informative
 only above the noise floor) and the cache verdict (an iql leaf at 891 s,
 bitwise identical to cql's, settled by reproducing the fingerprint).
 
+### C1 — ds1 (2026-09-04 16:40–17:10): the fit-time input was measured on the SMALLEST dataset; and a stall
+
+**Data size:** d100 s1 has 326,001 rows (episode length mean 109, max 484)
+vs s0's 49,762 (mean 16.6) and s2's 113,774; the om13 masked datasets are
+larger than s0 too (the masked behaviour runs longer episodes). The
+projection's 1.15 h per fit-unit came from s0 — the smallest. s1's k = 0
+fit took 2.4 h (stored 09:34). om13 rows: s0 99,258, s1 113,503, s2 81,577.
+Re-projection: fit time is NOT linear in rows — the M-step (86% of a fit)
+is a fixed step budget per node, so most of the cost is row-independent;
+the two measured points give the affine model t = 0.92 h + 4.53 h
+per million rows (linear-in-rows would say 62 GPU-h of fits, an
+overstatement). Affine: tmdp fits 13.5 + tpomdp 18.7 = **32.2 GPU-h**
+(was 25.0); total with critic runs 18.2 + base 3.4 + grace training 10.2 =
+**≈ 64 GPU-h** — marginally above 60, a second §7.4 trigger on
+corrected inputs, reported to Giovanni with the uncertainty (the k = 1 /
+k = 2 ratios were measured on s0 only); the grid continues meanwhile as
+last time. Lesson: a per-unit cost measured on one dataset must be scaled
+along the size axis, with the RIGHT scaling law, before it is a projection
+input.
+
+**The stall (unexplained at the time of writing):**
+`c1_tmdp_grace_dmdp/cql/grace/ds1_ts0` entered the k = 1 sufficient? fit
+at 09:34; at 16:45 (7+ h) the worker is in a PURE single-thread CPU loop —
+GPU 0% on 30 one-second samples, zero I/O, ZERO voluntary context switches
+in 15 s, the autograd thread asleep, RSS 3.0 GB, main thread at 100% — and
+no k = 1 cache entry exists. No M-step looks like that (GPU, syncs). A
+Python stack is needed to name the loop; py-spy is blocked by ptrace (yama
+scope 1, no passwordless sudo) — Giovanni asked for
+`sudo env "PATH=$PATH" uvx py-spy dump --pid 2812160`; the peer can try
+from an ancestor shell. Deadline 19:30: no entry and no stack → stop the
+leaf, record as an unexplained stall (§7.3 class: reported, not worked
+around), and let iql ds1_ts0 re-enter the same fit — a reproduction if it
+stalls again. Suspects, none confirmed: something O(rows × episodes) on the
+CPU in the k ≥ 1 path at 326k rows.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
