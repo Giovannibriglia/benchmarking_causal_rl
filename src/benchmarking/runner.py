@@ -696,6 +696,41 @@ class BenchmarkRunner:
             {"episode": episode, "aux_critics": self.critic_ablation.state_dict()},
         )
 
+    def _log_deployment_row(
+        self, *, episode, total, base, bad_steps, bonus_rate, horizon
+    ) -> None:
+        """Append one row of the analytic return's decomposition.
+
+        ``saturated`` is the question this file exists to answer: with the base
+        component pinned at the horizon there is no headroom in the part that
+        measures task performance, every between-arm difference comes from the
+        a_bad count alone, and a correctly-working GRACE is EXPECTED to score
+        lower -- pessimism costs bonus where the biased action carries no
+        penalty. That reading has to be available per cell, not reconstructed
+        afterwards from a total that cannot be decomposed.
+        """
+        import csv
+
+        path = os.path.join(self.run_dir, "eval_deployment.csv")
+        row = {
+            "episode": int(episode),
+            "algorithm": self.train_cfg.algorithm,
+            "environment": self.env_cfg.env_id,
+            "eval_return_mean": float(total),
+            "eval_return_base_mean": float(base),
+            "eval_bad_action_steps_mean": float(bad_steps),
+            "bonus_rate": bonus_rate,
+            "eval_horizon": horizon,
+            "base_saturated": bool(float(base) >= 0.999 * horizon),
+        }
+        new_file = not os.path.exists(path)
+        os.makedirs(self.run_dir, exist_ok=True)
+        with open(path, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(row))
+            if new_file:
+                w.writeheader()
+            w.writerow(row)
+
     def evaluate(self, episode: int) -> Dict[str, float]:
         env = self.eval_env
         # Video is side-effect-only (render never enters numerics) but costs an
@@ -756,7 +791,10 @@ class BenchmarkRunner:
             else None
         )
         z_steps = 0
-        for _ in range(self.env_cfg.rollout_len):
+        # The EVAL horizon, not the collection length -- see EnvConfig.
+        for _ in range(
+            getattr(self.env_cfg, "eval_rollout_len", None) or self.env_cfg.rollout_len
+        ):
             with torch.no_grad():
                 if self.algo_spec.kind == "off_policy":
                     if self.action_type == "discrete":
@@ -816,6 +854,28 @@ class BenchmarkRunner:
             base_mean, _ = self._aggregate_returns(total_rewards)
             total_rewards = total_rewards + _bonus_rate * bad_steps
             mean, std = self._aggregate_returns(total_rewards)
+            # THE DECOMPOSITION, ON DISK. These three were computed and then
+            # dropped by the eval logger, which keeps only the frozen
+            # EVAL_COLUMNS -- so the comment above ("reported alongside, so the
+            # correction is auditable rather than baked in") was not true of any
+            # artifact. Without them the reader cannot tell a policy that solves
+            # the task from one that merely collects the a_bad bonus, and cannot
+            # tell whether the base component is SATURATED at the episode cap --
+            # under saturation the metric measures a_bad frequency rather than
+            # task performance, which inverts how an arm scoring lower should be
+            # read. Own file, own schema: EVAL_COLUMNS is frozen and pinned by a
+            # characterization test, so this follows the per-context precedent.
+            self._log_deployment_row(
+                episode=episode,
+                total=mean,
+                base=base_mean,
+                bad_steps=float(bad_steps.mean().item()),
+                bonus_rate=float(_bonus_rate),
+                horizon=int(
+                    getattr(self.env_cfg, "eval_rollout_len", None)
+                    or self.env_cfg.rollout_len
+                ),
+            )
             return {
                 "eval_return_mean": mean,
                 "eval_return_std": std,
@@ -1455,11 +1515,30 @@ class BenchmarkRunner:
         """
         if not getattr(self.env_cfg, "grace_reward_transform", False):
             return None
-        from src.rl.offline.grace.serving import transform_offline_rewards
-
         pn = tuple(getattr(self.env_cfg, "grace_proxy_names", ()) or ())
-        serving = transform_offline_rewards(
-            self.replay_buffer, proxy_names=pn, device=self.device
+        common = dict(
+            proxy_names=pn,
+            device=self.device,
+            cache_dir=getattr(self.env_cfg, "grace_cache_dir", None),
+            dataset_id=str(getattr(self.env_cfg, "offline_dataset", "") or ""),
+            n_jobs=int(getattr(self.env_cfg, "grace_n_jobs", 1)),
+            sweep_chunk=int(getattr(self.env_cfg, "grace_sweep_chunk", 4096)),
+        )
+        # ONE path for every declaration (ruled 2026-09-03): declared MDP is
+        # k = 0 through the same code as a declared POMDP.
+        from src.rl.offline.grace.pomdp_branch import transform_offline_rewards_declared
+
+        wk = getattr(self.env_cfg, "grace_window_k", None)
+        serving = transform_offline_rewards_declared(
+            self.replay_buffer,
+            observability=str(getattr(self.env_cfg, "declared_observability", "mdp")),
+            k=None if wk is None else int(wk),
+            k_max=int(getattr(self.env_cfg, "grace_k_max", 2)),
+            k_diagnostics=bool(getattr(self.env_cfg, "grace_k_diagnostics", True)),
+            l5_alpha=float(getattr(self.env_cfg, "grace_l5_alpha", 0.05)),
+            l5_b=int(getattr(self.env_cfg, "grace_l5_b", 99)),
+            l5_n_ep=getattr(self.env_cfg, "grace_l5_n_ep", 500),
+            **common,
         )
         print(f"[grace] {serving.label()}", file=sys.stderr)
         return serving

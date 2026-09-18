@@ -33,9 +33,20 @@ sweep:
   # basic: false ACKNOWLEDGES the loader's null-anchor warning deliberately:
   # the sweep's deliverables use NO per-point null calibration (recovery reads
   # logged U, the do-contrast reads the known M, and the naive-bias null scales
-  # from the FROZEN sigma=0 arms by c_r). Per-point sigma=0 companions would be
-  # redundant generation; the approved grid is sigma = 0.25 only, 30 datasets.
-  basic:      false
+  # from the FROZEN sigma=0 arms by c_r).
+  # THE ORIGIN, RESTORED 2026-09-01 for E1's no-harm control, reversing the
+  # earlier "per-point sigma=0 companions would be redundant" call. It is not
+  # redundant for THIS purpose: E1's registered no-harm prediction sat on
+  # d_a_null, whose reward is constant, so its do-contrast is identically zero
+  # for the data AND every resample -- an untestable pass (S9), not a clean one.
+  # At sigma = 0 here U -> R survives (M = 0.5, unchanged by sigma) while
+  # U -> A is severed, so the bias to remove is zero WITHOUT being zero by
+  # construction. Declared under this cell rather than taken from the frozen
+  # two-proxy d_d sigma=0 arms so the control is proxy-matched to the treatment
+  # it sits beside. It belongs HERE and not in the confounded list: sigma = 0 IS
+  # the origin, the loader rejects a zero arm value outright, and setting it
+  # also clears the null-anchor warning this cell has been carrying.
+  basic:      { beta: 0.0, sigma: 0.0 }
   biased:     false
   confounded: { beta: 0.0, sigma: [0.25] }
 

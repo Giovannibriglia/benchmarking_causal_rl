@@ -1,4 +1,6 @@
 src/benchmarking/hosted_sweep.py:                    set_seed(seed, deterministic=True)
+src/benchmarking/regime_report.py:    per_seed = aggregate_per_seed(results_root, regime, metrics=metrics)
+src/benchmarking/regime_report.py:def aggregate_per_seed(
 src/benchmarking/regime_sweep.py:                set_seed(seed, deterministic=True)
 src/benchmarking/runner.py:        g = torch.Generator().manual_seed(0)
 src/benchmarking/runner.py:        set_seed(env_cfg.seed, deterministic=train_cfg.deterministic)
@@ -14,6 +16,10 @@ src/envs/offline/generate.py:    set_seed(seed, deterministic=True)
 src/envs/wrappers/confounded.py:            self._aux_gen.manual_seed(int(seed) + 8_675_309)
 src/envs/wrappers/confounded.py:            self._gen.manual_seed(int(seed))
 src/rl/offline/grace/bootstrap.py:        rng = np.random.default_rng(self.seed + 99_991)
+src/rl/offline/grace/estimator.py:            int(uniq_eps.numel()), generator=torch.Generator().manual_seed(0)
 src/rl/offline/grace/estimator.py:        g = torch.Generator(device="cpu").manual_seed(self.seed)
 src/rl/offline/grace/estimator.py:        torch.manual_seed(self.seed)
+src/rl/offline/grace/l4.py:            torch.manual_seed(fit_seed * 1000 + k)  # perturbation stream
+src/rl/offline/grace/l4.py:        rng = np.random.default_rng(rep_seed)
+src/rl/offline/grace/l5.py:    rng = np.random.default_rng(seed)
 src/rl/policies/behavior_policy.py:        self._gen.manual_seed(int(seed))

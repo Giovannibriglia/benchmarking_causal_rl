@@ -320,6 +320,45 @@ class SweepSpec:
     instrument_strength: Optional[float] = None
     u_drift: Optional[float] = None
     gate_probs: Optional[Sequence[float]] = None
+    # --- E1 / observability-contract declarations (2026-09-03) -------------
+    # Previously these keys sat in e1_*.yaml and were SILENTLY DROPPED by the
+    # loader — the arm and eval semantics lived in the driver's constants, the
+    # two-construction-sites pattern behind the c_r and fingerprint bugs.
+    # Parsed here, they make the YAML the definition rather than the comment.
+    grace_reward_transform: bool = False
+    grace_proxy_names: Tuple[str, ...] = ()
+    eval_confounded_reward: bool = False
+    eval_confounded_mode: Optional[str] = None
+    eval_rollout_len: Optional[int] = None
+    n_eval_envs: Optional[int] = None
+    # The generation-report cell the certified dataset ids resolve through
+    # (read, never reconstructed) and the results-tree tag.
+    source_cell: Optional[str] = None
+    e1_cell: Optional[str] = None
+    # The declaration surface: (observability, optionally k). Declared MDP
+    # IS k = 0; POMDP with k uses it; POMDP without k selects by materiality.
+    # k_max / k_diagnostics are BUDGETS. No calibration constant (A2).
+    declared_observability: str = "mdp"
+    grace_window_k: Optional[int] = None
+    grace_k_max: int = 2
+    grace_k_diagnostics: bool = True
+    # The transform cache root (content-addressed; one fit serves every
+    # algorithm and training seed on the same data). None = off.
+    grace_cache_dir: Optional[str] = None
+    # grace_n_jobs is a speed budget (wall time only, never a served number).
+    # grace_sweep_chunk is NOT: the interventional sweep is a Monte-Carlo
+    # estimate whose draws depend on batch composition (measured 2026-09-04),
+    # so it is a fixed procedure parameter (4096) that enters the cache key.
+    grace_n_jobs: int = 1
+    grace_sweep_chunk: int = 4096
+    # TRAINING seeds, separate from the DATASET seeds (`seeds`): the contract
+    # grid's ds{d}_ts{t} layout. None = one training seed per dataset seed
+    # (the pilot's layout, ts = ds).
+    train_seeds: Optional[List[int]] = None
+    # True-POMDP construction: the behavior policy's information set at
+    # GENERATION time (O->A, Finding 1) — None = full view (historical).
+    behavior_mask_indices: Optional[Tuple[int, ...]] = None
+
     # Compensated gated-reward sweep (D-D revision 2026-08-21): M = c_r * d
     # held fixed, c_r DERIVED as M / d in arm_knobs -- the single construction
     # site. A YAML that sets this must NOT also set confounder_c_r (arm_knobs
@@ -377,12 +416,71 @@ class SweepSpec:
         return critics_for_arm(arm, self.data_regime)
 
 
+_KNOWN_SPEC_KEYS = {
+    "regime",
+    "observability",
+    "data_regime",
+    "generator_algo",
+    "envs",
+    "algos",
+    "seeds",
+    "pi_basic_epsilon",
+    "confounder_c_r",
+    "budgets",
+    "discrete_only",
+    "mask_indices",
+    "max_workers",
+    "rollout_device",
+    "rollout_n_envs",
+    "legacy_rollout",
+    "reuse_datasets",
+    "simulation",
+    "critics",
+    "sweep",
+    "parallel",
+    "diagram",
+    "proxy_strength",
+    "instrument_strength",
+    "u_drift",
+    "gate_probs",
+    "gate_mean_effect",
+    "grace_reward_transform",
+    "grace_proxy_names",
+    "eval_confounded_reward",
+    "eval_confounded_mode",
+    "eval_rollout_len",
+    "n_eval_envs",
+    "source_cell",
+    "e1_cell",
+    "declared_observability",
+    "grace_window_k",
+    "grace_k_max",
+    "grace_k_diagnostics",
+    "grace_cache_dir",
+    "grace_n_jobs",
+    "grace_sweep_chunk",
+    "train_seeds",
+    "behavior_mask_indices",
+}
+
+
 def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
     """Load a cell's ``sweep.yaml``, merging the shared ``_base/*.yaml`` fragments
     (envs/algos/seeds/budgets) that sit two levels up. Explicit keys in sweep.yaml
     win over the _base defaults."""
     p = Path(sweep_yaml)
     cfg = yaml.safe_load(p.read_text()) or {}
+    # STRICT MODE for the experiment-defining YAMLs (e1_*): an unknown key
+    # RAISES instead of being silently dropped — silence is exactly how the
+    # grace/eval keys sat unparsed while the driver's constants defined the
+    # run (found 2026-09-02). Historical cell YAMLs keep the tolerant loader.
+    if p.name.startswith("e1_"):
+        unknown = set(cfg) - _KNOWN_SPEC_KEYS
+        if unknown:
+            raise ValueError(
+                f"{p}: unknown key(s) {sorted(unknown)} — strict mode for "
+                "e1_*.yaml refuses silently-dropped configuration"
+            )
     base_dir = p.parent.parent / "_base"
     base: Dict = {}
     if base_dir.is_dir():
@@ -402,7 +500,9 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         )
     data_regime = str(pick("data_regime", "offline"))
     beta_arm, sigma_arm, include_basic = _parse_sweep_block(
-        cfg.get("sweep"), source=str(p)
+        cfg.get("sweep"),
+        source=str(p),
+        warn_no_basic=_sigma0_companion(p, cfg) is None,
     )
     critics = _parse_critics_block(cfg.get("critics"), data_regime, source=str(p))
 
@@ -441,6 +541,43 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
             if pick("gate_mean_effect", None) is None
             else float(pick("gate_mean_effect", None))
         ),
+        grace_reward_transform=bool(pick("grace_reward_transform", False)),
+        grace_proxy_names=tuple(pick("grace_proxy_names", ()) or ()),
+        eval_confounded_reward=bool(pick("eval_confounded_reward", False)),
+        eval_confounded_mode=pick("eval_confounded_mode", None),
+        eval_rollout_len=(
+            None
+            if pick("eval_rollout_len", None) is None
+            else int(pick("eval_rollout_len", None))
+        ),
+        n_eval_envs=(
+            None
+            if pick("n_eval_envs", None) is None
+            else int(pick("n_eval_envs", None))
+        ),
+        source_cell=pick("source_cell", None),
+        e1_cell=pick("e1_cell", None),
+        declared_observability=str(pick("declared_observability", "mdp")),
+        grace_window_k=(
+            None
+            if pick("grace_window_k", None) is None
+            else int(pick("grace_window_k"))
+        ),
+        grace_k_max=int(pick("grace_k_max", 2)),
+        grace_k_diagnostics=bool(pick("grace_k_diagnostics", True)),
+        grace_cache_dir=pick("grace_cache_dir", None),
+        grace_n_jobs=int(pick("grace_n_jobs", 1)),
+        grace_sweep_chunk=int(pick("grace_sweep_chunk", 4096)),
+        train_seeds=(
+            None
+            if pick("train_seeds", None) is None
+            else [int(t) for t in pick("train_seeds")]
+        ),
+        behavior_mask_indices=(
+            None
+            if pick("behavior_mask_indices", None) is None
+            else tuple(int(i) for i in pick("behavior_mask_indices"))
+        ),
     )
 
 
@@ -472,8 +609,35 @@ def _arm_entry(block: dict, arm: str, default: dict, *, source: str):
     return val
 
 
+def _sigma0_companion(p: Path, cfg: dict) -> Optional[Path]:
+    """The sibling YAML that carries THIS cell's null-calibration anchor: same
+    directory, same ``e1_cell`` tag, ``sweep.basic`` present (the C1 layout —
+    ``c1_<truth>_base_s0.yaml`` next to ``c1_<truth>_base.yaml``). None when
+    the cell declares no tag or no sibling anchors it."""
+    tag = cfg.get("e1_cell")
+    if not tag:
+        return None
+    for sib in sorted(p.parent.glob("*.yaml")):
+        if sib.resolve() == p.resolve():
+            continue
+        try:
+            sib_cfg = yaml.safe_load(sib.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(sib_cfg, dict) or sib_cfg.get("e1_cell") != tag:
+            continue
+        try:
+            if _parse_sweep_block(
+                sib_cfg.get("sweep"), source=str(sib), warn_no_basic=False
+            )[2]:
+                return sib
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_sweep_block(
-    block, *, source: str
+    block, *, source: str, warn_no_basic: bool = True
 ) -> Tuple[Tuple[float, ...], Tuple[float, ...], bool]:
     """Parse a cell's ``sweep:`` block into (beta_arm, sigma_arm, include_basic),
     REFUSING any declaration off the L (the basic origin must be (0,0); each arm
@@ -481,7 +645,9 @@ def _parse_sweep_block(
     key also falls back to its canonical default (never a removal — this is what
     keeps legacy YAMLs byte-identical), so excluding an arm takes an EXPLICIT
     ``false``. ``basic: false`` drops the null-calibration anchor and warns:
-    fine for a shrunk test run, wrong for a production/paper run."""
+    fine for a shrunk test run, wrong for a production/paper run — unless the
+    caller found the anchor in a same-tag sigma = 0 companion
+    (``warn_no_basic=False``; see ``_sigma0_companion``)."""
     if block is None:
         return BETA_ARM, SIGMA_ARM, True
     if not isinstance(block, dict):
@@ -502,7 +668,7 @@ def _parse_sweep_block(
                 f"{source}: sweep.basic must sit at the shared origin "
                 "(beta=0, sigma=0), or be false to exclude it."
             )
-    else:
+    elif warn_no_basic:
         warnings.warn(
             f"{source}: sweep.basic is false — the basic origin is the "
             "null-calibration anchor; without it the cell cannot be "
@@ -528,6 +694,15 @@ def _parse_sweep_block(
         if _as_float_list(confounded.get("beta", 0.0)) != [0.0]:
             raise ValueError(f"{source}: sweep.confounded must hold beta at 0 (the L).")
         sigma_arm = tuple(_as_float_list(confounded.get("sigma", list(SIGMA_ARM))))
+    # Arm values must be > 0: the origin is declared by ``basic`` — and basic
+    # ALREADY IS the sigma = 0 confounded mechanism (``arm_behavior``: the
+    # (0,0) point collects with bias_confounded_action at sigma = 0, U
+    # recorded, gate live), so a sigma = 0 entry in the confounded list would
+    # be a SECOND construction site for the same arm. A relaxation permitting
+    # it was added and REVERTED on review 2026-09-03 — the d100s0 no-harm
+    # control is expressed as ``basic: {beta: 0, sigma: 0}``, and its resolved
+    # dataset ids are asserted identical to the certified generation-report
+    # ids by test_e1_yamls_resolve_to_certified_ids.
     if any(b <= 0.0 for b in beta_arm) or any(s <= 0.0 for s in sigma_arm):
         raise ValueError(
             f"{source}: arm values must be > 0 (the origin is declared by basic)."

@@ -36,6 +36,9 @@ these, not rediscover them.**
 | **S14** | **For a component whose failures are SILENT, the smoke must include a POSITIVE CONTROL: a quantity predicted to move, and a check that it moved in the predicted direction.** "No error" is not evidence that such a component works. | The GRACE seam produced three silent failures in one build, each of which would have yielded plausible numbers and a clean-looking experiment: (a) an additive offset that DOUBLE-COUNTED the base critic's own contrast — and because doubling preserves sign, argmax policies mostly would not move, so the no-harm prediction would have PASSED while the seam was broken; (b) an extractor reading buffer attributes that `ReplayBuffer` does not expose, which would have made every run abstain, and abstention is *designed* to look like a scope decision; (c) declared proxy channels never reaching the buffer, so a proximal cell would have quietly fitted the ablation's "without" arm. None raises. The control that separates them is one number: the SERVED contrast against the BASE critic's contrast — predicted strictly lower, since the base carries the upward `M · tilt` bias that GRACE removes. Equal ⇒ passthrough in disguise; higher ⇒ sign inverted. Same family as S12 (bit-identical output means nothing changed): both are cheap tells for changes that fail without complaining. |
 | **S15** | **Require every run to record WHAT IT ACTUALLY DID, not only what it produced.** For a component that can no-op silently, the artifact must carry evidence of the action — which branch ran, what changed, how long it took — because output that looks right is compatible with nothing having happened. | The E1 smoke's leaf said `"grace": null` and `seconds: 400` where a served run takes ~5000; the CSVs, the dataset id and the returns were all correct and plausible. `_needs_episode_grouping_run()` is True whenever critic ablation is configured, so every run took the GROUPED offline path while the transform hook sat on the FLAT one — every grace arm would have been byte-identical to its baseline, for 36 hours, with **P1 passing perfectly, P3 absent and P5 reading "the bias did not cross a decision boundary"**, and the conclusion that GRACE does nothing. No test caught it and no error was raised; the provenance record did. Companion to S14 (positive controls) and to the input-check rule: of six silent failures in this seam, FIVE were inputs or wiring arriving wrong rather than outputs computed wrong, and that class is invisible to output inspection **by construction**. The fix form matters too — ONE construction site called from both paths, never a second hook, which removes the class rather than the instance (the same move as `_episode_log_liks`' deduplication). |
 | **S16** | **A component that fails silently needs a check PER INPUT, not a check per output.** | Same tally: the additive offset (double-counted the base's own contrast), the unreadable `ReplayBuffer` (attributes vs `gather()`), the declared proxies never reaching the buffer, the inverted pessimism sign, the dataset-id collision across cells, and the hook on the unused branch. Only the first is an output defect; the rest are inputs arriving wrong. Checking outputs would have caught one of six. |
+| **S17** | **A positive control belongs on the REPORTED ENDPOINT, not only on the components that feed it.** Before committing a long campaign, run one cell and verify the headline metric *behaves like the quantity it is named after* — in a plausible range, and MOVING as the thing it measures changes. A flat or few-valued series fails, however healthy every component is. | The seventh silent failure, and the only one invisible to every component check. `rollout_len` carries three meanings — on-policy collection length, the legacy offline budget, and the EVAL HORIZON. On an offline run the first two are inert (`offline_grad_steps` sizes the learner), so E1 set it to 2 for them and thereby evaluated every policy over **two environment steps**. Deployment return was then `2.0 + bonus_rate × (a_bad steps among those 2)`: exactly three reachable values, and the observed set across all 17 completed cells was `{2.0, 2.5, 3.0}` — the predicted set, nothing else. A pole cannot fall in two steps, so trained, untrained and broken policies all scored the same, and **every return-based prediction (P1b included) was untestable while looking like a clean pass**. Nothing errored, the CSVs were well-formed, the seam was correct, the critic ablation was correct, S14's positive control on the served contrast PASSED — the components all worked and the metric they fed measured nothing. Six of seven failures were caught by checks on components; this one required checking the endpoint itself. Fix form per S15: separate the meanings (`eval_rollout_len`, defaulting to `None` so existing runs are byte-identical) rather than correcting the one call site. |
+| **S18** | **A point null of exact equality, tested against a flexible model, rejects given enough resolution — the null is false by construction. When the test feeds a decision, the hypothesis must be an EQUIVALENCE REGION whose tolerance is derived from the decision's own scale.** | Ruled 2026-09-02 on L5's Markov falsifier: on exactly-Markov deterministic CartPole the history block always improves the structured approximation residual by a positive sliver (measured Delta-R^2 1.6e-7, shrinking 56x with base capacity), so "history adds exactly zero" rejects at ANY capacity while the true-POMDP effect sits 5 orders higher (1e-2, capacity-stable). Same move as the walk's derived stop and the bootstrap's MC-error criterion: the tolerance comes from a quantity the pipeline already measures (here L4's own interval), never from a chosen number. Derivation: `docs/l5_equivalence_tolerance.md`. |
+| **S19** | **A feature set used to certify a model's sufficiency must be the feature set the model receives.** Certifying `k` on richer features than the estimator gets is the same defect as validating one estimand and serving another. | Ruled 2026-09-03. The fifth instance of the validated-≠-served family — the additive offset, the max operator, the learned termination head, and now the POMDP branch's augmentation: L5 selected `k` with lagged `(O, A, R)` history blocks while `pomdp_branch._augmented_cols` served lagged `(A, S)` only, so a `k` certified because of past rewards was a `k` the estimator could not honour. Stated as a rule about FEATURE SETS rather than quantities because that is the generalisation the four earlier instances were pointing at. Resolution: the family's history blocks are `(O, A)` only (the served columns); the R-inclusive block survives as the reward-channel DIAGNOSTIC, where a reward-only-visible hidden state belongs by construction. |
 | **C3** | Estimates carry their conditions **on the object**. | `fit.estimate()` is the only way a number is produced, so none escapes without `monotone`/`converged`/`separability`. |
 
 ### Library rules (NBN v0.14.0, vendored)
@@ -1253,7 +1256,941 @@ bypasses it and PINS the certified id read from the generation reports, with two
 assertions before any training: ids distinct across cells, and every id present
 in the store and carrying its certification stamp.
 
+### E1 PILOT STOPPED BY DECISION (2026-09-03) — d025/d010asym incomplete, deliberately
+
+The pilot was stopped after `d025/cql/grace/s1` promoted. `danull`, `d100s0`
+and `d100` are COMPLETE (12 leaves each, every cross-algorithm grace pair
+bitwise-identical — 10/10) and are harvested as the observability contract's
+(declared MDP, true MDP) row. **`d025` and `d010asym` are instrument-design
+archive under the 2026-09-02 reframe** — they were built to measure P3's
+correction-share ordering and the asymmetric point's return gains, neither of
+which survives as a claim — and finishing them cost ~1 GPU-day plus the CPU
+contention that was doubling the L5 calibration sweep's runtime. The 6
+completed d025 leaves are kept as-is; the cell is marked incomplete-by-
+decision with this paragraph as the reason. Do not resume them without a new
+ruling; `tools/run_e1.py` would happily continue if re-invoked.
+
+### RECORDS OF 2026-09-03 (afternoon) — selector readings, parity pass, probe capture, two near-misses
+
+> **Superseded the same evening (see "RULING 2026-09-03 (evening)" below):
+> the selector readings and the under-cut table are a measurement of a
+> WITHDRAWN design — `dr2_cut` was stripped as a per-environment constant
+> (A2) and selection moved to materiality-by-refit. The parity pass, the
+> probe capture and the two near-misses stand.
+
+**The L5 selector's two readings (calibration, CartPole, 55 rows at the time
+of writing).** `k_selected = None` was ambiguous on the page between "every
+stage rejected" and "budget-bound"; they are the SAME event (a run of
+`k_max + 1` tests with no pass), and `tools/calibrate_l5.py` now states both
+readings per env (`summary.<env>.selector`): the as-deployed statistical
+selector (`dr2_cut=None`, what the sweep ran) and the same rows re-read
+under the stated cut (`--dr2-cut`, default 1e-4), with the cut CHECKED
+against the measured gap (`cut_in_measured_gap`). Null rows (n = 27):
+
+| reading | k = 0 | k = 1 | k = 2 | budget-bound |
+|---|---|---|---|---|
+| as deployed (statistical only) | 1 | 6 | 4 | 16 |
+| under the cut 1e-4 | 27 | 0 | 0 | 0 |
+
+Gap: null max 5.8e-7, masked min 5.4e-4 (separation 925x), so the cut is
+inside it. This pair IS contract row 2's headline ("over-assumption is
+cheap" holds only if k = 0 is selected on true-MDP data): the cut-less
+selector chases floor rejections to `k_max` on 16/27 nulls; under the cut
+k = 0 on 27/27. Rows now store every stage's (lag, p, stat) so any cut can
+be re-read post hoc; rows written before that field existed decide k = 0
+from stage 0 alone and are otherwise reported "undetermined" (so the masked
+rows' under-cut k is undetermined for the early rows, never guessed).
+**Rule:** the in-flight sweep process holds the OLD code and writes its own
+`report.json` at exit — run `uv run python tools/calibrate_l5.py
+--report-only` afterwards to rebuild the two-reading report from
+`rows.jsonl`.
+
+**Parity re-run RECORDED.** The chain `pilot-exit -> GPU preflight -> parity
+tests -> cost probe` ran as a background task whose output file survived:
+`tests/test_proximal_vectorized_parity.py` — 4 passed, 60 s, 2026-09-03
+11:09, GPU 12 MiB used at preflight. That is the clean-tree check for
+everything built during the CUDA-OOM window, on record. The POMDP cost probe
+(d100 sigma=0 seed 0, GPU) is the tail of the same chain, so its output
+lands in that task file at exit; a watcher copies it to
+`results/pomdp_cost_probe.log` the moment the probe exits (it was NOT
+dead-piped, and was not killed — 5 h in, progressing). Augmented state dim
+is analytic, not measured: obs + k(obs + 1) — CartPole 9 at k = 1, 14 at
+k = 2.
+
+**Two near-misses pre-commit surfaced on the first commit of the L5 build
+(recorded because each resolved to the intended value by luck, not design).**
+(1) `build_generator_agent` passed `mask_indices=behavior_mask_indices` to
+`_train_generator` without DECLARING the parameter (flake8 F821): every
+caller so far took the default path, so the masked-behavior generation
+through that entry point had never executed — it would have raised
+`NameError` on first use. Declared with default `None`. (2)
+`e1_d100s0_grace.yaml` carried TWO identical `critics:` blocks (a copy-edit
+artefact); PyYAML keeps the LAST mapping for a duplicate key and both read
+`basic: [observational]`, so the finished `d100s0` runs are unaffected — a
+duplicate that resolved to the intended value is a near-miss, not a
+non-event. The earlier block is removed; `check-yaml` (ruamel) rejects
+duplicates, which is how it surfaced. Result artefacts are committed with
+`--no-verify` so the end-of-file hook does not rewrite them.
+
+### RULING 2026-09-03 (evening) — `dr2_cut` STRIPPED; falsification report-only; selection by materiality; the parameter taxonomy
+
+**The objection, owned:** the measured Delta-R^2 gap was a PER-ENVIRONMENT
+CONSTANT and A2 forbids those. It entered only as `dr2_cut`, in two places,
+and neither needs it.
+
+**1. Falsification is report-only — no threshold at all.** By the standing
+ruling L5 warns and never overrides; a verdict that changes no behaviour
+needs no binary. `MarkovVerdict.declaration_falsified` is REMOVED;
+`MarkovVerdict.record(alpha)` travels on the served value (C3) with: the
+effect size Delta-R^2 and its p; the CAPACITY-SHRINK ratio (the mechanistic,
+dimensionless separator — approximation error shrinks with base capacity,
+measured 56x; information does not, ~1x); base R^2 per dimension with
+`scale_invalid` where negative; the reward-channel diagnostic. The user
+reads the magnitude and its evidence. Nothing branches on it.
+
+**2. Selection is materiality-by-refit against L4's own interval.** The
+predictive test asks "is the process exactly Markov?", whose answer is
+always no (S18). The estimator's question is whether another lag changes
+WHAT GRACE SERVES by more than the uncertainty GRACE already reports:
+`k* = min { k : |contrast(k+1) - contrast(k)| <= w_k }`, contrast = the
+served action contrast on the lag-k augmented state, w_k = L4's half-width
+there — every term measured per fit, no constant, no environment dependence
+(same family as the walk's derived stop, the bootstrap MC-error criterion
+and tau_R). `l5.select_window` is REMOVED; the selector lives in
+`pomdp_branch.transform_offline_rewards_declared`. Cost: fits at k = 0 and
+k = 1 on a true MDP (~1.7x, measured) replacing the 912 s selection pass;
+under the cache the k = 0 fit is a hit whenever the MDP-declared arm ran on
+the same data. **First empirical point** (peer session, max-null era): the
+k = 0 and k = 1 transforms on d100s0 s0 produced IDENTICAL intervals to four
+decimals ([+0.4989, +0.5235]) — the criterion stops at k = 0 immediately.
+
+**3. A user-supplied k is an INPUT, never a hypothesis.** The declaration
+surface is `(observability, optionally k)` and declared-MDP IS k = 0 — ONE
+code path (the runner calls `transform_offline_rewards_declared` for every
+GRACE arm): MDP -> k = 0; POMDP with k -> that k; POMDP without k -> §2.
+When k is supplied GRACE uses it and reports two diagnostics, both
+report-only, neither overriding: **sufficient?** (does lag k+1 move the
+served contrast by more than w_k — if so the window is too short: warn,
+serve anyway; label `WINDOW-TOO-SHORT(warn)`) and **necessary?** (does k-1
+already suffice — if so the window is longer than needed: compute and
+estimator variance, no correctness harm; `WINDOW-LONGER-THAN-NEEDED(info)`).
+The second is contract row 2 in its exact form. `k_max` applies only when
+selection is delegated; `k_diagnostics` is a BUDGET switch (the extra fits),
+disclosed when off. Config: `declared_observability`, `grace_window_k`,
+`grace_k_max`, `grace_k_diagnostics`, `grace_l5_alpha`, `grace_l5_b`;
+`grace_dr2_cut` is GONE. Tests: `tests/test_pomdp_branch.py` (12) pin the
+path; `tests/test_l5_markov.py` pins the record.
+
+**4. Calibration re-scoped; the sweep DISCARDED.** The running sweep was
+stopped (peer session, 2026-09-03 ~18:45; 61 rows preserved). Its purpose
+was choosing a number we no longer use. What calibration is still for, and
+it is not per-environment: (i) the POWER of the materiality criterion — how
+large a violation must be before it is caught — a property of the METHOD,
+measured on synthetic fixtures where the truth is dialable; (ii) the S18
+result — a point null of exact Markovianity rejects at floor effect sizes on
+deterministic systems — reported ONCE as a finding from the rows on disk.
+The "two selector readings" table and the under-cut numbers recorded this
+afternoon are now a measurement of a WITHDRAWN design, kept as such.
+
+**5. The parameter taxonomy — the environment-independence claim the paper
+asserts.**
+
+| class | members | status |
+|---|---|---|
+| **declarations** | the diagram, observability and k, `u_card` | user inputs; honoured; contradictions REPORTED |
+| **budgets** | B, folds, RFF count, `k_max`, iteration caps, `k_diagnostics` | compute limits; DISCLOSED when they bind |
+| **derived** | tau_R from w; the walk's stop from bootstrap MC error; `min_scale` and the sqrt-eps truncation from the float representation; the materiality criterion from w_k | measured per fit |
+| **calibration constants** | — | **NONE** |
+
+Nothing measured on one environment transfers to another, because nothing
+is measured to be transferred.
+
+**Fixture finding, recorded (S8 doing its job, and a fragility to keep in
+view):** the unit fixture "hidden AR state drives the reward" at obs dim 2
+gave a memoryless base fit with held-out base R² of −1.3 / −0.2 on the obs
+dims — `scale_invalid` on every dim, IDENTICAL under the pre- and post-S19
+code (same conditioning block). The same dynamics at obs dim 3 fit at R²
+0.92. So the random-feature basis on a 4-wide standardised block can
+generalise badly on a small synthetic fixture; the flag caught it, the
+fixture was moved to d = 3, and the positive-control test now asserts the
+obs dims are NOT scale-invalid so it cannot pass vacuously. On real data
+(CartPole full view) base R² is 0.99999+ at every capacity probed; the
+materiality-power calibration on synthetic fixtures must report base R²
+alongside its power numbers for exactly this reason.
+
+**The reference priming MISSED (found by the peer on the first grid leaf):**
+my `phase2_speed.py` built its buffer straight from the Minari episodes
+(49,125 rows, no `next_obs`/`dones`) while the runner's fill writes
+49,762 rows with both — different content, a different `data_sha256`,
+correctly a MISS (the cache did its job; the priming used the wrong
+construction site). One-time cost 1.15 h; the grid's own first k = 0 fit
+(`d2961b84`) and k = 1 fit (`59883afe`) are the entries the later cells
+reuse. Lesson: prime a cache only through the consumer's own fill.
+
+**Also fixed on the way (recorded):** the k >= 1 augmented view handed to
+the fit carried no `next_obs`/`dones`, so the extractor rolled next-obs
+ACROSS episode boundaries and saw no terminations; the view now carries the
+exact next augmented state (lag blocks shifted by one) and the dones. And
+`serving.transform_offline_rewards(apply=False)` lets the branch compare
+fits before writing the real buffer exactly once.
+
+**Next, in order (ruled):** (a) the critic end to end — done in this commit,
+pending the grid's first run; (b) repo adoption — the YAML driver consuming
+the e1 configs (`CELLS` gone), the contract cells as configs with
+`declared_observability` and optional k, the deployed plotting extensions
+(per-seed curves, paired base-vs-grace, the critic-accuracy table, the
+return decomposition, abstentions separate), the README section — split:
+driver/plotting/README-driver = peer session, config keys + README-critic =
+this session; (c) SPEED, measurement first — profile one representative
+grace fit (EM iterations, M-step steps, bootstrap replicates,
+`interventional_sweep`) and report where the time goes before optimising;
+candidates in likely payoff order: bootstrap replicates in parallel
+(`n_jobs`, GPU-memory-gated), the transform cache actually used by the grid,
+the per-node M-step budget on 1-D proxy channels, fit-once-per-(cell,
+dataset seed, k) across training seeds — none applied on argument alone.
+
+### THE S18 EVIDENCE REPORT + THE WINDOW-COST TABLE (2026-09-03, sweep-holder session)
+
+**S18, measured and filed:** `results/l5_calibration/s18_report.json`
+(rendered by `tools/report_s18.py` from the 61 preserved sweep rows — the
+rows' ONE remaining purpose under the dr2-cut ruling). Headlines: 29 true-MDP
+null replicates, **97% rejected at α = 0.05, median p = 0.005** — the point
+null of exact Markovianity is false by construction on deterministic systems;
+ΔR² separation **925×** between the largest null effect (5.8e-7) and the
+smallest constructed-POMDP effect (5.4e-4); capacity-shrink median **6.9 on
+nulls vs 0.0007 on masked** (approximation error dies with capacity;
+information does not). Cite the JSON, not this paragraph.
+
+**The window branch's measured costs** (d100s0 s0, 49k rows, GPU,
+production budgets; `fit_unaug = 7709 s` is the denominator):
+
+| fit | state dims | seconds | ratio |
+|---|---|---|---|
+| k = 0 (unaugmented) | 4 | 7,709 | 1.00 |
+| k = 1 | 9 | 13,184 | **1.71** |
+| k = 2 | 14 | 14,159 | **1.84** |
+
+Window cost grows GENTLY with k (the fixed-step M-step decouples
+per-iteration cost from dimension). With the transform cache, the materiality
+selector's k=0 fit is a HIT on any campaign where the base arm ran first, so
+its marginal cost is the k+1 fit alone. Third stability datum for the
+materiality criterion on true-MDP data: intervals at k = 0/1/2 are
+[+0.4989,+0.5235] / [+0.4989,+0.5235] / [+0.4989,+0.5237] —
+|Δcontrast| ≈ 2e-4 against w ≈ 1.2e-2, a ~60× margin, so the selector stops
+at k = 0 immediately. (The probe's earlier SELECTION timing, 912 s, was the
+pre-S19 statistical selector and is VOID — recorded, not quotable.)
+
+**danull leaf paths moved (2026-09-03):** the pilot's 12 `offline_mdp_danull`
+leaves now live under `beta_000_sigma_000` (was `sigma_025` — the driver's
+campaign default leaking into a cell where σ is meaningless; the diagram-arm
+validator correctly rejects σ > 0 on a no-latent cell, and the tree now
+agrees with the declaration `e1_danull*.yaml: basic {β=0, σ=0}`). Anything
+hardcoding the old path must update.
+
+### PHASE 3 PRE-REGISTRATION (2026-09-03, before generation) — the true-POMDP datasets
+
+**What runs:** `tools/generate_diagram_arms.py --cells d_d_sweep_d100_om13
+--envs CartPole-v1 --device cpu` — the FIRST execution of the
+masked-behaviour path (the generator is trained on the masked view under its
+own generator dir `<out>/generator/CartPole-v1_s<seed>_om13`; the rollout
+acts through `_MaskedViewPolicy`; the dataset stores the FULL observation).
+Six datasets: seeds 0–2 × {σ = 0 basic, σ = 0.25 confounded}, ids carrying
+`-om13` (S6). Generator training on CPU because the card is held by the
+k = 2 timing (footprint 7.6 GB of 8.2, measured).
+
+**Predictions, written before the result:**
+1. Every dataset's stamp reads `behavior_information_set: masked:1,3`; the
+   full-view d100 datasets read `full` (checked side by side).
+2. Gate test passes and preflight passes on all six; the one licensed
+   regeneration is the covariate-free preflight at p ≈ α (the known ~1%
+   rate). Any other failure is stop condition §7.1.
+3. **L5 positive control (certification check 1):** the masked view fails
+   the Markov test at lag 0, α = 0.05, with ΔR² in the 1e-3..1e-1 range
+   (the calibration's masked rows on load-time-masked d100: 5e-4..36), while
+   the full-view d100 s0 sits at ~1e-7 (measured today). Capacity-shrink
+   ratio < 1 (information, not approximation error).
+4. **Certification check 3 (recoverable from history):** the masked
+   velocities regress from one lag of positions with R² > 0.9 (a finite
+   difference of positions reconstructs them), so k = 1 is the EXPECTED
+   selection on this data (contract plan scope statement).
+5. The behaviour policy is genuinely less competent on the masked view:
+   the generator's tier-selection return and the rollout's return
+   distribution sit BELOW the full-view d100 generator's (a POMDP has a
+   worse achievable policy) — recorded, and the reason cross-column readings
+   are forbidden.
+Checks 2 and 4 of the plan's certification list (memory pays; per-context
+return spread) are grid-side measurements and are run with the contract
+cells, not here.
+
+**OUTCOME (2026-09-03 21:25) — PHASE 3 COMPLETE: 6/6 certified on the first
+pass, no regeneration.** `results/dd_sweep_om13_generation/report.json`
+(committed): every row gate True, preflight True, reasons empty, proxy
+margins ≈ 5 (as the full-view cell's), 57–136 s each after the generator.
+Against the predictions:
+1. ✓ every stamp reads `behavior_information_set: masked:1,3`; the full-view
+   d100 datasets read `None` — they predate the stamp (the field did not
+   exist), not `full`; the reader must treat None as full-view-historical.
+2. ✓ gate + preflight on all six; the licensed regeneration was never needed.
+3. ✓ **L5 positive control** on s0 σ = 0, masked view: p = 0.010 (the
+   floor at b = 99), ΔR² = 3.0e-2, capacity-shrink 0.001 (information);
+   the full view of the same data: ΔR² = 1.3e-7, shrink 577 (approximation
+   error). Base R² on the masked view 0.99/0.97 (clean fit). The
+   reward-channel diagnostic reads 0.22 / 0.24 on both views — lagged R
+   carries the episode-constant U (U → R survives at σ = 0), as the
+   catalogue says. **σ = 0.25 s0 (the grid's operating point):** masked view
+   p = 0.010, ΔR² = 3.4e-2, shrink 0.000; full view ΔR² = 1.3e-7, shrink
+   3702 — same picture. The reward-channel diagnostic reads −0.02 on the
+   masked view vs +0.20 on the full view there: under the masked view the
+   memoryless reward base is weaker (base R² 0.43 vs 0.47) and the lagged
+   block adds nothing beyond the placebo — reported, not decided on. Cost
+   datum: a 500-episode L5 record takes ~250 s on a quiet CPU (1930 s under
+   the earlier load), so the `l5_n_ep = 500` budget prices the record at
+   minutes per (dataset, k), cached by content across training seeds.
+4. ✓ velocities from ONE lag of positions (+ action): R² 0.93 / 0.90 on the
+   masked data → k = 1 is the expected selection.
+5. ✗ **REVERSED, with a mechanism:** the masked behaviour policy is MORE
+   competent — rollout return 41.9 (mean; episode length 33.7) vs 19.2
+   (16.4) on the full-view d100 s0. Mechanism, measured in the generator
+   curves: `select_tier_episode("medium")` takes the FIRST checkpoint
+   reaching a third of each generator's OWN return range; the masked DQN's
+   first checkpoint (61.5, range 52–62.5, target 55.5) already qualifies,
+   while the full-view generator's medium checkpoint is a genuine 56 of
+   52–64. A tier-selection artefact of the D4RL-style rule, not a defect of
+   the masked path; every generation knob is identical between the two
+   datasets (metadata diffed field by field: only `p_hat` and the U-edge
+   statistics differ, which the behaviour difference explains). It is
+   exactly the cross-column competence confound the plan forbids reading,
+   and touches no within-column claim; recorded so nobody reads "the POMDP
+   column scores higher" as a GRACE effect.
+
+**First execution, first surprise (19:20, loud, fixed, relaunched):** the
+masked generator trained fine on the 2-dim view, then
+`build_generator_agent` rebuilt the agent at the CANONICAL 4-dim obs and
+the checkpoint refused to load (state-dict size mismatch [64, 2] vs
+[64, 4]). The same reduction `generate_offline_dataset` already applies is
+now applied at the build site; pinned by
+`test_build_generator_agent_is_masked_dim_when_behaviour_is_masked` (no
+training: the 'random' tier path). Second latent defect on this never-run
+path in one day (the first was the undeclared parameter) — the reason the
+plan makes "generate one and certify it" a gate rather than a formality.
+
+**Comparison record (S19, closing the afternoon's measurement):** on real
+data the (O, A)-only family is invariant to the reward channel by
+construction — d_a_null s0 and d_b_prime s0 share their (O, A) trajectories
+and now give IDENTICAL statistics (lag 0: 1.669e-7; lag 1: 4.264e-9), where
+the (O, A, R) family had differed (1.100e-7 / 2.004e-8): lagged R had been
+leaking into the observation-channel statistic. Reward-channel diagnostics
+unchanged (0.0204 / 0.0185).
+
+### PHASE 4 PRE-REGISTRATION (2026-09-03, before any grid result) — the CartPole contract grid C1
+
+**Cells** (`reproducibility/rl_regimes/diagrams/c1_*.yaml`, campaign prefix
+`c1`, results under `results/c1`): truth ∈ {tmdp = d_d_sweep_d100, tpomdp =
+d_d_sweep_d100_om13 with the learner masked [1, 3]} × arm ∈ {base, grace
+declared MDP, grace declared POMDP (k delegated)}; σ = 0.25; 3 dataset
+seeds × 3 training seeds; cql + iql. The base arm carries the Phase-6 critic
+axis (observational, proximal, oracle_u, sensitivity on tmdp; proximal
+EXCLUDED on tpomdp — L2: D-G q1 bounds-only, q2 non-ID). Analysis is
+WITHIN-COLUMN only.
+
+**Predictions (pre-authorised readings, written as predictions):**
+1. **Row 2 (declared POMDP, true MDP):** the materiality selector returns
+   k = 0 on ≥ 8 of 9 (ds, ts) leaves per algorithm (first empirical point:
+   identical k = 0 / k = 1 intervals on d100s0 s0); served rewards are
+   bitwise those of the declared-MDP arm (cache hit), so the paired return
+   delta vs row 1 is 0 up to training-seed noise — "over-assumption is
+   cheap", measured.
+2. **Row 4 (declared POMDP, true POMDP):** k = 1 selected (a finite
+   difference of positions reconstructs the velocities); materiality margins
+   `|contrast(1) − contrast(0)| > w_0` and `|contrast(2) − contrast(1)| ≤ w_1`.
+3. **Row 3 (declared MDP, true POMDP):** the L5 record at the served lag 0
+   CONTRADICTS the declaration on every leaf (p ≤ 0.05, ΔR² ≳ 1e-3,
+   capacity-shrink < 1) and the `window_sufficient` diagnostic reads False
+   (`WINDOW-TOO-SHORT(warn)`); GRACE serves as declared; its critic accuracy
+   (`q1_contrast_error`) is WORSE than row 4's on the same data — the
+   degradation is observable next to the warning (contract row 3).
+4. **Row 1 (declared MDP, true MDP):** the L5 record rejects at floor
+   effect sizes on most leaves (S18) with capacity-shrink > 1 — reported as
+   the S18 floor behaviour, NOT a defect; `window_sufficient` True.
+5. **Return:** grace ≥ base on the confounded point within column 1 (the
+   pilot's d100 result); in column 2 the memoryless learners are worse than
+   in column 1 in absolute terms (a POMDP has a worse achievable policy —
+   never read across columns). Grace losing to base on return anywhere is
+   reported with the decomposition, not treated as a failure.
+6. **Abstentions** (fit-health, L4) are tabulated separately; the σ = 0.25
+   d100 fits did not abstain in the pilot, so the prediction is 0 abstentions
+   in column 1; column 2 unknown (first fits on masked views) — any
+   abstention there is reported with its reason.
+7. **Critic axis (Phase 6):** oracle_u ≤ grace ≤ observational on
+   `q1_contrast_error` in column 1 (ceiling / floor); proximal ≈ grace on
+   D-D (both point-ID via the same proxies).
+
+**Null-calibration anchor (decided 2026-09-03 22:30, peer's flag):** every
+σ = 0.25 cell declares `basic: false`, so the strategy critics'
+null-calibration gate would have no anchor. Options were (a) σ = 0
+companion points per truth column, (b) the stored fixed-denominator
+reference (`null_cal_reference.yaml`, historical CartPole cql/iql
+`noise_refs`), (c) declare the grid un-calibrated. **(a), base arm only:**
+(b) is a stored per-environment constant (A2, stop-condition §7.5), (c)
+leaves the critic axis ungated on the headline grid. `c1_tmdp_base_s0.yaml`
+(seeds [0, 2, 3] — the full-view σ = 0 s1 failed the preflight at
+generation; s3 is its certified substitute) and `c1_tpomdp_base_s0.yaml`
+(seeds [0, 1, 2], certified today), same regime tags, so the leaves land at
+`beta_000_sigma_000` under the σ = 0.25 cells' tags. +36 runs → 144.
+
+**Cost projection is reported before launch** (Phase 2's speedup and the
+k = 2 ratio enter it); launch is pre-authorised below 60 GPU-hours.
+
+### PHASE 2 — SPEED, MEASURED FIRST (2026-09-03 22:54 → 00:15, the profile)
+
+`tools/profile_grace_fit.py` on d100 σ = 0 s0 (49,125 rows, GPU, ALONE on
+the card — load 2; cProfile overhead included): **TOTAL 4832 s = 1.34 h**
+for one `fit_reward_transform` (23 fits: observed + 2 init seeds + 19
+bootstrap replicates + the served fit). Where the time goes:
+
+| phase | calls | total s | share |
+|---|---|---|---|
+| bootstrap replicates (19 refits) | 19 | 3974 | **82%** |
+| all fits (23) | 23 | 4169 | 86% |
+| M-step, total | 893 | 4152 | 86% |
+| M-step: proxy nodes Z, W, V (MDN `fit_local`) | 893 × 3 | 1016 + 1010 + 1006 | **63%** |
+| M-step: R, A (`neural_categorical`) | 893 × 2 | 555 + 554 | 23% |
+| `interventional_sweep` (L4's contrast targets) | 552 | 662 | 14% |
+| E-step | 1031 | 13 | 0.3% |
+| U, S nodes | 893 × 2 | 7 | 0.1% |
+
+Under the hood (cProfile): `run_backward` 1343 s, MDN `_log_prob` 941 s,
+nbn `likelihood_weighting` 660 s (= the sweep), ~39 M-steps per fit (30
+iterations + backtracks), 4.65 s per M-step. The ruling's tree, applied:
+
+1. **bootstrap dominates → `n_jobs > 1`, gated by the free-memory rule.**
+   Wired as a BUDGET (`grace_n_jobs`; threads, seeds by index, results by
+   index; not in the cache key). Gate: measure one replicate's peak GPU
+   memory (the reference run reports `max_memory_allocated`), divide the
+   free memory by it, cap there. Adopted ONLY if the served rewards, lo, hi
+   are BITWISE the reference's (`tools/phase2_speed.py parallel N`).
+2. **M-step: the proxy nodes are 63% of everything.** Their step budget is
+   the same 400 per node as R/A's (`_epochs` derives epochs from the fixed
+   step budget), on 3,000 episode-rows vs 49k transition-rows, with the
+   MDN's per-step cost ~1.8× the categorical's. Whether 400 steps over-spend
+   on a 1-D proxy channel is a FIT-QUALITY question: any budget change
+   alters the served numbers, so by the rule it is NOT a speed change and
+   is not applied here — recorded as the next candidate, to be measured on
+   its own (fit quality vs steps), never smuggled in.
+3. **`interventional_sweep` 14% → batch it**: `sweep_chunk` is now a budget
+   (default 4096, unchanged); `tools/phase2_speed.py sweep` measures the
+   full-buffer chunk against 4096 for bitwise identity and time — adopted
+   only if identical.
+4. **Cache**: the c1 grace cells share `results/grace_cache`; the Phase 2
+   reference run (`phase2_speed.py reference`, n_jobs = 1, d100 σ = 0.25
+   s0) is the grid's FIRST entry (tmdp ds0 declared-MDP) as well as the
+   bitwise reference.
+
+**OUTCOME (2026-09-04 01:35).** The reference fit (d100 σ = 0.25 s0, alone
+on the card, no profiler): **wall 4123 s = 1.15 h**; peak GPU memory
+ALLOCATED **4776 MiB**, reserved 7416 MiB, of 8188 MiB. Stored at
+`results/grace_cache/2abafc2ad4a30825` with `code_version 0cbf18a5…` ==
+the launch tree's (verified; the package is FROZEN until the waves finish —
+any edit under `src/rl/offline/grace/` or `nbn/` invalidates every entry by
+design). Interval [+0.4803, +0.5080], rewards sha256 `a66476ed…` — the
+bitwise reference for any later budget change.
+
+* **n_jobs gate → 1.** One replicate's measured peak is 4.8 GB; with a
+  512 MiB headroom, floor((8188 − 512) / 4776) = 1. Two concurrent
+  replicates would need 9.6 GB on an 8.2 GB card. The lever is wired
+  (`grace_n_jobs`) and stays at 1 on this hardware; said so, moved on. (On
+  a 24 GB card the same gate gives 4 and the bitwise test would run then.)
+* **Sweep chunk → stays 4096; it IS the memory budget.** The full buffer
+  (49k rows) needed 7.5 GB and OOM'd; 12,288 rows tried to allocate 6 GB
+  and OOM'd (≈ 0.5 MB per row inside nbn's likelihood weighting); 4096
+  rows ≈ 2 GB and took 14.6 s per action-sweep (matches the profile's 1.2 s
+  per chunk × 12). A larger chunk cannot be bitwise-tested because it
+  cannot run; the lever is rejected on this card.
+* **Achieved speedup for the grid: ×1.0 on the fit** (no lever passed the
+  gate at this memory) — reported as the factor it is. The material saving
+  is the CACHE (already built): 21.8 fit-units for 144 runs instead of 72
+  fits, and the k = 0 collapse making every declared-POMDP-on-true-MDP fit
+  a hit.
+
+**PROJECTION, reported before launch** (`tools/project_c1_cost.py
+--fit-hours 1.145`): fits 21.8 × 1.15 h = **24.9 GPU-h**; training 144
+runs from the pilot's quiet medians (cql 391 s, iql 625 s; base cells
+× 1.3 for the critic heads — a GUESS, the one unmeasured input) =
+**23.4 GPU-h**; **TOTAL ≈ 48 GPU-h < 60 → GO**, on the condition that the
+grid runs ALONE on the card (the contended numbers give 78). L5 records
+(~4 min per (dataset, k), content-cached) run on the CPU alongside.
+
+### C1 LAUNCHED 2026-09-04 01:35:44 — EARLY COST SIGNAL (02:20), the projection's guessed input was wrong ×5
+
+First base leaf group (c1_tmdp_base/cql/base/ds0_ts0 → 4 per-critic
+leaves, explosion correct): **2620 s** for the four-critic base run vs the
+pilot's ~370 s single-critic median — ×7.1 against the projection's ×1.3
+GUESS for the critic heads. Mechanism (presumed, to be confirmed on the
+next two base leaves): proximal / oracle_u / sensitivity are FITTED
+estimators on the shared stream, evaluated per checkpoint, not cheap
+heads. Corrected projection if the slope holds (72 base runs across the 4
+base cells incl. the σ = 0 companions × 2620 s + 72 grace × 500 s + 25.0
+GPU-h of fits): **87 GPU-h — above the 60 GPU-h stop line (§7.4).**
+Options costed (fits unchanged at 25.0):
+
+| option | shape | GPU-h |
+|---|---|---|
+| as launched | 4 base cells × 18 four-critic runs | 87.4 |
+| iv | critic axis at ts0 only (12 runs × 2620) + base observational-only at 3 ts (72 × 400) + grace | 51.7 |
+| iv′ | critic axis at ts0 only, on the σ = 0.25 cells (6 × 2620) AND the σ = 0 companions (6 × 2620, the anchors keep their critic set; 1 ts suffices per (env, algo, critic)); base observational-only at 3 ts (36 × 400) | 47.7 |
+| iii | base cells at 1 ts (breaks base-vs-grace pairing at ts1/ts2) | 52.4 |
+| i | observational only everywhere (no Phase 6) | 43.0 |
+
+**Measured (03:20): cql 2620 s, iql 3609 s for the four-critic base run
+(mean 3114 s vs the single-critic mean 508 s: ×6.1).** Mechanism confirmed
+in `critic_ablation.py`: proximal / oracle_u / sensitivity are FULL
+LEARNERS (`build_<critic>_<base>`), so a four-critic run trains four
+learners. Re-costed with the measured means (fits 25.0 unchanged): as
+launched **97 GPU-h**; iv′ **51**; iv 56; iii 56; i 45.
+The chain was stopped by the peer at the iql ds0_ts0 boundary and
+restarted GRACE-ONLY at 03:20:50 (tmdp_grace_dmdp → tmdp_grace_dpomdp →
+tpomdp_grace_dmdp → tpomdp_grace_dpomdp; every option keeps all 72), the
+four base cells wait for Giovanni's ruling on their shape (§7.4) — a
+projection-input correction, not a scope change by us. Option iv′ drafts
+are in the session scratchpad, not in the tree.
+
+### C1 — FIRST ROW-1 LEAF READ AGAINST THE PRE-REGISTRATION (2026-09-04 ~06:10)
+
+`c1_tmdp_grace_dmdp/cql/grace/ds0_ts0` (declared MDP, true MDP; 9971 s =
+the fresh k = 1 sufficient? fit ~2 h + training): `transform_applied True`,
+coverage 1.0 (no silent no-op); `window[k=0|declared-mdp]`;
+**`window_sufficient True` with delta 0.0000 vs w = 0.0139** — the k = 1
+refit returned the IDENTICAL contrast (+0.4943 at k = 0 and k = 1, half
+widths 0.0139 / 0.0145): "over-assumption is cheap" at its sharpest, and
+the k = 1 entry now serves row 2's ds0 selection as a cache hit. Interval
+[+0.4803, +0.5080] straddles the M = 0.5 truth; pessimism 0.014. Return
+623.7 vs 499.0 (paired base column). L5 record: p = 0.010, ΔR² = 6.7e-9,
+`rejected True` — **S18's floor behaviour, as predicted; reported, nothing
+branched.** Reward-channel improvement 0.025, `serving_material False`.
+
+**Prediction 4 over-stated one thing — characterised, not a defect:** the
+capacity-shrink ratio on this leaf is **0.08**, not > 1. On the S18 null
+rows shrink is < 1 in 3 of 25, and those are exactly the rows with the
+SMALLEST effect sizes (5.3e-9 → 0.018, 2.1e-8 → 0.074, 7.5e-8 → 0.29):
+below ~1e-7 both the 64-RFF and the 256-RFF statistics sit at the
+numerical floor (base R² = 1.0000 on every obs dim here) and their ratio is
+noise. Above the floor the nulls shrink (median 6.9, up to 665) and the
+masked rows never do (max 0.62, always with ΔR² ≥ 5e-4). **So the
+separator is the PAIR (effect size, shrink):** shrink is the mechanistic
+read when the effect size is above the floor; at the floor the effect size
+alone — five orders below any masked value — is the evidence. The record
+carries both; the report reads them together. `l5_stat_hi` = 8.2e-8 is on
+the record for exactly this reason.
+
+**Cross-algorithm cache reuse CONFIRMED on the grid (06:40):** the peer
+read `iql/grace/ds0_ts0` as a fresh fit from a 7.6 GB GPU footprint; the
+footprint was the in-process driver's caching allocator holding cql's
+reserved memory. Measured instead: the runner's fill reproduced outside the
+runner gives exactly the cql entry's `data_sha256` (dd772333…, next_obs and
+dones included) and the fill has no algorithm input — prediction written
+before the read: iql hits both entries. It did: 891 s (training only),
+`transform_cache_hit True`, no fourth entry, served numbers identical to
+cql's (ΔR² 6.68e-9, interval [+0.4803, +0.5080], k = 0, sufficient True,
+49,762 rewards). The fit count is per (dataset, k), algorithm-independent,
+as the 21.8 fit-units assumed; the one-time reference miss is the only
+cache cost. Lesson for the record: reserved GPU memory in a persistent
+process is not evidence of work — measure the artifact, not the footprint.
+
+### RULING 2026-09-04 (Giovanni) — option iv′; two sample sizes stated ON the tables
+
+**iv′ taken:** the critic axis at ONE training seed per dataset seed on
+both the σ = 0.25 cells and the σ = 0 anchors; base observational-only at
+three training seeds for the paired base-vs-grace comparison. Reasoning
+(his): iv′ cuts a STATISTICAL dimension where every alternative at similar
+cost cuts a SCIENTIFIC one — iii breaks the pairing that makes a return
+difference attributable to the critic; i removes Phase 6, the deliverable;
+dropping a comparator costs the positioning claim, while the critic-axis
+comparison is paired on identical data so its variance is dominated by the
+dataset seed, not the training seed. The anchor is per (env, algo, critic),
+so one training seed suffices. **iv′ is the floor, not a ceiling:** budget
+to spare goes first to more training seeds on the critic axis.
+
+**Implemented, YAML-only, under each truth's tag** (commit f7f5579; the
+sensitivity critic needs the observational one in the same run, so ts0's
+observational leaf comes from the critics cell; the eight finished
+per-critic ds0_ts0 leaves are exactly that cell's ds0 output and skip):
+`c1_<t>_base.yaml` = observational at ts [1, 2]; `c1_<t>_critics.yaml` =
+the full critic set at ts [0]; `c1_<t>_base_s0.yaml` = the anchors' critic
+set at ts [0]. Plan: **120 runs.** Corrected cost (the earlier iv′ figure
+had missed the second truth's anchors): critic runs 12 × 3114 s (tmdp) +
+12 × ~2335 s (tpomdp, three critics) = 18.2 GPU-h; base observational
+24 × 508 s = 3.4; grace 72 × 508 s = 10.2; fits 25.0 → **≈ 57 GPU-h**, of
+which ~4 already spent; under 60, grid alone on the card.
+
+**Report requirement (his):** two sample sizes, stated ON the tables, never
+in a footnote — base-vs-grace return n = 3 ds × 3 ts paired; GRACE vs the
+other critics n = 3 ds × 1 ts paired at ts = 0. `tools/report_c1.py` prints
+both in the table headers (computed from the leaves present, so the numbers
+are what was actually run) and carries the shrink-ratio reading rule on the
+L5 table. On the record at his request: the shrink reading (informative
+only above the noise floor) and the cache verdict (an iql leaf at 891 s,
+bitwise identical to cql's, settled by reproducing the fingerprint).
+
+### C1 — ds1 (2026-09-04 16:40–17:10): the fit-time input was measured on the SMALLEST dataset; and a stall
+
+**Data size:** d100 s1 has 326,001 rows (episode length mean 109, max 484)
+vs s0's 49,762 (mean 16.6) and s2's 113,774; the om13 masked datasets are
+larger than s0 too (the masked behaviour runs longer episodes). The
+projection's 1.15 h per fit-unit came from s0 — the smallest. s1's k = 0
+fit took 2.4 h (stored 09:34). om13 rows: s0 99,258, s1 113,503, s2 81,577.
+Re-projection: fit time is NOT linear in rows — the M-step (86% of a fit)
+is a fixed step budget per node, so most of the cost is row-independent;
+the two measured points give the affine model t = 0.92 h + 4.53 h
+per million rows (linear-in-rows would say 62 GPU-h of fits, an
+overstatement). Affine: tmdp fits 13.5 + tpomdp 18.7 = **32.2 GPU-h**
+(was 25.0); total with critic runs 18.2 + base 3.4 + grace training 10.2 =
+**≈ 64 GPU-h** — marginally above 60, a second §7.4 trigger on
+corrected inputs, reported to Giovanni with the uncertainty (the k = 1 /
+k = 2 ratios were measured on s0 only); the grid continues meanwhile as
+last time. Lesson: a per-unit cost measured on one dataset must be scaled
+along the size axis, with the RIGHT scaling law, before it is a projection
+input.
+
+**The stall (unexplained at the time of writing):**
+`c1_tmdp_grace_dmdp/cql/grace/ds1_ts0` entered the k = 1 sufficient? fit
+at 09:34; at 16:45 (7+ h) the worker is in a PURE single-thread CPU loop —
+GPU 0% on 30 one-second samples, zero I/O, ZERO voluntary context switches
+in 15 s, the autograd thread asleep, RSS 3.0 GB, main thread at 100% — and
+no k = 1 cache entry exists. No M-step looks like that (GPU, syncs). A
+Python stack is needed to name the loop; py-spy is blocked by ptrace (yama
+scope 1, no passwordless sudo) — Giovanni asked for
+`sudo env "PATH=$PATH" uvx py-spy dump --pid 2812160`; the peer can try
+from an ancestor shell. Deadline 19:30: no entry and no stack → stop the
+leaf, record as an unexplained stall (§7.3 class: reported, not worked
+around), and let iql ds1_ts0 re-enter the same fit — a reproduction if it
+stalls again. Suspects, none confirmed: something O(rows × episodes) on the
+CPU in the k ≥ 1 path at 326k rows. **Excluded by measurement (17:40):**
+the whole k = 1 PRE-fit path reproduced on s1's data on the CPU — fill
+10 s, episode_data 1 s, `_augmented_cols` 0 s, view fingerprint 0 s,
+`_episodes_from_data` 2 s — so the stall is INSIDE `fit_reward_transform`
+for the k = 1 view. At 49k rows the fit's non-M-step/non-E-step work was
+~4 s (profile), so this is a regime change on this dataset, not a scaling
+of a known phase. Still unexplained at 18:00 (8.5 h). **18:15 — the k = 1 fit itself
+reproduced on the CPU under py-spy** (as py-spy's own child, the only
+ptrace shape Yama scope 1 allows here; 8401 samples, 7 min): a NORMAL fit
+profile — node fits 51% (MDN `_params_from_parents` 22%, categorical
+12%), `interventional_sweep` 35% (it scales with rows: 80 chunks at 326k),
+E-step 9%, `_lag_blocks` 0.2%. No CPU-only phase of hours exists in this
+code path. Meanwhile the live worker: GPU 0%, 12 W, P-state P3, SM clock
+idle — NO kernel executing — while its main thread spins at 100% with zero
+voluntary context switches. A fit cannot be in progress with the GPU idle
+for hours (every phase of it is GPU work), so the worker is spinning
+host-side: the shape of a CUDA synchronisation that never returns (a
+device-side stall) or a host loop that never yields. Only a stack on the
+live process (sudo py-spy) can name it; the iql ds1_ts0 re-entry after the
+deadline is the reproduction.
+
+**MECHANISM (18:45, found from the code + one live number; a stack would
+confirm the frames):** `nbn/inference/tensor_ve.py`'s pre-allocation
+memory guard sizes `query_batch` chunks from `torch.cuda.mem_get_info()`
+— CUDA's view of FREE memory — and PyTorch's caching allocator holds the
+previous fit's blocks as RESERVED, which CUDA reports as not free. After
+the fresh k = 0 fit on 326k rows the worker's cache holds ~7.5 GB; the card
+reports ~151 MiB free (a fresh process saw 18 MiB and could not allocate
+256 longs). The guard then splits every 4096-row sweep call into chunks of
+8–135 rows (`_max_chunk_rows` at 0.9 × 151 MiB, per-row peak 1–16 MiB):
+30–500 exact-VE passes per call instead of one, each paying full
+per-pass overhead → microscopic kernels (GPU 0%, 12 W), the main thread
+pinned, no OOM raised (the guard keeps it under budget), hours of "work".
+Why ds0's k = 1 was fine: its k = 0 fit at 49k rows reserved less, leaving
+sane chunk sizes. The trap re-arms on every FRESH k = 0 → k = 1 pair (ds2,
+every tpomdp leaf), so it is a campaign defect, not a ds1 accident. The
+CPU reproduction could not show it (no CUDA allocator); the cost probe and
+the profile ran ONE fit per process and never saw a hoarded card.
+
+**Mitigation for the relaunch, no code change (the package stays frozen,
+the cache stays valid):** `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.6`
+in the launcher's environment — the allocator returns cached blocks to the
+driver when reserved memory exceeds 60% of the card, so `mem_get_info`
+stays truthful. Memory management only; VE is exact and per-row results do
+not depend on chunking, so served numbers are unaffected and the existing
+entries stay valid. Confirmation: ds2's fresh k = 0 → k = 1 pair must keep
+GPU utilisation > 0 through its k = 1 fit, with `memory.used` dropping
+after the k = 0 fit. **Proper fix, post-waves:** `torch.cuda.empty_cache()`
+between the fits in `transform_offline_rewards_declared` (mine) and/or the
+nbn guard reading `free + (reserved − allocated)` (upstream). Lesson for
+the record: a memory guard that reads the DRIVER's free memory under a
+caching allocator measures the cache, not the headroom; and every
+"speed" measurement here ran one fit per process, which is exactly the
+condition under which this cannot appear.
+
+**Decision 19:00 — KILL NOW rather than at 19:30** (mine, recorded): the
+mechanism is explained from the code plus measured evidence, so the live
+stack would confirm a frame, not discriminate; holding spends ~66 min of a
+§7.4-tight budget on a leaf that self-resolves on relaunch (its k = 0
+entry is stored; both algos hit it). The peer captures the GPU error
+state, PID-kills the chain, validates the env var on the freed card (fall
+back: `PYTORCH_NO_CUDA_MEMORY_CACHING=1`), relaunches the four grace waves
+mitigated; the base waves inherit the export. Confirmation on ds2's fresh
+k = 0 → k = 1 pair: `memory.used` drops after the k = 0 entry appears and
+GPU utilisation stays > 0 through the k = 1 fit. If the idle-GPU signature
+recurs there, the chain stops at that leaf and the no-caching variable is
+used instead. The ~9.5 h the stalled leaf occupied the card are lost wall
+time, not useful GPU-hours; the projection's 64 GPU-h of useful work is
+unchanged.
+**Executed 18:26–18:27:** killed (GPU state captured to
+`results/c1/stall_20260904T182551.nvidia-smi`: no Xid, no ECC — a healthy
+context starved of free memory, as the mechanism says); the variable
+accepted by torch 2.10.0+cu130 on the freed card; the grace chain
+relaunched mitigated at 18:27:09 and the base waves inherit the export.
+Verified on the artifact: the Python worker's `/proc/<pid>/environ`
+carries `PYTORCH_CUDA_ALLOC_CONF=garbage_collection_threshold:0.6` (the
+launcher shell's initial environment cannot show an export made inside
+its script — read the worker, not the shell). Two independent watches
+read ds2's k = 0 → k = 1 transition.
+
+**Replicate health on the grid fits so far (for the report):** ds0 k = 0:
+3/19 replicates failed; ds0 k = 1: 5/19 failed (`failure_rate 0.26`) —
+reasons "a mechanism's fitted scale is on its min_scale floor" and
+"backtrack budget exhausted while still improving"; ds1 k = 0: 0/19
+failed. The augmented (k = 1) fit is the less stable one on the small
+dataset; L4 served (its failure rule is `finished`, with reasons carried),
+and the report tabulates these rates per fit.
+
+### CORRECTION (2026-09-04 19:20) — the stall's mechanism, re-attributed; and the sweep is NOT chunk-invariant
+
+**Ruling received (Giovanni):** continue; no fit-episode budget; re-measure
+the projection on ds2's clean k = 0 (the ds1 k = 0 time of 2.4 h was
+itself taken in a process already holding ds0's blocks, so the affine
+slope is contaminated); settle chunk invariance by measurement; record the
+guard as an upstream NBN bug.
+
+**Mechanism corrected.** The VE memory-guard story above is WITHDRAWN:
+`HybridRouter._select` picks likelihood weighting whenever any mechanism
+is continuous, and this model's proxies and reward are MDN / categorical
+neural mechanisms, so the elimination engine (and its `mem_get_info`
+guard) is never in the path — verified on the estimator (engine: LW,
+always). What fits every observation is the peer's original hypothesis,
+now with the concrete allocator behaviour: with ~7.5 GB reserved after the
+fresh k = 0 fit and the k = 1 fit at 326k rows needing more than the
+leftover, PyTorch's caching allocator hits allocation failure on many
+calls and runs its expensive `release_cached_blocks` (free all cached
+blocks + device synchronize) and retry — a storm of native-code stalls
+between microscopic kernels: GPU 0%, one core pinned (spin-wait syncs, no
+voluntary context switches), memory pinned at the card, no
+`OutOfMemoryError` because each retry succeeds. That is exactly what
+`garbage_collection_threshold` is documented to prevent, so the mitigation
+stands for the right reason; the leaf cost nothing but wall time. The
+ds1 k = 1 fit relaunched under the mitigation is running on the GPU
+(utilisation > 0, 19:15). Lesson: I reached a plausible mechanism by
+reading the vendored source and stopped one check short — the engine
+selection; the chunk test caught it. Recorded as such.
+
+**Chunk invariance — MEASURED, and it does NOT hold:** the interventional
+sweep on one small fit (CPU, deterministic algorithms, 4096 rows) at
+chunk 4096 / 128 / 8 gives means 1.42529559 / 1.42529023 / 1.42530394 —
+distinct sha256, differences at the sixth significant digit: likelihood
+weighting is a Monte-Carlo estimate and the batch composition changes each
+row's random draws. Consequences: (i) `sweep_chunk` is NOT a free budget —
+it is part of the procedure, fixed at 4096, and must enter the cache key
+post-freeze (today it does not; it has never been changed, so every entry
+is comparable); the Phase 2 "budget" note is corrected here. (ii) The
+allocator setting does not touch chunking (the seam chunks at 4096
+regardless of memory), so cached entries fitted before the mitigation
+remain valid and comparable to those after it. (iii) A served contrast
+carries MC noise of order 1e-5 relative from the sweep — far below L4's
+half-width (~1e-2) and the materiality margins; noted for the report.
+
+**Upstream NBN finding filed** (`Giovannibriglia/NeuralBayesianNetworks#264`):
+the VE guard's `mem_get_info` read excludes PyTorch's cached blocks
+(reads the driver's free memory, not the process's headroom) — a latent
+bug for VE users whose workload reserves memory before a query; the fix
+reads `free + (reserved − allocated)`. Filed with the honest note that
+the campaign signature was the allocator storm on the LW path, not this
+guard.
+
+### POST-FREEZE LIST — ONE commit after the last C1 wave (every edit under `src/rl/offline/grace/` or `nbn/` flips `code_version` and invalidates every cache entry)
+
+| item | owner | why |
+|---|---|---|
+| `transform_cache.build_key` gains `sweep_chunk` | peer | the sweep is a Monte-Carlo estimate whose draws depend on batch composition (measured: distinct hashes at chunk 4096 / 128 / 8); today safe only because 4096 is fixed everywhere |
+| `pomdp_branch._lag_blocks` vectorised (one gather from episode starts) | peer | O(episodes × rows) per-episode loop with device syncs; not the stall, but the scaling is real |
+| `torch.cuda.empty_cache()` between the fits in `transform_offline_rewards_declared` | this session | the k = 0 → k = 1 pair in one process is the allocator-storm condition; the env-var mitigation stays as belt and braces |
+| nbn guard reads `free + (reserved − allocated)` (NBN#264), arrives by vendored sync | upstream | latent for this model (LW path), real for VE users |
+| the loader's `basic: false` null-calibration warning silenced for cells with a same-tag σ = 0 companion | this session | `regime_sweep.py`, not the package; cosmetic |
+
+After that commit the C1 cache entries become the campaign's frozen
+record under their `code_version`; a future run refits under the new
+version, which is the correct behaviour, not a loss.
+
+### POST-FREEZE COMMIT EXECUTED (2026-09-18) — and how the C1 chain actually ended
+
+**The chain died with the machine, not with a stall.** The mitigated grace
+relaunch of 18:27:09 (2026-09-04) wrote its banner and the ds1_ts0 leaf
+header to `results/c1/waves.log` and nothing after; the journal's boot
+record for that session ends **20:05:02** (a shutdown 1 h 38 min into ds1's
+k = 1 fit, which needs > 2.4 h). No k = 1 entry for ds1 was stored, no leaf
+landed, `_staging/c1_tmdp_grace_dmdp_cql_grace_ds1_ts0` holds the
+half-run. Nothing ran between 2026-09-05 and 2026-09-18 (no log, no entry,
+no leaf newer than 09-04; the card sat idle). The "running on the GPU
+(utilisation > 0, 19:15)" reading in the CORRECTION above was true when
+taken and is the last live observation of the campaign.
+
+**State of C1 at the freeze's end** (the exact inventory, so nobody
+re-derives it): 15 leaves — `c1_tmdp_base` ds0_ts0 × {cql, iql} × {obs,
+prox, oracle_u, sens} (8) and `c1_tmdp_grace_dmdp` ds0 × ts{0,1,2} × {cql,
+iql} (6, the grace arm's observational leaves) plus the staged partial;
+4 transform-cache entries under `code_version 0cbf18a5…`:
+`2abafc2a` (the Phase-2 reference, s0, its own data fingerprint — the
+priming miss), `d2961b84` (grid ds0 k = 0), `59883afe` (grid ds0 k = 1),
+`07042f5f` (grid ds1 k = 0); one L5 record. Every other planned leaf
+(tmdp ds1/ds2 grace, the whole dpomdp column, the whole tpomdp truth, the
+critics and σ = 0 anchor waves) is unrun.
+
+**Ruling (Giovanni, 2026-09-18): close the branch — finish its code, merge
+it.** So the post-freeze list is applied NOW, ahead of the campaign's
+completion, and its stated consequence is accepted: `code_version` flips
+(`0cbf18a5…` → `20b61957…`), the four entries become the frozen record of
+the aborted first pass, and a relaunch refits them (ds0 k = 0 1.15 h, ds0
+k = 1 ≈ 2 h, ds1 k = 0 2.4 h — measured; ≈ 5.5 GPU-h) before it reaches new
+work. That refit doubles as the confirmation the CORRECTION asked for
+(ds2's fresh k = 0 → k = 1 pair keeping the GPU busy) — under the in-code
+release now, not only the env var. Not a loss in the sense above; a cost,
+recorded here so the next projection counts it.
+
+**What the commit contains, item by item:**
+
+| item | done |
+|---|---|
+| `transform_cache.build_key` gains `sweep_chunk` | REQUIRED keyword (a caller cannot omit it); `serving.transform_offline_rewards` forwards `options["sweep_chunk"]`; the docstrings in `transform_cache`, `serving.fit_reward_transform`, `regime_sweep.SweepSpec` and `run_e1` no longer call it a budget; tests: field present, mutation is a miss, omission is a `TypeError` |
+| `pomdp_branch._lag_blocks` vectorised | `_episode_starts` (one `!=` + one `cummax`) then ONE gather per lag, `src = max(t − j, start(t))`; the old per-episode loop is kept in the test as the oracle — bitwise equal on 25 ragged episodes (lengths 1–9, permuted ids, k = 0..3) |
+| `torch.cuda.empty_cache()` between the fits | in `transform_offline_rewards_declared.fit_at`, after every FRESH fit (a cache hit allocates nothing); memory management only, no served number depends on it; the launcher's `garbage_collection_threshold:0.6` export stays |
+| nbn guard reads `free + (reserved − allocated)` | NOT here — upstream (NBN#264), arrives by a vendored sync; latent on this model's LW path |
+| `basic: false` warning silenced with a same-tag σ = 0 companion | `regime_sweep._sigma0_companion`: same directory, same `e1_cell`, a sibling whose `sweep.basic` is present; the C1 base/critics cells load silently, `c1_*_grace_*` (whose σ = 0 control is the pilot's `d100s0`, another tag) and the `e1_*` cells still warn, by the item's own scope |
+
+Also in the commit: the two grep-snapshot goldens regenerated
+(`tests/golden/seeding_call_sites.txt` +6, `critic_ablation_refs.txt` +1 —
+the l4/l5/estimator seeding sites and `aggregate_per_seed`, all from
+earlier commits on this branch; the snapshot was never refreshed, so the
+full suite had ONE red test on the branch since l5 landed). Two more
+full-suite reds, both ORDER-DEPENDENT and both this branch's: (i)
+`tools/run_e1.py`'s import-time `MINARI_DATASETS_PATH` setdefault leaked
+through `tests/test_e1_driver_plan.py`'s module import and repointed every
+later test at the grace-v2 store — the proximal parity tests then could
+not find their `~/.minari` dataset; the default now applies in the
+`__main__` guard only (`GRACE_V2_STORE`), and the plan test pins its store
+per test with `monkeypatch`. (ii) `test_grace_serving`'s untouched-column
+check used `torch.equal` on a buffer whose unfilled tail is uninitialised
+memory — NaN after enough tests, and `torch.equal` is False on NaN;
+it now compares BYTES, which is what "untouched" meant. Full suite after
+the fixes: 752 passed on the pre-fix run, the six reds re-run green in
+their failing order (51/51) and the 21 minari-touching files that follow
+the driver import re-run green in one process (154/154). Also committed:
+the two launch scripts that were sitting untracked since the relaunch — `tools/run_c1_grace_relaunch.sh` (the four grace waves,
+mitigated) and `tools/run_c1_base_waves.sh` (waves 5–7 of the iv′ shape,
+GPU pre-flight + completion invariant between waves). **To resume C1:** the
+grace relaunch first, the base waves on its completion, GPU alone, with the
+per-fit projection re-measured on ds2's clean k = 0 as the CORRECTION
+ruled; skip logic makes both scripts safe to re-run from the top.
+
 ### Open threads
+
+* **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's
+  features (S19).** The finding: L5 selected k with history blocks carrying
+  lagged (O, A, R); `pomdp_branch._augmented_cols` augments with lagged
+  (A, S) only — validated-≠-served, one level in. The obvious repair (lagged
+  R into the state) was checked against the served estimand and REJECTED:
+  the catalogue's Q2 derivation (D-B Steps 1–3; D-D inherits) defines
+  `g(s,a) = E_{U~P(U)}[E[R|s,a,U]]` over the EXOGENOUS MARGINAL with the
+  stated reason (Step 1) that under do(pi) at every step the trajectory is
+  independent of U — no U->S' edge (fact 3), pi does not read U — so
+  P(U|s) = P(U) in the deployment regime, and Step 2 names the observational
+  P(U|S_t) != P(U) as the WRONG distribution to integrate.
+  `estimator.interventional_sweep` implements exactly this
+  (`sum_k fit.prior[k] * E[R | S=s, do(A=a), do(U=k)]`, `prior` the (K,)
+  mixing weights; the per-episode responsibilities never enter). Derivation
+  and code agree. That reason holds for an (A, S)-augmented state (at
+  deployment A_{t-1} = pi(.) does not read U; S never depends on U) and
+  FAILS for an R-augmented one (U -> R is intact at deployment, so R_{t-1}
+  is U-informative and P(U|s) != P(U)): R-in-state is a belief-state critic
+  with posterior-weighted serving, pulling L4's contrast interval and the
+  pessimism rule with it — a different method, not a repair.
+  **Done:** `l5._build_design(history_reward=False)` is the family (the
+  served columns); the reward-channel diagnostic keeps `history_reward=True`
+  (shared base fit at lag 0; the selector requests it at stage 0 only). Module
+  statement: *the selector certifies observation-channel sufficiency for the
+  exact features served; reward-channel dependence is reported, not selected
+  on.* The blind spot reintroduced — a hidden state visible ONLY through
+  past rewards is invisible to the selector — is now characterised, not
+  hidden: it is a reward-channel phenomenon by construction and lands in
+  `reward_channel` / `serving_material`. Two tests pin it
+  (`test_selector_history_features_equal_the_served_augmentation`,
+  `test_reward_only_visible_hidden_state_is_reported_not_selected_on`).
+  **Calibration consequence — MOOT the same evening:** the sweep was stopped
+  and its rows serve only as S18 evidence (ruling below); no re-score. The
+  shared-basis truncation stands on its own reason (one coherent basis for
+  the family and the reward-channel blocks). Original note kept for the
+  record: the in-flight sweep's rows were scored with
+  the (O, A, R) family; on constant-per-step-reward datasets (R untestable:
+  d_a_null CartPole, Acrobot) the lagged-R column is constant and the family
+  statistic is unchanged; on variable-R datasets (d_b_prime) it can differ —
+  measured below in this section's follow-up, and those rows are re-scored
+  under the new code before the report is read as the gate.
+
+* **(b) RECORDED as the D-F/D-G path — the belief-state critic.** Posterior-
+  weighted serving `sum_u P(u | s_aug) E[R|s,a,u]` with a DEPLOYMENT-regime
+  posterior (prior x reward channel; the behaviour channel must NOT enter —
+  it is the confounding) is what confounded dynamics need anyway: `U ->
+  S_next` breaks the prior-marginalisation reason for the same cause as
+  R-in-state, only more severely (the occupancy itself becomes
+  U-dependent, Step 1's first clause). Whoever builds D-F/D-G starts from
+  this derivation (catalogue D-B Step 1–3 + the paragraph above), not from
+  rediscovery; see `docs/grace_observability_contract_plan.md` "What stays
+  future work".
+
+* **NEXT GATE (ruled 2026-09-03): the true-POMDP column has never executed.**
+  The undeclared `behavior_mask_indices` (near-miss (1) above) means the
+  masked-behaviour path through `build_generator_agent` had never run once,
+  so the true-POMDP datasets are both ungenerated and end-to-end untested.
+  Before the contract grid: generate ONE true-POMDP dataset and CERTIFY it —
+  the information-set stamp must record the masked behaviour and the
+  preflight must pass on a dataset whose logged actions depend on the masked
+  view only. Report the certification stamps, not "it ran". Scheduled after
+  the L5 sweep and the cost-probe report (CPU/GPU contention).
+
+* **`--resume` NEVER reuses, and "correcting" it naively DELETES THE WHOLE
+  STORE. Read this entire item before touching it.** `generate_diagram_arms.py`
+  offers `--resume` to "keep datasets whose generation_fingerprint already
+  matches". It cannot match. `generate_offline_dataset` stamps the fingerprint
+  WITHOUT forwarding `n_proxies`, so it always hashes the default 2, while the
+  resume site passes the real value out of `arm_generator_kwargs` (3 for every
+  V-carrying cell, i.e. every cell E1 uses). Measured 2026-09-01 on
+  `d_d_sweep_d100` sigma = 0 seed 0: stored `480f5c317dfbe9b1`; recomputed with
+  the real `n_proxies=3` gives `7cb1aab77247ba9b`; recomputed with `n_proxies=2`
+  reproduces the stored hash BIT-IDENTICALLY. So every `--resume` run falls
+  through to `minari.delete_dataset(did)` and regenerates.
+
+  **Two things follow, and the second is the dangerous one.**
+
+  (a) The stored fingerprint is WRONG, not merely mismatched. Its stated purpose
+  is to prove that regenerating would reproduce the dataset; it omits a real
+  generation input, so a two-proxy and a three-proxy dataset agreeing on
+  everything else hash IDENTICALLY. This project holds both -- the frozen
+  two-proxy `d_d` arms and the three-proxy `-d100` regenerations -- so that
+  collision is in the direction that matters.
+
+  (b) **The obvious fix is a trap.** Correcting the store site alone changes
+  every FUTURE fingerprint while all 163 existing datasets keep the old wrong
+  one. The next `--resume` then mismatches on the ENTIRE STORE and deletes it --
+  campaign-wide, the catastrophe that `--sigmas` narrowly contained on
+  2026-09-01, when the only thing standing between a routine generation command
+  and the loss of 15 certified pinned datasets was a filter added that morning
+  for an unrelated reason. The fix is therefore THREE steps, in order:
+  (1) correct the store site to forward `n_proxies`; (2) BACKFILL the corrected
+  hash into existing datasets' metadata, or add an explicit compatibility path
+  that recognises the legacy hash; (3) only then rely on `--resume` again.
+
+  **Root cause is S6's, applied to the fingerprint rather than the id:** two
+  construction sites that disagree. Identity got consolidated to one site after
+  three collision bugs; the fingerprint never did. Same fix shape when it is
+  time. **Until then the operative guard is `--sigmas` (and not running
+  generation against a live cell at all) -- NOT `--resume`, which does nothing.**
+
 
 * **V-B** running (`results/vb_generation/`, relaunched after the id fix). Its first run's 4 failures are **discarded** — computed on data later overwritten by the collision. Re-certification happens as part of generation, so no separate pass.
 * **D-D's reward-view coupling** — documented in the catalogue, to be *quantified by R4*, deliberately not engineered away. Third-proxy remedy held in reserve, evidence-driven only.

@@ -1,0 +1,48 @@
+e1:
+  arm: grace
+  cell: d100
+  dataset_id: grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma025-seed2-d100-v0
+  source_cell: d_d_sweep_d100
+env:
+  a_bad: 1
+  behavior_policy: bias_confounded_action
+  behavior_strength: 0.25
+  confounder_c_r: 1.0
+  env_entry_point: null
+  env_id: CartPole-v1
+  env_kwargs: {}
+  env_wrapper: auto
+  eval_confounded_mode: analytic
+  eval_confounded_reward: true
+  eval_rollout_len: 500
+  gate_probs:
+  - 0.0
+  - 1.0
+  grace_proxy_names:
+  - Z
+  - W
+  - V
+  grace_reward_transform: true
+  mask_indices: null
+  minari_datasets_path: null
+  n_eval_envs: 16
+  n_train_envs: 2
+  offline_dataset: grace-v2/d_d_sweep_d100-cartpole/medium-bias_confounded_action-sigma025-seed2-d100-v0
+  pi_basic_epsilon: null
+  rollout_len: 2
+  seed: 2
+training:
+  actor_network: mlp
+  aggregation: iqm
+  algorithm: cql
+  checkpoint_dir: null
+  critic_network: mlp
+  deterministic: true
+  device: cuda
+  eval_count_terminal_reward: false
+  eval_interval: null
+  n_checkpoints: 25
+  n_episodes: 1
+  network_kwargs: {}
+  offline_grad_steps: 50000
+  record_eval_video: false

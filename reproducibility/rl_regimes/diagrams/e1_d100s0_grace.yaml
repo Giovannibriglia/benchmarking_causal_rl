@@ -1,0 +1,107 @@
+# E1 — the sigma=0 NO-HARM CONTROL (d100s0). Same cell as d100 so the three
+# proxy channels match by construction; U->R survives at sigma=0 (GRACE fits a
+# real nonzero r_hat, truth M = 0.5) while U->A is severed, so the bias to
+# remove is zero WITHOUT being zero by construction — what "does GRACE invent
+# a correction where there is nothing to correct" needs (S9: d_a_null cannot
+# serve this role, its do-contrast is untestably zero).
+#
+# Generated from d_d_sweep_d100.yaml: the cell's DECLARED ARMS are kept verbatim (copying the
+# gate by hand would be a second construction site); only envs, the critic axis,
+# the algo list and the deployment evaluation are changed.
+#
+# Pre-registration P1-P5 + rationale: docs/grace_v2_consolidation_plan.md
+# Entry ticket (Q2-A step 3, run PER CELL, exact analytic anchor): PASSED.
+#
+# THE CRITIC AXIS, not new algorithm names: one shared run per (point, env,
+# algo, seed) explodes into per-critic leaves, so variant and base get identical
+# data, seeds and budgets BY CONSTRUCTION rather than by convention.
+# D-D compensated gate-separation sweep -- point d = 1.00 (q = 0.00, 1.00).
+#
+# One YAML per sweep point; the grid (approved 2026-08-21): d in
+# {1.00, 0.50, 0.25, 0.10, 0.05} at M = 1.0, sigma = 0.25 uniform. Pairs are
+# SYMMETRIC about 0.5, so the MARGINAL bonus rate on gated steps is constant
+# along the sweep and only the U-separation varies -- one more thing held
+# fixed. d = 1.00 is (0, 1): the deterministic gate exactly, regenerated WITH
+# V under its own -d100 id so the with-arm is uniformly three-proxy; the
+# frozen two-proxy originals remain the historical record and the sigma = 1.0
+# contrast. c_r is DERIVED as M / d in arm_knobs (no confounder_c_r line here
+# BY DESIGN -- declaring both raises).
+regime: offline_mdp
+# The generation-report cell the certified ids resolve through
+# (read, never reconstructed) and the results-tree tag.
+source_cell: d_d_sweep_d100
+e1_cell: d100s0
+observability: mdp
+data_regime: offline
+discrete_only: true
+simulation: critic_ablation
+diagram: D-D
+
+generator_algo: dqn
+pi_basic_epsilon: 0.5
+gate_probs: [0.00, 1.00]
+gate_mean_effect: 1.0
+proxy_strength: 1.5
+sweep:
+  # basic: false ACKNOWLEDGES the loader's null-anchor warning deliberately:
+  # the sweep's deliverables use NO per-point null calibration (recovery reads
+  # logged U, the do-contrast reads the known M, and the naive-bias null scales
+  # from the FROZEN sigma=0 arms by c_r). Per-point sigma=0 companions would be
+  # redundant generation; the approved grid is sigma = 0.25 only, 30 datasets.
+  # basic IS the sigma=0 confounded mechanism (arm_behavior: the (0,0)
+  # point collects with bias_confounded_action at sigma=0 — marginally
+  # pi_basic, A independent of U, and the nuisance U RECORDED with the
+  # gate live). Declaring it here, not via a sigma=0 confounded entry,
+  # keeps ONE construction site for the origin; the resolved ids are
+  # asserted identical to the certified generation-report ids by test.
+  basic:      { beta: 0.0, sigma: 0.0 }
+  biased:     false
+  confounded: false
+
+# CartPole only: the Acrobot transition mechanism is unproven, so Acrobot q2 is
+# not ready and the first experiment is not coupled to it.
+envs: [CartPole-v1]
+max_workers: 1   # ad-hoc GPU work is SERIALISED (handoff GPU rule)
+
+# Deployment evaluation: U -> R intact, U -> A severed (the learned policy
+# acts). ANALYTIC takes E_U[return] in closed form on a clean env, removing
+# U-draw variance that would otherwise sit inside the seed-noise band.
+# THE EVAL HORIZON, separate from rollout_len (S17: rollout_len=2 is right
+# for the inert on-policy params on an offline run and was catastrophic as an
+# eval horizon — every policy scored 2.0-3.0). 500 = CartPole-v1's episode
+# cap. n_eval_envs=16: two rollouts per checkpoint cannot produce the MC band
+# "parity within seed noise" is judged against.
+eval_rollout_len: 500
+n_eval_envs: 16
+eval_confounded_reward: true
+eval_confounded_mode: analytic
+
+# Baselines are cql and iql UNMODIFIED; offline_dqn is in the source cells but
+# is not part of this experiment's contrast.
+algos:
+  - cql
+  - iql
+
+# Three DATASET seeds, matched across cells so per-seed reporting pairs
+# (d_a_null declares five; the extra two would have no counterpart).
+# Seeds (0, 2, 3), NOT (0, 1, 2): the s1 sigma=0 dataset failed the
+# covariate-free preflight (p = 0.0100 at alpha 0.01 — noise, checked: the two
+# campaign-wide failures implicate DIFFERENT proxies, and at sigma=0 the
+# tested independence is trivially true by construction). The substitute seed
+# 3 was DECLARED BEFORE GENERATION — re-rolling until a check passes selects
+# data for having passed. Formerly a driver comment; now the declaration.
+seeds: [0, 2, 3]
+
+# observational = the BASE arm; THIS file declares the GRACE arm.
+
+# The GRACE arm: the SAME algorithm, the SAME transitions, the SAME seeds --
+# one column different. GRACE is a reward transform rather than a critic
+# because on these cells confounding is confined to the reward channel
+# (catalogue fact 3: no U -> S_next), so Q_do IS the base algorithm's value on
+# interventional rewards. Base-parity is therefore stronger than "same
+# batches": the algorithm is untouched.
+grace_reward_transform: true
+grace_proxy_names: ["Z", "W", "V"]
+
+critics:
+  basic:      [observational]

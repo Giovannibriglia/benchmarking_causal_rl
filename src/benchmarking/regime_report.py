@@ -23,6 +23,7 @@ gained a segment-first dispatch so it serves BOTH trees.
 from __future__ import annotations
 
 import csv
+import json
 import math
 import re
 from pathlib import Path
@@ -106,7 +107,18 @@ def parse_results_leaf(path: str | Path) -> Dict:
     if len(tail) < 4:
         raise ValueError(f"results/ leaf is missing env/algo/critic/seed: {path!r}")
     env, algo, critic, seed = tail
-    return {
+    # The seed segment carries ONE axis (the pilot: ds == ts, a bare int) or
+    # TWO (the contract grid: "ds{d}_ts{t}" — dataset seed selects the
+    # certified data and the GRACE fit; training seed the RL run). ``seed``
+    # stays the TRAINING seed for existing consumers; the D-D reporting
+    # constraint extends to the new axis: nothing may average across
+    # ``dataset_seed``.
+    m = re.fullmatch(r"ds(\d+)_ts(\d+)", str(seed))
+    if m:
+        ds_seed, tr_seed = int(m.group(1)), int(m.group(2))
+    else:
+        ds_seed = tr_seed = int(seed)
+    rec = {
         "regime": parts[idx - 1],
         "beta": beta,
         "sigma": sigma,
@@ -114,9 +126,24 @@ def parse_results_leaf(path: str | Path) -> Dict:
         "env": env,
         "algo": algo,
         "critic": critic,
-        "seed": int(seed),
+        "seed": tr_seed,
+        "dataset_seed": ds_seed,
+        "train_seed": tr_seed,
         "path": str(Path(path)),
+        # A GRACE arm that ABSTAINED is a byte-copy of its base: pooling it
+        # into grace means biases every contrast toward zero (the serving
+        # layer's own never-pool rule). None = no provenance (non-E1 trees).
+        "grace_abstained": None,
     }
+    prov = Path(path) / "e1_provenance.json"
+    if prov.exists():
+        try:
+            g = json.loads(prov.read_text()).get("grace")
+            if g is not None:
+                rec["grace_abstained"] = bool(g.get("abstained"))
+        except (ValueError, OSError):
+            pass
+    return rec
 
 
 def sigma_from_leaf(path: str | Path) -> Optional[float]:
@@ -233,6 +260,13 @@ _METRIC_SOURCE_FILE: Dict[str, str] = {
     "separability": "arm_diagnostics.csv",
     "action_overlap": "arm_diagnostics.csv",
     "intervened_mean": "arm_diagnostics.csv",
+    # The analytic return's DECOMPOSITION (E1 runs; absent elsewhere -> NaN).
+    # The return is not monotone in task performance on gated cells (return =
+    # base steps + bonus_rate x a_bad steps), so parity in the total can hide
+    # opposite movements in the parts — these two columns are what makes a
+    # return comparison readable.
+    "eval_return_base_mean": "eval_deployment.csv",
+    "eval_bad_action_steps_mean": "eval_deployment.csv",
 }
 
 
@@ -304,6 +338,41 @@ def _mean_sd(values: List[float]) -> Tuple[float, float, int]:
     return mean, math.sqrt(var), n
 
 
+def series_per_leaf(
+    results_root: str | Path,
+    regime: str,
+    column: str = "eval_return_mean",
+) -> List[Dict]:
+    """One record PER LEAF with the full checkpoint SERIES of ``column`` —
+    the aggregator-side accessor the learning-curve figures consume, so the
+    renderer keeps its contract of never re-walking the tree. Seeds are never
+    pooled here: a learning-curve figure that pools seeds hides exactly the
+    per-seed transients the E1 diagnosis was about."""
+    out: List[Dict] = []
+    for leaf in iter_leaves(results_root, regime):
+        srs = read_leaf_series(leaf["path"], column)
+        if srs:
+            out.append(
+                {
+                    **{
+                        k: leaf[k]
+                        for k in (
+                            "regime",
+                            "beta",
+                            "sigma",
+                            "env",
+                            "algo",
+                            "critic",
+                            "seed",
+                            "grace_abstained",
+                        )
+                    },
+                    "series": srs,
+                }
+            )
+    return out
+
+
 def aggregate_per_seed(
     results_root: str | Path,
     regime: str,
@@ -327,6 +396,7 @@ def aggregate_per_seed(
             "algo": leaf["algo"],
             "critic": leaf["critic"],
             "seed": leaf["seed"],
+            "grace_abstained": leaf.get("grace_abstained"),
         }
         for m in metrics:
             rec[m] = read_leaf_metric(leaf["path"], m)
@@ -345,13 +415,21 @@ def aggregate_over_seeds(
     cells: Dict[Tuple, Dict[str, List[float]]] = {}
     seeds_seen: Dict[Tuple, set] = {}
     for leaf in iter_leaves(results_root, regime):
+        # The abstention SPLIT (never-pool): an abstained grace leaf buckets
+        # under "grace[abstained]" so the "grace" row is served fits only.
+        # Split here (pooling) and ONLY here — the per-seed and paired tables
+        # keep critic="grace" with the flag as a column, so pairing stays
+        # exact and the abstention is readable instead of silently diluting.
+        _crit = leaf["critic"]
+        if leaf.get("grace_abstained"):
+            _crit = f"{_crit}[abstained]"
         key = (
             leaf["regime"],
             leaf["beta"],
             leaf["sigma"],
             leaf["env"],
             leaf["algo"],
-            leaf["critic"],
+            _crit,
         )
         seeds_seen.setdefault(key, set()).add(leaf["seed"])
         bucket = cells.setdefault(key, {m: [] for m in metrics})
@@ -595,6 +673,9 @@ def build_paired_report(
             "algo": key[4],
             "seed": key[5],
         }
+        # An abstained pair is a PASSTHROUGH comparison (delta == 0 by
+        # construction) and must be readable as one, never as parity.
+        rec[f"{arm_b}_abstained"] = b.get("grace_abstained")
         for m in metrics:
             va, vb = a.get(m), b.get(m)
             rec[f"{arm_a}_{m}"] = va
@@ -604,6 +685,64 @@ def build_paired_report(
             )
         out.append(rec)
     return out
+
+
+def build_grace_diagnostics(results_root: str | Path, regime: str) -> List[Dict]:
+    """One row per leaf carrying GRACE provenance: the C3 label, L4 interval
+    and kind, applied pessimism, bootstrap health, cache hit, seconds — the
+    per-row diagnostics that make a return table auditable. Leaves without
+    ``e1_provenance.json`` are skipped (non-GRACE trees)."""
+    out: List[Dict] = []
+    for leaf in iter_leaves(results_root, regime):
+        prov = Path(leaf["path"]) / "e1_provenance.json"
+        if not prov.exists():
+            continue
+        try:
+            d = json.loads(prov.read_text())
+        except (ValueError, OSError):
+            continue
+        g = d.get("grace") or {}
+        m = g.get("meta") or {}
+        out.append(
+            {
+                "regime": leaf["regime"],
+                "env": leaf["env"],
+                "algo": leaf["algo"],
+                "critic": leaf["critic"],
+                "seed": leaf["seed"],
+                "arm": d.get("arm"),
+                "abstained": g.get("abstained"),
+                "label": g.get("label"),
+                "lo": g.get("lo"),
+                "hi": g.get("hi"),
+                "q1_truth": d.get("q1_truth"),
+                "pessimism_applied": m.get("pessimism_applied"),
+                "transform_applied": m.get("transform_applied"),
+                "n_rewards_written": m.get("n_rewards_written"),
+                "boot_failure_rate": m.get("boot_failure_rate"),
+                "boot_reasons": m.get("boot_reasons"),
+                "transform_cache_hit": m.get("transform_cache_hit"),
+                # The window/materiality record (post-ruling API): window_k +
+                # the two diagnostics are contract row 2's exact measurables;
+                # the l5_* fields are the report-only falsification record.
+                # All read with .get -> None on pre-ruling leaves.
+                "window_k": m.get("window_k"),
+                "window_source": m.get("window_source"),
+                "window_stages": m.get("window_stages"),
+                "window_sufficient": m.get("window_sufficient"),
+                "window_necessary": m.get("window_necessary"),
+                "l5_p": m.get("l5_p"),
+                "l5_dr2": m.get("l5_dr2"),
+                "l5_rejected": m.get("l5_rejected"),
+                "l5_shrink": m.get("l5_shrink"),
+                # pre-ruling leaves carried these two; kept for the pilot's rows
+                "l5_stage_p": m.get("l5_stage_p"),
+                "l5_stage_dr2": m.get("l5_stage_dr2"),
+                "seconds": d.get("seconds"),
+                "dataset_id": d.get("dataset_id"),
+            }
+        )
+    return sorted(out, key=lambda r: (r["algo"], str(r["critic"]), r["seed"]))
 
 
 _REPORT_METRICS = (
@@ -631,6 +770,9 @@ _REPORT_METRICS = (
     "value_mse_to_mc_u0",
     "mc_rtg_mean",
     "mc_rtg_u0_mean",
+    # E1 deployment decomposition (additive; NaN where the file is absent).
+    "eval_return_base_mean",
+    "eval_bad_action_steps_mean",
 )
 
 
@@ -693,6 +835,30 @@ def _main(argv: List[str] | None = None) -> int:
     agg, nc = build_report(args.results_root, args.regime, k=args.k)
     _write_csv(agg, out / f"{args.regime}_aggregated.csv")
     _write_csv(nc, out / f"{args.regime}_null_calibration.csv")
+    # Base/grace trees additionally get the paired per-seed table (strict
+    # pairing — raises on mismatch) and the per-leaf GRACE diagnostics.
+    critics_present = {r["critic"] for r in agg}
+    if {"base", "grace"} <= {c.split("[")[0] for c in critics_present}:
+        pairs = build_paired_report(
+            args.results_root,
+            args.regime,
+            metrics=(
+                "eval_return_mean",
+                "eval_return_base_mean",
+                "eval_bad_action_steps_mean",
+                "q1_contrast_pred",
+                "q1_contrast_error",
+            ),
+        )
+        _write_csv(pairs, out / f"{args.regime}_paired.csv")
+        print(f"[regime_report] {len(pairs)} paired rows -> {args.regime}_paired.csv")
+    diags = build_grace_diagnostics(args.results_root, args.regime)
+    if diags:
+        _write_csv(diags, out / f"{args.regime}_grace_diagnostics.csv")
+        print(
+            f"[regime_report] {len(diags)} grace-diagnostic rows -> "
+            f"{args.regime}_grace_diagnostics.csv"
+        )
     print(f"[regime_report] {len(agg)} cells, {len(nc)} null-cal rows -> {out}")
     for r in nc:
         nref = "MISSING" if r["noise_ref"] is None else f"{r['noise_ref']:.4g}"

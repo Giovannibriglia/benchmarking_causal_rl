@@ -339,3 +339,18 @@ def test_p6_reads_real_offline_mdp_cell_end_to_end(tmp_path):
     )  # the stored production reference, not the cell's noise
     assert row["null_calibrated"] is not None  # reference present -> a real verdict
     _purge("p6test/")
+
+
+def test_parse_results_leaf_supports_the_two_seed_axes(tmp_path):
+    """The contract grid's ds{d}_ts{t} segment parses into both axes; the
+    pilot's bare-int segment stays the diagonal (ds == ts)."""
+    from src.benchmarking.regime_report import parse_results_leaf
+
+    leaf = tmp_path / "r" / "beta_000_sigma_025" / "E-v1" / "cql" / "grace" / "ds1_ts4"
+    leaf.mkdir(parents=True)
+    rec = parse_results_leaf(leaf)
+    assert (rec["dataset_seed"], rec["train_seed"], rec["seed"]) == (1, 4, 4)
+    leaf2 = tmp_path / "r" / "beta_000_sigma_025" / "E-v1" / "cql" / "base" / "2"
+    leaf2.mkdir(parents=True)
+    rec2 = parse_results_leaf(leaf2)
+    assert (rec2["dataset_seed"], rec2["train_seed"], rec2["seed"]) == (2, 2, 2)

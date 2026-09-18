@@ -56,6 +56,15 @@ from .l4 import point_id_interval
 SERVE_PESSIMISTIC = "Q-minus"
 SERVE_ABSTAINED = "GRACE-ABSTAINED"
 
+# The fit's effective defaults, ONE construction site: the signature below and
+# the transform cache's key builder both read these — a default that drifted
+# between them would silently key two different fits identically.
+DEFAULT_ALPHA = 0.1
+DEFAULT_B = 19
+DEFAULT_FIT_SEED = 0
+DEFAULT_INIT_SEEDS = (1, 2)
+DEFAULT_FIT_KWARGS = dict(max_iter=30, m_step_budget=400, batch_size=4096)
+
 
 @dataclass
 class GraceServing:
@@ -99,14 +108,27 @@ def fit_reward_transform(
     buffer,
     *,
     proxy_names: tuple = (),
-    alpha: float = 0.1,
-    b: int = 19,
-    fit_seed: int = 0,
-    init_seeds: tuple = (1, 2),
+    alpha: float = DEFAULT_ALPHA,
+    b: int = DEFAULT_B,
+    fit_seed: int = DEFAULT_FIT_SEED,
+    init_seeds: tuple = DEFAULT_INIT_SEEDS,
     fit_kwargs: Optional[dict] = None,
     device=None,
+    n_jobs: int = 1,
+    sweep_chunk: int = 4096,
 ) -> GraceServing:
     """THE handoff: fit L3 + L4 once, then hand back the INTERVENTIONAL rewards.
+
+    ``n_jobs`` runs L4's bootstrap replicates concurrently (threads; each
+    replicate seeded from its index, results collected by index — bitwise
+    the same serving as ``n_jobs=1``, verified before use): a BUDGET, wall
+    time only, outside the cache key. ``sweep_chunk`` is the interventional
+    sweep's batch size and is NOT a budget (corrected 2026-09-04): the sweep
+    runs on the likelihood-weighting engine, a Monte-Carlo estimate whose
+    per-row draws depend on batch composition — chunk 4096 / 128 / 8 gave
+    distinct reward hashes (differences at the sixth significant digit, far
+    below L4's half-width). It is a fixed procedure parameter (4096
+    everywhere) and enters the cache key.
 
     **Why a reward transform and not a served Q** (ruled 2026-08-31). Catalogue
     fact 3: no wired cell has a ``U -> S_next`` edge, so on these cells the
@@ -129,7 +151,7 @@ def fit_reward_transform(
     turn the comparison into "regularised vs unregularised". Substituting one
     column does not.
     """
-    fk = dict(fit_kwargs or dict(max_iter=30, m_step_budget=400, batch_size=4096))
+    fk = dict(fit_kwargs or DEFAULT_FIT_KWARGS)
     try:
         data, _nxt, _dn = _episode_data_from_buffer(
             buffer, proxy_names=proxy_names, device=device
@@ -163,8 +185,8 @@ def fit_reward_transform(
 
     def _sweep(est, fit, action, states):
         parts = []
-        for k in range(0, states.shape[0], 4096):
-            chunk = states[k : k + 4096]
+        for k in range(0, states.shape[0], sweep_chunk):
+            chunk = states[k : k + sweep_chunk]
             v = est.interventional_sweep(
                 chunk, [action] * chunk.shape[0], fit
             ).value.reshape(-1)
@@ -190,9 +212,15 @@ def fit_reward_transform(
         b=b,
         fit_seed=fit_seed,
         init_seeds=init_seeds,
+        n_jobs=int(n_jobs),
     )
     if res.kind == "abstain":
-        return GraceServing(reason=res.reason, fit_label=res.label)
+        # An abstention carries diagnostics too, and an abstained run is
+        # reported SEPARATELY rather than pooled -- so why it abstained is the
+        # whole content of that row.
+        return GraceServing(
+            reason=res.reason, fit_label=res.label, meta=_l4_diagnostics(res)
+        )
 
     # r_hat per transition, from the observed fit (deterministic, so this is
     # the same fit the interval was built around).
@@ -204,6 +232,14 @@ def fit_reward_transform(
     # bootstrap's low end can sit above the point estimate, and applying that
     # unclamped would raise a_bad -- inverting the correction.
     pess = max(0.0, contrast_hat - float(res.lo))
+    # Scale for the determinism sentinel below. Normalising by the CONTRAST
+    # alone is ill-conditioned exactly where the contrast is ~0 -- on d_a_null
+    # both quantities are float noise near zero and the ratio came out 1.3,
+    # 10^5 past the flag line, on a perfectly healthy fit. The summation error
+    # the sentinel watches scales with the SUMMANDS (r_hat, order of the reward)
+    # and not with their difference, so the reward scale is the honest floor.
+    _r_scale = float(np.mean(np.abs(r_hat))) or 1.0
+    _sc_abs = abs(contrast_hat - float(res.observed))
     acts = data.action.reshape(-1).detach().cpu().numpy()
     new_r = r_hat[np.arange(acts.size), acts].astype(np.float32)
     new_r[acts == a_bad] -= pess
@@ -217,13 +253,58 @@ def fit_reward_transform(
         meta={
             "contrast_point": contrast_hat,
             "contrast_observed_l4": res.observed,
+            # THE SELF-CHECK, as a number rather than an eyeball. These two are
+            # the same quantity from the same deterministic fit, summed in two
+            # different orders -- mean-of-differences here, difference-of-means
+            # inside ``contrast_target`` -- so over ~5e4 float32 rows they agree
+            # to ~1e-7 relative and to nothing tighter. That makes this a
+            # DETERMINISM sentinel, not a drift detector between two estimates:
+            # it can only fire if the observed fit stopped being reproducible,
+            # which is the CUDA nondeterminism this module carried until
+            # deterministic kernels became the default. Flag past ~1e-5; that is
+            # far too wide to be summation order.
+            "contrast_selfcheck_abs": _sc_abs,
+            "contrast_selfcheck_rel": _sc_abs / max(abs(float(res.observed)), _r_scale),
             "pessimism_applied": pess,
             "n_transitions": int(data.n),
             "n_a_bad": int((acts == a_bad).sum()),
             "procedural_share": res.procedural_share,
             "failure_rate": res.failure_rate,
+            **_l4_diagnostics(res),
         },
     )
+
+
+def _l4_diagnostics(res) -> dict:
+    """L4's variance decomposition and bootstrap health, flattened to scalars.
+
+    **The founding rule this restores** (ruled 2026-08-23, stated in
+    ``l4.py``): "failures may correlate with the statistic, so their REASONS
+    travel with every interval -- a rate without reasons is uninterpretable."
+    ``point_id_interval`` obeys it and puts them in ``res.meta``. This seam
+    dropped ``res.meta`` wholesale, so every run artifact recorded a bare
+    ``failure_rate`` with no reasons attached -- precisely the shape the rule
+    forbids, and the reason a 3/19 rate could not be read for structure.
+
+    Flattened because the artifact writers keep only ``(int, float, str,
+    bool)``: a nested dict was discarded a second time downstream, so
+    propagating ``res.meta`` unflattened would have fixed nothing.
+    """
+    m = dict(getattr(res, "meta", None) or {})
+    out = {
+        "optimiser_var": float(m.get("optimiser_var", float("nan"))),
+        "replicate_var": float(m.get("replicate_var", float("nan"))),
+        "n_init_fits": int(m.get("n_init_fits", 0)),
+    }
+    for k, v in (m.get("bootstrap_diagnostics") or {}).items():
+        if k == "reasons":
+            # The REASONS themselves, not just how many. Joined rather than
+            # counted: two replicates failing for different causes is a
+            # different fact than two failing for one.
+            out["boot_reasons"] = " | ".join(v) if v else ""
+        elif isinstance(v, (int, float, bool)):
+            out[f"boot_{k}"] = v
+    return out
 
 
 def apply_reward_transform(buffer, serving: GraceServing) -> bool:
@@ -233,6 +314,8 @@ def apply_reward_transform(buffer, serving: GraceServing) -> bool:
     byte-identical to its base -- which is what makes ``GRACE-ABSTAINED`` a
     safe fallback rather than a silent third behaviour.
     """
+    serving.meta["transform_applied"] = False
+    serving.meta["n_rewards_written"] = 0
     if serving.abstained or serving.rewards is None:
         return False
     eps = getattr(buffer, "episodes", None)
@@ -243,13 +326,43 @@ def apply_reward_transform(buffer, serving: GraceServing) -> bool:
             for tr in e.transitions:
                 tr["rewards"] = vals[i].to(tr["rewards"].dtype).to(tr["rewards"].device)
                 i += 1
+        _record_write(serving, written=i, rows=i, spare=int(vals.numel()) - i)
         return True
     col = getattr(buffer, "_data", {}).get("rewards")
     if col is None:
         raise TypeError(f"{type(buffer).__name__} exposes no reward column to rewrite")
     n = serving.rewards.shape[0]
     col[:n] = serving.rewards.reshape(col[:n].shape).to(col.dtype).to(col.device)
+    # ``col[:n]`` is a PREFIX write: any row past n keeps its OBSERVATIONAL
+    # reward, and nothing about the run would look wrong if that happened.
+    # Compare against the buffer's FILL, never its capacity -- a ReplayBuffer
+    # allocates its column at capacity, so ``col.shape[0]`` reported coverage
+    # 300/310 = 0.97 on a complete transform and would have flagged a partial
+    # write on every healthy run.
+    rows = len(buffer) if hasattr(buffer, "__len__") else int(col.shape[0])
+    _record_write(serving, written=n, rows=int(rows), spare=0)
     return True
+
+
+def _record_write(serving: GraceServing, *, written: int, rows: int, spare: int):
+    """Evidence that the substitution ACTUALLY HAPPENED, on the artifact.
+
+    The sixth silent failure of this campaign was a GRACE arm that ran the
+    whole way through and produced correct-looking CSVs while the transform sat
+    on a path nothing called -- byte-identical to its own baseline, no error
+    anywhere. The rule adopted from it: **a component that can no-op silently
+    must record what it DID, not only what it produced**, because output that
+    looks right is compatible with nothing having happened.
+
+    So the count of rewards actually overwritten travels into the provenance.
+    ``coverage < 1`` means part of the buffer trained on observational rewards
+    -- a partial transform, which is a silent half-no-op of the same species.
+    """
+    serving.meta["transform_applied"] = written > 0
+    serving.meta["n_rewards_written"] = int(written)
+    serving.meta["n_buffer_rows"] = int(rows)
+    serving.meta["n_rewards_unused"] = int(spare)
+    serving.meta["rewards_coverage"] = float(written) / float(rows) if rows else 0.0
 
 
 def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
@@ -351,14 +464,75 @@ def _episode_data_from_buffer(buffer, *, proxy_names=(), device=None):
     )
 
 
-def transform_offline_rewards(buffer, **options) -> GraceServing:
-    """The runner's entry point: fit, then substitute, then report.
+def transform_offline_rewards(
+    buffer, *, cache_dir=None, dataset_id: str = "", apply: bool = True, **options
+) -> GraceServing:
+    """The runner's entry point: fit (or load the cached fit), substitute,
+    report.
+
+    ``apply=False`` fits (or loads) and RETURNS without writing the buffer —
+    the declared-observability path (pomdp_branch) compares fits at several
+    windows against each other before writing exactly one of them, so the
+    write is the caller's, once. Cache hit/store behaviour is unchanged.
 
     Called once after the offline fill and BEFORE any gradient step, so the
     base algorithm trains on interventional rewards from its first step. The
     returned ``GraceServing`` carries the C3 label into the run artifacts.
+
+    ``cache_dir`` enables the transform cache (transform_cache.py): the fit is
+    a measured pure function of (data, options) — 10/10 bitwise-identical
+    production pairs, equal reward hashes under perturbed global RNG — so a
+    hit substitutes the cached reward column and skips the ~1h fit. The key is
+    content-addressed over the EXACT fit inputs; hit/store is recorded in
+    ``meta`` (S15: the artifact says what the run DID). Cached ABSTENTIONS are
+    honoured too, and stay visibly abstentions.
     """
+    key = None
+    if cache_dir:
+        from src.rl.offline.grace import transform_cache as tc
+
+        try:
+            data, nxt, dn = _episode_data_from_buffer(
+                buffer,
+                proxy_names=tuple(options.get("proxy_names", ()) or ()),
+                device=options.get("device"),
+            )
+        except Exception:
+            data = None
+        if data is not None:
+            key = tc.build_key(
+                dataset_id=dataset_id,
+                data_sha256=tc.data_fingerprint(data, nxt, dn),
+                proxy_names=tuple(options.get("proxy_names", ()) or ()),
+                alpha=options.get("alpha", DEFAULT_ALPHA),
+                b=options.get("b", DEFAULT_B),
+                fit_seed=options.get("fit_seed", DEFAULT_FIT_SEED),
+                init_seeds=options.get("init_seeds", DEFAULT_INIT_SEEDS),
+                fit_kwargs=dict(options.get("fit_kwargs") or DEFAULT_FIT_KWARGS),
+                device_kind=str(data.state.device.type),
+                sweep_chunk=int(options.get("sweep_chunk", 4096)),
+            )
+            hit = tc.load(cache_dir, key)
+            if hit is not None:
+                if not hit.abstained and apply:
+                    apply_reward_transform(buffer, hit)
+                else:
+                    hit.meta["transform_applied"] = False
+                    hit.meta["n_rewards_written"] = 0
+                return hit
+
     serving = fit_reward_transform(buffer, **options)
-    if not serving.abstained:
+    if key is not None:
+        from src.rl.offline.grace import transform_cache as tc
+
+        entry = tc.store(cache_dir, key, serving)
+        serving.meta["transform_cache_stored"] = str(entry)
+    if not serving.abstained and apply:
         apply_reward_transform(buffer, serving)
+    else:
+        # EVERY run records what it did, abstentions included -- an absent key
+        # and a False one are not the same evidence, and "no key" is exactly
+        # how a silent no-op looks.
+        serving.meta["transform_applied"] = False
+        serving.meta["n_rewards_written"] = 0
     return serving

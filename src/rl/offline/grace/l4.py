@@ -169,7 +169,14 @@ def point_id_interval(
         fit_i = est_i.fit(data, **fk)
         if not _dirty(fit_i):
             init_vals.append(float(target(est_i, fit_i)))
-    optimiser_var = float(np.var(init_vals, ddof=1)) if len(init_vals) > 1 else 0.0
+    # S8/S9: "not measurable" is NOT "measured as zero". If every init fit came
+    # back dirty only ``observed`` survives, there is no perturbation arm, and
+    # reporting 0.0 would be the most REASSURING possible reading of no evidence
+    # -- the exact shape those rules exist to stop. nan says "no reading", and
+    # ``summary()`` already gates the label on np.isfinite.
+    optimiser_var = (
+        float(np.var(init_vals, ddof=1)) if len(init_vals) > 1 else float("nan")
+    )
 
     # --- replicate arm: resampled data, fit seed FIXED ----------------------
     def statistic(rep_seed: int):
@@ -214,7 +221,19 @@ def point_id_interval(
         float(np.quantile(vals, 1 - alpha / 2)),
     )
     replicate_var = float(np.var(vals, ddof=1))
-    share = optimiser_var / replicate_var if replicate_var > 0 else float("inf")
+    # 0/0 is UNDEFINED, not "100% procedural". When every replicate returns the
+    # same value there is no spread for either arm to explain -- d_a_null is
+    # exactly this: R is constant, so the contrast is identically zero for the
+    # data and every resample, and inf there reported maximal procedural
+    # instability on a statistic that CANNOT VARY (S9, again). inf is kept for
+    # the case it truly describes: real optimiser variance over zero replicate
+    # variance. A nan numerator propagates, so unmeasurable stays unmeasurable.
+    if replicate_var > 0:
+        share = optimiser_var / replicate_var
+    elif optimiser_var > 0:
+        share = float("inf")
+    else:
+        share = float("nan")
     return L4Result(
         kind="interval",
         lo=lo,
