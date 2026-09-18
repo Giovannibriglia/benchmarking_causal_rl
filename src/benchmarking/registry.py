@@ -323,6 +323,42 @@ def register_default_algorithms() -> None:
     registry.register("sac", AlgorithmSpec(builder=build_sac, kind="off_policy"))
     registry.register("ddpg", AlgorithmSpec(builder=build_ddpg, kind="off_policy"))
 
+    # Model-based value iteration (src/rl/model_based): count tables + exact VI
+    # for discrete observations, an MLP dynamics ensemble + fitted VI for
+    # vector observations. Off-policy agents with their own buffer, so the
+    # online variants ride the flat collect/update loop and the offline ones
+    # the Minari fill, exactly like dqn / offline_dqn.
+    from src.rl.model_based.builders import (
+        build_mlp_vi,
+        build_offline_mlp_vi,
+        build_offline_tabular_vi,
+        build_tabular_vi,
+    )
+
+    for _mb_name, _mb_builder in (
+        ("tabular_vi", build_tabular_vi),
+        ("mlp_vi", build_mlp_vi),
+    ):
+        registry.register(
+            _mb_name,
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(_mb_name, _mb_builder),
+                kind="off_policy",
+            ),
+        )
+    for _mb_name, _mb_builder in (
+        ("offline_tabular_vi", build_offline_tabular_vi),
+        ("offline_mlp_vi", build_offline_mlp_vi),
+    ):
+        registry.register(
+            _mb_name,
+            AlgorithmSpec(
+                builder=_offpolicy_recurrent_guard(_mb_name, _mb_builder),
+                kind="off_policy",
+                data_regime="offline",
+            ),
+        )
+
     # Offline (fixed-dataset) algorithms: data_regime="offline" routes run() to
     # _train_offline. Online dqn is left untouched.
     from src.rl.offline.bcq import build_bcq
