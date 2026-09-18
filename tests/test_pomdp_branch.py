@@ -275,3 +275,50 @@ def test_l5_record_is_budgeted_and_content_cached(monkeypatch, tmp_path):
     assert s2.meta["l5_dr2"] == s1.meta["l5_dr2"]
     # serving_material grades the cached record exactly like the fresh one
     assert s2.meta["l5_material_material"] == s1.meta["l5_material_material"]
+
+
+def _lag_blocks_reference(data, k):
+    """The pre-vectorisation per-episode loop, kept as the oracle."""
+    ep_ids = data.episode_ids
+    act_col = data.action.reshape(-1, 1).to(data.state.dtype)
+    lag_a, lag_s = [], []
+    for j in range(1, k + 1):
+        a_j = torch.empty_like(act_col)
+        s_j = torch.empty_like(data.state)
+        for e in torch.unique_consecutive(ep_ids):
+            m = (ep_ids == e).nonzero(as_tuple=True)[0]
+            src = torch.clamp(torch.arange(len(m), device=m.device) - j, min=0)
+            s_j[m] = data.state[m][src]
+            a_j[m] = act_col[m][src]
+        lag_a.append(a_j)
+        lag_s.append(s_j)
+    return act_col, lag_a, lag_s
+
+
+def test_vectorised_lag_blocks_equal_the_per_episode_loop():
+    """Ragged episodes (lengths 1..9, some shorter than the lag), k up to 3:
+    the one-gather construction is bitwise the loop it replaced."""
+    from src.rl.offline.grace.estimator import EpisodeData
+
+    g = torch.Generator().manual_seed(3)
+    lens = torch.randint(1, 10, (25,), generator=g).tolist()
+    # non-monotone ids too: episode identity is CONSECUTIVE-block, not sorted
+    perm = torch.randperm(len(lens), generator=g)
+    ep = torch.cat([torch.full((L,), int(perm[i])) for i, L in enumerate(lens)])
+    n = int(ep.shape[0])
+    data = EpisodeData(
+        state=torch.randn(n, 4, generator=g),
+        action=torch.randint(0, 3, (n,), generator=g),
+        reward=torch.rand(n, generator=g),
+        episode_ids=ep,
+        proxy={},
+    )
+    for k in (0, 1, 2, 3):
+        a_ref, la_ref, ls_ref = _lag_blocks_reference(data, k)
+        a, la, ls = pb._lag_blocks(data, k)
+        assert torch.equal(a, a_ref)
+        assert len(la) == len(la_ref) == k and len(ls) == len(ls_ref) == k
+        for x, y in zip(la, la_ref):
+            assert torch.equal(x, y)
+        for x, y in zip(ls, ls_ref):
+            assert torch.equal(x, y)

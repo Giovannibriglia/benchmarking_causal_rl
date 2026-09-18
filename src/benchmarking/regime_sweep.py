@@ -345,7 +345,10 @@ class SweepSpec:
     # The transform cache root (content-addressed; one fit serves every
     # algorithm and training seed on the same data). None = off.
     grace_cache_dir: Optional[str] = None
-    # Speed budgets (wall time only, never a served number).
+    # grace_n_jobs is a speed budget (wall time only, never a served number).
+    # grace_sweep_chunk is NOT: the interventional sweep is a Monte-Carlo
+    # estimate whose draws depend on batch composition (measured 2026-09-04),
+    # so it is a fixed procedure parameter (4096) that enters the cache key.
     grace_n_jobs: int = 1
     grace_sweep_chunk: int = 4096
     # TRAINING seeds, separate from the DATASET seeds (`seeds`): the contract
@@ -497,7 +500,9 @@ def load_sweep_spec(sweep_yaml: str | Path) -> SweepSpec:
         )
     data_regime = str(pick("data_regime", "offline"))
     beta_arm, sigma_arm, include_basic = _parse_sweep_block(
-        cfg.get("sweep"), source=str(p)
+        cfg.get("sweep"),
+        source=str(p),
+        warn_no_basic=_sigma0_companion(p, cfg) is None,
     )
     critics = _parse_critics_block(cfg.get("critics"), data_regime, source=str(p))
 
@@ -604,8 +609,35 @@ def _arm_entry(block: dict, arm: str, default: dict, *, source: str):
     return val
 
 
+def _sigma0_companion(p: Path, cfg: dict) -> Optional[Path]:
+    """The sibling YAML that carries THIS cell's null-calibration anchor: same
+    directory, same ``e1_cell`` tag, ``sweep.basic`` present (the C1 layout —
+    ``c1_<truth>_base_s0.yaml`` next to ``c1_<truth>_base.yaml``). None when
+    the cell declares no tag or no sibling anchors it."""
+    tag = cfg.get("e1_cell")
+    if not tag:
+        return None
+    for sib in sorted(p.parent.glob("*.yaml")):
+        if sib.resolve() == p.resolve():
+            continue
+        try:
+            sib_cfg = yaml.safe_load(sib.read_text()) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(sib_cfg, dict) or sib_cfg.get("e1_cell") != tag:
+            continue
+        try:
+            if _parse_sweep_block(
+                sib_cfg.get("sweep"), source=str(sib), warn_no_basic=False
+            )[2]:
+                return sib
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_sweep_block(
-    block, *, source: str
+    block, *, source: str, warn_no_basic: bool = True
 ) -> Tuple[Tuple[float, ...], Tuple[float, ...], bool]:
     """Parse a cell's ``sweep:`` block into (beta_arm, sigma_arm, include_basic),
     REFUSING any declaration off the L (the basic origin must be (0,0); each arm
@@ -613,7 +645,9 @@ def _parse_sweep_block(
     key also falls back to its canonical default (never a removal — this is what
     keeps legacy YAMLs byte-identical), so excluding an arm takes an EXPLICIT
     ``false``. ``basic: false`` drops the null-calibration anchor and warns:
-    fine for a shrunk test run, wrong for a production/paper run."""
+    fine for a shrunk test run, wrong for a production/paper run — unless the
+    caller found the anchor in a same-tag sigma = 0 companion
+    (``warn_no_basic=False``; see ``_sigma0_companion``)."""
     if block is None:
         return BETA_ARM, SIGMA_ARM, True
     if not isinstance(block, dict):
@@ -634,7 +668,7 @@ def _parse_sweep_block(
                 f"{source}: sweep.basic must sit at the shared origin "
                 "(beta=0, sigma=0), or be false to exclude it."
             )
-    else:
+    elif warn_no_basic:
         warnings.warn(
             f"{source}: sweep.basic is false — the basic origin is the "
             "null-calibration anchor; without it the cell cannot be "

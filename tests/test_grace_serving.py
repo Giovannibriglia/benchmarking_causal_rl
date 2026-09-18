@@ -26,6 +26,14 @@ from src.rl.offline.grace.serving import (
 CPU = torch.device("cpu")
 
 
+def _same_bytes(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """BYTE identity. ``torch.equal`` is False on any NaN, and the buffer's
+    unfilled tail (``capacity > n``) is uninitialised memory — after enough
+    tests in one process it holds NaNs, so the untouched check went
+    order-dependent (2026-09-18). Bytes are what "untouched" means."""
+    return a.shape == b.shape and a.numpy().tobytes() == b.numpy().tobytes()
+
+
 def _buffer(n=40, ep_len=10, reward=1.0, with_proxies=False):
     buf = ReplayBuffer(capacity=n + 10, device=CPU)
     for i in range(n):
@@ -53,7 +61,7 @@ def test_abstention_leaves_the_reward_column_untouched():
     before = buf._data["rewards"].clone()
     fired = apply_reward_transform(buf, GraceServing(reason="fit was dirty"))
     assert fired is False
-    assert torch.equal(buf._data["rewards"], before)
+    assert _same_bytes(buf._data["rewards"], before)
 
 
 def test_applying_the_transform_rewrites_exactly_the_reward_column():
@@ -66,8 +74,8 @@ def test_applying_the_transform_rewrites_exactly_the_reward_column():
     assert apply_reward_transform(buf, serving) is True
     assert torch.allclose(buf._data["rewards"][:20], torch.full((20,), 7.0))
     # nothing else moves: same transitions, same seeds, ONE column different
-    assert torch.equal(buf._data["obs"], obs_before)
-    assert torch.equal(buf._data["actions"], acts_before)
+    assert _same_bytes(buf._data["obs"], obs_before)
+    assert _same_bytes(buf._data["actions"], acts_before)
 
 
 def test_a_declared_proxy_channel_missing_from_the_buffer_abstains_loudly():

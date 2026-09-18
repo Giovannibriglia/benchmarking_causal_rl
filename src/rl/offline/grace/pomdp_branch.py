@@ -103,21 +103,35 @@ class _DictBuffer(dict):
         return int(self["rewards"].shape[0])
 
 
+def _episode_starts(ep_ids: torch.Tensor) -> torch.Tensor:
+    """Per-row index of the row's episode START (episodes are consecutive
+    blocks, so a start is a row whose id differs from the previous row's).
+    Vectorised: one comparison + one cummax, no per-episode loop."""
+    n = ep_ids.shape[0]
+    idx = torch.arange(n, device=ep_ids.device)
+    is_start = torch.ones(n, dtype=torch.bool, device=ep_ids.device)
+    if n > 1:
+        is_start[1:] = ep_ids[1:] != ep_ids[:-1]
+    return torch.where(is_start, idx, torch.zeros_like(idx)).cummax(0).values
+
+
 def _lag_blocks(data, k: int):
-    """Edge-padded lagged (action, state) blocks j = 1..k, per episode."""
+    """Edge-padded lagged (action, state) blocks j = 1..k, per episode.
+
+    Row t of block j is row ``max(t - j, start(t))`` — the episode's first
+    row when the lag reaches before it (edge padding). Built as ONE gather per
+    lag from the per-row episode starts; the earlier per-episode loop was
+    O(episodes x rows) with a device sync per episode (post-freeze item,
+    2026-09-04: not the stall, but real at 326k rows / 3k episodes)."""
     ep_ids = data.episode_ids
     act_col = data.action.reshape(-1, 1).to(data.state.dtype)
+    starts = _episode_starts(ep_ids)
+    idx = torch.arange(ep_ids.shape[0], device=ep_ids.device)
     lag_a, lag_s = [], []
     for j in range(1, k + 1):
-        a_j = torch.empty_like(act_col)
-        s_j = torch.empty_like(data.state)
-        for e in torch.unique_consecutive(ep_ids):
-            m = (ep_ids == e).nonzero(as_tuple=True)[0]
-            src = torch.clamp(torch.arange(len(m), device=m.device) - j, min=0)
-            s_j[m] = data.state[m][src]
-            a_j[m] = act_col[m][src]
-        lag_a.append(a_j)
-        lag_s.append(s_j)
+        src = torch.maximum(idx - j, starts)
+        lag_a.append(act_col[src])
+        lag_s.append(data.state[src])
     return act_col, lag_a, lag_s
 
 
@@ -285,6 +299,16 @@ def transform_offline_rewards_declared(
             view, cache_dir=cache_dir, dataset_id=did, apply=False, **options
         )
         fits[kk] = s
+        # Between fits in ONE process, hand the finished fit's cached blocks
+        # back to the driver. A fresh k = 0 -> k = 1 pair on a large dataset
+        # (326k rows) otherwise leaves ~7.5 GB reserved-but-free, and the next
+        # fit's allocations hit the caching allocator's release-and-retry
+        # storm — GPU idle, one core pinned, hours of "work", no OOM (the C1
+        # ds1 stall, 2026-09-04). Memory management only: no served number
+        # depends on it. The launcher's garbage_collection_threshold stays as
+        # belt and braces.
+        if not s.meta.get("transform_cache_hit") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return s
 
     def material(kk: int):

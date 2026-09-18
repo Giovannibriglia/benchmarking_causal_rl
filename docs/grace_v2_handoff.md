@@ -2018,6 +2018,76 @@ After that commit the C1 cache entries become the campaign's frozen
 record under their `code_version`; a future run refits under the new
 version, which is the correct behaviour, not a loss.
 
+### POST-FREEZE COMMIT EXECUTED (2026-09-18) — and how the C1 chain actually ended
+
+**The chain died with the machine, not with a stall.** The mitigated grace
+relaunch of 18:27:09 (2026-09-04) wrote its banner and the ds1_ts0 leaf
+header to `results/c1/waves.log` and nothing after; the journal's boot
+record for that session ends **20:05:02** (a shutdown 1 h 38 min into ds1's
+k = 1 fit, which needs > 2.4 h). No k = 1 entry for ds1 was stored, no leaf
+landed, `_staging/c1_tmdp_grace_dmdp_cql_grace_ds1_ts0` holds the
+half-run. Nothing ran between 2026-09-05 and 2026-09-18 (no log, no entry,
+no leaf newer than 09-04; the card sat idle). The "running on the GPU
+(utilisation > 0, 19:15)" reading in the CORRECTION above was true when
+taken and is the last live observation of the campaign.
+
+**State of C1 at the freeze's end** (the exact inventory, so nobody
+re-derives it): 15 leaves — `c1_tmdp_base` ds0_ts0 × {cql, iql} × {obs,
+prox, oracle_u, sens} (8) and `c1_tmdp_grace_dmdp` ds0 × ts{0,1,2} × {cql,
+iql} (6, the grace arm's observational leaves) plus the staged partial;
+4 transform-cache entries under `code_version 0cbf18a5…`:
+`2abafc2a` (the Phase-2 reference, s0, its own data fingerprint — the
+priming miss), `d2961b84` (grid ds0 k = 0), `59883afe` (grid ds0 k = 1),
+`07042f5f` (grid ds1 k = 0); one L5 record. Every other planned leaf
+(tmdp ds1/ds2 grace, the whole dpomdp column, the whole tpomdp truth, the
+critics and σ = 0 anchor waves) is unrun.
+
+**Ruling (Giovanni, 2026-09-18): close the branch — finish its code, merge
+it.** So the post-freeze list is applied NOW, ahead of the campaign's
+completion, and its stated consequence is accepted: `code_version` flips
+(`0cbf18a5…` → `20b61957…`), the four entries become the frozen record of
+the aborted first pass, and a relaunch refits them (ds0 k = 0 1.15 h, ds0
+k = 1 ≈ 2 h, ds1 k = 0 2.4 h — measured; ≈ 5.5 GPU-h) before it reaches new
+work. That refit doubles as the confirmation the CORRECTION asked for
+(ds2's fresh k = 0 → k = 1 pair keeping the GPU busy) — under the in-code
+release now, not only the env var. Not a loss in the sense above; a cost,
+recorded here so the next projection counts it.
+
+**What the commit contains, item by item:**
+
+| item | done |
+|---|---|
+| `transform_cache.build_key` gains `sweep_chunk` | REQUIRED keyword (a caller cannot omit it); `serving.transform_offline_rewards` forwards `options["sweep_chunk"]`; the docstrings in `transform_cache`, `serving.fit_reward_transform`, `regime_sweep.SweepSpec` and `run_e1` no longer call it a budget; tests: field present, mutation is a miss, omission is a `TypeError` |
+| `pomdp_branch._lag_blocks` vectorised | `_episode_starts` (one `!=` + one `cummax`) then ONE gather per lag, `src = max(t − j, start(t))`; the old per-episode loop is kept in the test as the oracle — bitwise equal on 25 ragged episodes (lengths 1–9, permuted ids, k = 0..3) |
+| `torch.cuda.empty_cache()` between the fits | in `transform_offline_rewards_declared.fit_at`, after every FRESH fit (a cache hit allocates nothing); memory management only, no served number depends on it; the launcher's `garbage_collection_threshold:0.6` export stays |
+| nbn guard reads `free + (reserved − allocated)` | NOT here — upstream (NBN#264), arrives by a vendored sync; latent on this model's LW path |
+| `basic: false` warning silenced with a same-tag σ = 0 companion | `regime_sweep._sigma0_companion`: same directory, same `e1_cell`, a sibling whose `sweep.basic` is present; the C1 base/critics cells load silently, `c1_*_grace_*` (whose σ = 0 control is the pilot's `d100s0`, another tag) and the `e1_*` cells still warn, by the item's own scope |
+
+Also in the commit: the two grep-snapshot goldens regenerated
+(`tests/golden/seeding_call_sites.txt` +6, `critic_ablation_refs.txt` +1 —
+the l4/l5/estimator seeding sites and `aggregate_per_seed`, all from
+earlier commits on this branch; the snapshot was never refreshed, so the
+full suite had ONE red test on the branch since l5 landed). Two more
+full-suite reds, both ORDER-DEPENDENT and both this branch's: (i)
+`tools/run_e1.py`'s import-time `MINARI_DATASETS_PATH` setdefault leaked
+through `tests/test_e1_driver_plan.py`'s module import and repointed every
+later test at the grace-v2 store — the proximal parity tests then could
+not find their `~/.minari` dataset; the default now applies in the
+`__main__` guard only (`GRACE_V2_STORE`), and the plan test pins its store
+per test with `monkeypatch`. (ii) `test_grace_serving`'s untouched-column
+check used `torch.equal` on a buffer whose unfilled tail is uninitialised
+memory — NaN after enough tests, and `torch.equal` is False on NaN;
+it now compares BYTES, which is what "untouched" meant. Full suite after
+the fixes: 752 passed on the pre-fix run, the six reds re-run green in
+their failing order (51/51) and the 21 minari-touching files that follow
+the driver import re-run green in one process (154/154). Also committed:
+the two launch scripts that were sitting untracked since the relaunch — `tools/run_c1_grace_relaunch.sh` (the four grace waves,
+mitigated) and `tools/run_c1_base_waves.sh` (waves 5–7 of the iv′ shape,
+GPU pre-flight + completion invariant between waves). **To resume C1:** the
+grace relaunch first, the base waves on its completion, GPU alone, with the
+per-fit projection re-measured on ds2's clean k = 0 as the CORRECTION
+ruled; skip logic makes both scripts safe to re-run from the top.
+
 ### Open threads
 
 * **RULED 2026-09-03 — (a): the selector's features EQUAL the served state's

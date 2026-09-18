@@ -40,6 +40,7 @@ def _key(data_sha, dataset_id="ds-1"):
         init_seeds=(1, 2),
         fit_kwargs=dict(max_iter=30),
         device_kind="cpu",
+        sweep_chunk=4096,
     )
 
 
@@ -92,6 +93,10 @@ def test_any_key_field_change_is_a_miss(tmp_path):
         dict(proxy_names=("Z", "W")),
         dict(device_kind="cuda"),
         dict(data_sha256="0" * 64),
+        # the sweep is a Monte-Carlo estimate whose draws depend on batch
+        # composition (measured 2026-09-04): a different chunk is a different
+        # fit, never a hit
+        dict(sweep_chunk=128),
     ):
         q = tc.build_key(
             **{
@@ -105,6 +110,7 @@ def test_any_key_field_change_is_a_miss(tmp_path):
                     init_seeds=(1, 2),
                     fit_kwargs=dict(max_iter=30),
                     device_kind="cpu",
+                    sweep_chunk=4096,
                 ),
                 **mutate,
             }
@@ -120,3 +126,25 @@ def test_full_dict_equality_decides_not_the_hash(tmp_path):
     forged = dict(key, alpha=0.999)
     (entry / "key.json").write_text(__import__("json").dumps(forged))
     assert tc.load(tmp_path, key) is None
+
+
+def test_sweep_chunk_is_a_key_field_not_a_budget():
+    """``sweep_chunk`` is in the stored key dict itself (so a stored entry
+    says which chunking produced it), and a caller cannot leave it out."""
+    d, nxt, dn = _data()
+    key = _key(tc.data_fingerprint(d, nxt, dn))
+    assert key["sweep_chunk"] == 4096
+    import pytest
+
+    with pytest.raises(TypeError):
+        tc.build_key(
+            dataset_id="ds-1",
+            data_sha256="0" * 64,
+            proxy_names=(),
+            alpha=0.1,
+            b=19,
+            fit_seed=0,
+            init_seeds=(1,),
+            fit_kwargs={},
+            device_kind="cpu",
+        )

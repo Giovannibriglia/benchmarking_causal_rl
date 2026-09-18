@@ -24,6 +24,14 @@ impossible rather than unlikely. Fields, each with its reason:
 * ``proxy_names``, ``alpha``, ``b``, ``fit_seed``, ``init_seeds``,
   ``fit_kwargs`` (the WHOLE dict — a future kwarg must widen the key by
   construction) — each changes the fit.
+* ``sweep_chunk`` — the interventional sweep's batch size. NOT a budget
+  (measured 2026-09-04: the sweep is a likelihood-weighting Monte-Carlo
+  estimate whose per-row draws depend on batch composition — chunk
+  4096 / 128 / 8 gave distinct reward hashes, differing at the sixth
+  significant digit), so it is part of the procedure and a different chunk
+  is a different fit. Every entry before this field existed was fitted at
+  4096, the only value ever used. ``n_jobs`` stays out: replicates are
+  seeded by index and collected by index (bitwise the same serving).
 * ``code_version`` — sha256 over the SOURCE BYTES of this package + the
   vendored NBN version + torch version. Source bytes, not the git commit:
   an uncommitted edit must invalidate (the S12 lesson — never trust that
@@ -127,6 +135,7 @@ def build_key(
     init_seeds: tuple,
     fit_kwargs: dict,
     device_kind: str,
+    sweep_chunk: int,
 ) -> dict:
     return dict(
         dataset_id=str(dataset_id),
@@ -137,6 +146,7 @@ def build_key(
         fit_seed=int(fit_seed),
         init_seeds=[int(s) for s in init_seeds],
         fit_kwargs={k: fit_kwargs[k] for k in sorted(fit_kwargs)},
+        sweep_chunk=int(sweep_chunk),
         code_version=code_version(),
         device_kind=str(device_kind),
         deterministic=bool(torch.are_deterministic_algorithms_enabled()),

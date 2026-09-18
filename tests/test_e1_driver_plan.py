@@ -12,7 +12,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from tools.run_e1 import assert_plan_safe, enumerate_plan
+import pytest
+from tools.run_e1 import assert_plan_safe, enumerate_plan, GRACE_V2_STORE
+
+
+@pytest.fixture(autouse=True)
+def _campaign_store(monkeypatch):
+    """``assert_plan_safe`` reads the campaign's store; pin it PER TEST (the
+    driver no longer sets it at import — that leaked into every test after)."""
+    monkeypatch.setenv("MINARI_DATASETS_PATH", GRACE_V2_STORE)
 
 
 def test_plan_shape_matches_the_declared_campaign():

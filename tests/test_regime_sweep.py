@@ -440,3 +440,48 @@ def test_e1_yamls_resolve_to_certified_ids():
         )
     }
     assert set(all_sets["d100s0"]) == report_ids
+
+
+def test_basic_false_warning_silenced_by_a_same_tag_sigma0_companion(tmp_path):
+    """``basic: false`` warns (the null-calibration anchor is missing) UNLESS a
+    sibling YAML under the same ``e1_cell`` tag carries the sigma = 0 origin —
+    the C1 layout (``c1_<truth>_base_s0.yaml``). The warning stays for a cell
+    with no tag, and for a tagged cell whose siblings carry another tag."""
+    import warnings
+
+    from src.benchmarking.regime_sweep import load_sweep_spec
+
+    head = (
+        "regime: offline_mdp\ndata_regime: offline\nenvs: [CartPole-v1]\nalgos: [cql]\n"
+    )
+    confounded = "sweep:\n  basic: false\n  biased: false\n  confounded: {beta: 0.0, sigma: [0.25]}\n"
+    anchor = "sweep:\n  basic: {beta: 0.0, sigma: 0.0}\n  biased: false\n  confounded: false\n"
+
+    def load(path):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            spec = load_sweep_spec(path)
+        return spec, [x for x in w if "sweep.basic is false" in str(x.message)]
+
+    d = tmp_path / "with_companion"
+    d.mkdir()
+    (d / "c_base.yaml").write_text(head + "e1_cell: c_base\n" + confounded)
+    (d / "c_base_s0.yaml").write_text(head + "e1_cell: c_base\n" + anchor)
+    spec, warned = load(d / "c_base.yaml")
+    assert not spec.include_basic and warned == []
+    spec0, warned0 = load(d / "c_base_s0.yaml")
+    assert spec0.include_basic and warned0 == []
+
+    d2 = tmp_path / "other_tag"
+    d2.mkdir()
+    (d2 / "c_base.yaml").write_text(head + "e1_cell: c_base\n" + confounded)
+    (d2 / "c_other_s0.yaml").write_text(head + "e1_cell: c_other\n" + anchor)
+    _, warned2 = load(d2 / "c_base.yaml")
+    assert len(warned2) == 1
+
+    d3 = tmp_path / "untagged"
+    d3.mkdir()
+    (d3 / "c_base.yaml").write_text(head + confounded)
+    (d3 / "c_base_s0.yaml").write_text(head + anchor)
+    _, warned3 = load(d3 / "c_base.yaml")
+    assert len(warned3) == 1

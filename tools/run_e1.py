@@ -37,7 +37,12 @@ import time
 from pathlib import Path
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-os.environ.setdefault("MINARI_DATASETS_PATH", os.path.expanduser("~/.minari-grace-v2"))
+# The campaign's Minari store. Applied in the ``__main__`` guard, NOT at
+# import: a module-level setdefault repointed every pytest process that
+# imported this driver at the real store (the leak test_grace_l4_diagnostics
+# documents; it broke the parity tests' dataset lookup in the full suite,
+# 2026-09-18). A caller that imports the driver scopes the variable itself.
+GRACE_V2_STORE = os.path.expanduser("~/.minari-grace-v2")
 
 REGIME = "offline_mdp"
 # Campaign prefix selects BOTH the YAML glob and the results root: e1 = the
@@ -382,10 +387,12 @@ def main() -> int:
         # observability: mdp so cql/iql stay the memoryless learners; the
         # loader deletes the columns, so GRACE sees what the learner sees).
         _mask = tuple((spec.mask_indices or {}).get(env, ()) or ()) or None
-        # Budget passthrough for fields that may land after this driver
+        # Passthrough for fields that may land after this driver
         # (grace_n_jobs, grace_sweep_chunk, ...): forwarded only when BOTH the
         # spec and EnvConfig know them, so neither side's schema gates the
-        # other's release. Budgets, not identity: none enters the cache key.
+        # other's release. grace_n_jobs / grace_l5_b are budgets (outside the
+        # cache key); grace_sweep_chunk is a PROCEDURE parameter (fixed 4096,
+        # in the key — the sweep is Monte-Carlo, 2026-09-04).
         _budgets = {
             k: getattr(spec, k)
             for k in ("grace_n_jobs", "grace_sweep_chunk", "grace_l5_b")
@@ -553,4 +560,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("MINARI_DATASETS_PATH", GRACE_V2_STORE)
     raise SystemExit(main())

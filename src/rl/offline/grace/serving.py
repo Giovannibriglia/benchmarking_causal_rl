@@ -121,9 +121,14 @@ def fit_reward_transform(
 
     ``n_jobs`` runs L4's bootstrap replicates concurrently (threads; each
     replicate seeded from its index, results collected by index — bitwise
-    the same serving as ``n_jobs=1``, verified before use) and ``sweep_chunk``
-    is the interventional sweep's batch size. Both are BUDGETS: they change
-    wall time, never a served number, and neither enters the cache key.
+    the same serving as ``n_jobs=1``, verified before use): a BUDGET, wall
+    time only, outside the cache key. ``sweep_chunk`` is the interventional
+    sweep's batch size and is NOT a budget (corrected 2026-09-04): the sweep
+    runs on the likelihood-weighting engine, a Monte-Carlo estimate whose
+    per-row draws depend on batch composition — chunk 4096 / 128 / 8 gave
+    distinct reward hashes (differences at the sixth significant digit, far
+    below L4's half-width). It is a fixed procedure parameter (4096
+    everywhere) and enters the cache key.
 
     **Why a reward transform and not a served Q** (ruled 2026-08-31). Catalogue
     fact 3: no wired cell has a ``U -> S_next`` edge, so on these cells the
@@ -505,6 +510,7 @@ def transform_offline_rewards(
                 init_seeds=options.get("init_seeds", DEFAULT_INIT_SEEDS),
                 fit_kwargs=dict(options.get("fit_kwargs") or DEFAULT_FIT_KWARGS),
                 device_kind=str(data.state.device.type),
+                sweep_chunk=int(options.get("sweep_chunk", 4096)),
             )
             hit = tc.load(cache_dir, key)
             if hit is not None:

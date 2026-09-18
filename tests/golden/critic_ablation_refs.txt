@@ -18,6 +18,7 @@ src/benchmarking/plotting.py:    critic_path = run_dir / "critic_ablation_metric
 src/benchmarking/regime_report.py:        choices=["critic_ablation", "classical"],
 src/benchmarking/regime_report.py:        default="critic_ablation",
 src/benchmarking/regime_report.py:        help="which simulation's tree to aggregate: critic_ablation (per-critic "
+src/benchmarking/regime_report.py:    # conclusions. These columns are written per critic by critic_ablation but
 src/benchmarking/regime_report.py:    (``_METRIC_SOURCE_FILE`` dispatch; default critic_ablation_metrics.csv). Additive
 src/benchmarking/regime_report.py:    ``critic_ablation_metrics.csv`` (one critic per leaf). None if absent/blank."""
 src/benchmarking/regime_report.py:    filename = _METRIC_SOURCE_FILE.get(column, "critic_ablation_metrics.csv")
